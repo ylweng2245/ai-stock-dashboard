@@ -180,7 +180,7 @@ function SidebarContent() {
 export function AnalysisSymbolSidebarDesktop() {
   return (
     <aside
-      className="hidden lg:flex flex-col w-[280px] flex-shrink-0 border-l border-border bg-card sticky top-0 h-screen overflow-hidden"
+      className="hidden lg:flex flex-col w-[200px] flex-shrink-0 border-l border-border bg-card sticky top-0 h-screen overflow-hidden"
       data-testid="analysis-sidebar-desktop"
       aria-label="分析標的側欄"
     >
@@ -214,7 +214,7 @@ export function AnalysisSymbolSidebarMobile() {
           <span className="text-xs">{activeSymbol}</span>
         </Button>
       </SheetTrigger>
-      <SheetContent side="right" className="w-[300px] p-0 flex flex-col" data-testid="analysis-sidebar-mobile">
+      <SheetContent side="right" className="w-[220px] p-0 flex flex-col" data-testid="analysis-sidebar-mobile">
         <SheetHeader className="px-3 pt-4 pb-2 border-b border-border">
           <SheetTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider text-left">
             分析標的
