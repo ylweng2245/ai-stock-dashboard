@@ -126,9 +126,9 @@ function fmt(v: number | null | undefined, decimals = 2): string {
 
 function fmtChange(v: number | null | undefined, decimals = 2, pct = false): string {
   if (v === null || v === undefined) return "";
-  const sign = v > 0 ? "+" : "";
   const str = Math.abs(v).toLocaleString("zh-TW", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-  return `${sign === "+" ? "" : ""}${v < 0 ? "-" : sign}${str}${pct ? "%" : ""}`;
+  // No + prefix on positive values (user convention)
+  return `${v < 0 ? "-" : ""}${str}${pct ? "%" : ""}`;
 }
 
 function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boolean }) {
@@ -508,21 +508,39 @@ function MarketOverviewSection() {
         </div>
       </div>
 
-      {/* US indicators — DJIA first (guaranteed by server assembly order) */}
+      {/* US indicators — Row 1: DJIA/SP500/Nasdaq/SOX; Row 2: VIX/F&G/10Y/CPI */}
       <div>
         <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">美國市場</div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-          {isLoading
-            ? Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
-                  <Skeleton className="h-3 w-16" />
-                  <Skeleton className="h-5 w-20" />
-                  <Skeleton className="h-3 w-12" />
-                </div>
-              ))
-            : us.map((card) => (
-                <OverviewCard key={card.key} card={card} isLoading={false} />
-              ))}
+        <div className="space-y-2">
+          {/* Row 1 — Four major indices (larger cards with prominent sparklines) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {isLoading
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+                    <Skeleton className="h-3 w-16" />
+                    <Skeleton className="h-6 w-20" />
+                    <Skeleton className="h-3 w-12" />
+                    <Skeleton className="h-8 w-full" />
+                  </div>
+                ))
+              : us.slice(0, 4).map((card) => (
+                  <OverviewCard key={card.key} card={card} isLoading={false} />
+                ))}
+          </div>
+          {/* Row 2 — Risk/macro indicators (medium cards) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {isLoading
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+                    <Skeleton className="h-3 w-16" />
+                    <Skeleton className="h-5 w-20" />
+                    <Skeleton className="h-3 w-12" />
+                  </div>
+                ))
+              : us.slice(4).map((card) => (
+                  <OverviewCard key={card.key} card={card} isLoading={false} />
+                ))}
+          </div>
         </div>
       </div>
 
@@ -944,46 +962,6 @@ export default function Dashboard() {
 
       {/* ── NEW: Market Indicators Section ── */}
       <MarketOverviewSection />
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KPICard
-          title="加權指數"
-          value={twiiIdx ? twiiIdx.price.toLocaleString() : "—"}
-          change={twiiIdx?.changePercent ?? 0}
-          icon={BarChart3}
-          isLoading={isLoading}
-          isStale={twiiIdx?.isStale}
-          dataAge={twiiIdx ? formatDataAge(twiiIdx.dataTimestamp) : undefined}
-        />
-        <KPICard
-          title="台指期"
-          value={twiiIdx ? twiiIdx.price.toLocaleString() : "—"}
-          change={twiiIdx?.changePercent ?? 0}
-          icon={TrendingUp}
-          isLoading={isLoading}
-          isStale={twiiIdx?.isStale}
-          dataAge={twiiIdx ? formatDataAge(twiiIdx.dataTimestamp) : undefined}
-        />
-        <KPICard
-          title="美元/台幣"
-          value={usdtwd ? usdtwd.price.toFixed(2) : "—"}
-          change={usdtwd?.changePercent ?? 0}
-          icon={DollarSign}
-          isLoading={isLoading}
-          isStale={usdtwd?.isStale}
-          dataAge={usdtwd ? formatDataAge(usdtwd.dataTimestamp) : undefined}
-        />
-        <KPICard
-          title="S&P 500"
-          value={sp500 ? sp500.price.toLocaleString() : "—"}
-          change={sp500?.changePercent ?? 0}
-          icon={TrendingUp}
-          isLoading={isLoading}
-          isStale={sp500?.isStale}
-          dataAge={sp500 ? formatDataAge(sp500.dataTimestamp) : undefined}
-        />
-      </div>
 
       {/* Stock Lists */}
       <div className="grid lg:grid-cols-2 gap-4">
