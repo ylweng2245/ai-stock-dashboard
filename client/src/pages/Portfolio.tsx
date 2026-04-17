@@ -497,7 +497,7 @@ function HoldingRow({ row }: { row: any }) {
             <span className="font-medium">{row.symbol}</span>
             <span className="text-muted-foreground ml-1.5 text-xs">{row.name}</span>
           </div>
-          {row.quote?.isStale && <AlertCircle className="w-3.5 h-3.5 text-orange-400" title="數據可能不是最新" />}
+          {row.quote?.isStale && <AlertCircle className="w-3.5 h-3.5 text-orange-400" aria-label="數據可能不是最新" />}
         </div>
       </td>
       <td className="px-4 py-3 text-right tabular-nums">{sharesStr}</td>

@@ -153,7 +153,9 @@ export default function TechnicalAnalysis() {
     queryFn: () =>
       apiRequest("GET", `/api/history/${selectedSymbol}?market=${meta.market}&range=${range}`)
         .then((r) => r.json()),
-    staleTime: 25 * 60_000,
+    staleTime: 55_000,            // 55 秒（配合後端 60s 動態 TTL）
+    refetchInterval: 60_000,      // 盤中每 60 秒自動重新取得，確保今日 K 棒更新
+    refetchIntervalInBackground: false, // 頁面在背景時暫停（省資源）
   });
 
   // Fetch transactions for this symbol to overlay buy/sell dots
