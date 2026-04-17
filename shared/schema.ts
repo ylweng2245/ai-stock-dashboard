@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -61,3 +61,23 @@ export const watchlist = sqliteTable("watchlist", {
 export const insertWatchlistSchema = createInsertSchema(watchlist).omit({ id: true, sortOrder: true });
 export type InsertWatchlist = z.infer<typeof insertWatchlistSchema>;
 export type WatchlistItem = typeof watchlist.$inferSelect;
+
+// Historical OHLCV prices (DB-backed — avoids repeated Yahoo Finance calls per range switch)
+export const historicalPrices = sqliteTable("historical_prices", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  symbol: text("symbol").notNull(),
+  market: text("market").notNull(),   // "TW" or "US"
+  date: text("date").notNull(),        // "YYYY-MM-DD"
+  open: real("open").notNull(),
+  high: real("high").notNull(),
+  low: real("low").notNull(),
+  close: real("close").notNull(),
+  volume: integer("volume").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(), // Unix ms — last upsert time
+}, (t) => ({
+  symMarketDateIdx: uniqueIndex("hist_sym_market_date").on(t.symbol, t.market, t.date),
+}));
+
+export const insertHistoricalPriceSchema = createInsertSchema(historicalPrices).omit({ id: true });
+export type InsertHistoricalPrice = z.infer<typeof insertHistoricalPriceSchema>;
+export type HistoricalPrice = typeof historicalPrices.$inferSelect;

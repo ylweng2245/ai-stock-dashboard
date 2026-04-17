@@ -77,7 +77,7 @@ function KPICard({
                 {change.toFixed(2)}%
               </span>
               {isStale && (
-                <AlertCircle className="w-3 h-3 text-amber-400 shrink-0" aria-label="前一日收盤價" />
+                <AlertCircle className="w-3 h-3 text-muted-foreground/60 shrink-0" aria-label="數據稍舊" />
               )}
             </div>
             {dataAge && (
@@ -104,10 +104,16 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
         <div className="min-w-0">
           <div className="flex items-center gap-1">
             <span className="text-sm font-medium truncate">{stock.symbol}</span>
-            {stock.isStale && (
+            {stock.quoteStatus === "error" && (
               <AlertCircle
                 className="w-3 h-3 text-amber-400 shrink-0"
-                aria-label="前一日收盤價（今日尚未開盤或資料延遲）"
+                aria-label="資料獲取失敗（顯示緩存值）"
+              />
+            )}
+            {!stock.quoteStatus && stock.isStale && (
+              <AlertCircle
+                className="w-3 h-3 text-muted-foreground/50 shrink-0"
+                aria-label="前一日收盤價"
               />
             )}
           </div>

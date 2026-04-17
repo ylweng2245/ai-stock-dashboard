@@ -106,6 +106,12 @@ interface HistoryResponse {
   dataFrom: string;
   dataTo: string;
   dataSource: string;
+  // v2 DB-sync metadata
+  fromDatabase?: boolean;
+  fromCache?: boolean;
+  refreshAttempted?: boolean;
+  refreshSucceeded?: boolean;
+  lastStoredDate?: string;
 }
 
 const RANGE_OPTIONS = [
@@ -156,6 +162,8 @@ export default function TechnicalAnalysis() {
     staleTime: 55_000,            // 55 秒（配合後端 60s 動態 TTL）
     refetchInterval: 60_000,      // 盤中每 60 秒自動重新取得，確保今日 K 棒更新
     refetchIntervalInBackground: false, // 頁面在背景時暫停（省資源）
+    // v2: keep previous data visible while new range/symbol loads (防止切換時空白閃爍)
+    placeholderData: (prev: HistoryResponse | undefined) => prev,
   });
 
   // Fetch transactions for this symbol to overlay buy/sell dots
@@ -301,6 +309,14 @@ export default function TechnicalAnalysis() {
         <div className="flex items-center gap-2 text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-lg px-3 py-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           無法取得 {selectedSymbol} 歷史數據，請稍後重試。
+        </div>
+      )}
+
+      {/* DB fallback notice: data came from DB but live refresh failed */}
+      {!isError && data?.fromDatabase && data?.refreshAttempted && !data?.refreshSucceeded && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 border border-border rounded-lg px-3 py-2">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          已顯示稍早資料（最新資料暂時無法取得，將在下次自動重試）
         </div>
       )}
 

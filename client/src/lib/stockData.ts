@@ -24,6 +24,11 @@ export interface StockQuote {
   fetchedAt: number;       // Unix ms
   source: string;
   isStale: boolean;
+  // v2: 更精細的狀態區分
+  quoteStatus?: "fresh" | "stale" | "error"; // fresh=正常, stale=超時但有數據, error=完全無資料
+  isFallbackCache?: boolean; // true = 來自過期緩存
+  marketState?: "PRE" | "REGULAR" | "POST" | "CLOSED" | "PREPRE";
+  priceLabel?: string;
 }
 
 export interface CandleData {

@@ -13,6 +13,8 @@
 
 import https from "https";
 import { execSync } from "child_process";
+import { storage } from "./storage";
+import type { InsertHistoricalPrice } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +42,9 @@ export interface StockQuote {
   // 市場狀態與價格標籤
   marketState: "PRE" | "REGULAR" | "POST" | "CLOSED" | "PREPRE";
   priceLabel: string;      // "即時" | "盤前參考" | "盤後" | "收盤"
+  // v2: 更精細的狀態區分
+  quoteStatus: "fresh" | "stale" | "error"; // fresh=正常, stale=超時但有數據, error=完全無資料
+  isFallbackCache?: boolean; // true = 來自過期緩存（fetch失敗時）
 }
 
 export interface CandleBar {
@@ -59,6 +64,12 @@ export interface HistoryResult {
   sourceUrl: string;
   dataFrom: string;
   dataTo: string;
+  // v2: DB-backed history metadata
+  fromCache?: boolean;       // served from in-memory cache
+  fromDatabase?: boolean;    // served (at least partly) from SQLite DB
+  refreshAttempted?: boolean;// tried to fetch fresh data from Yahoo
+  refreshSucceeded?: boolean;// fresh fetch succeeded
+  lastStoredDate?: string;   // latest date stored in DB before this call
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +122,45 @@ class Semaphore {
 
 /** Max 2 concurrent Yahoo Finance history fetches (avoids 429 under sustained load) */
 const historySemaphore = new Semaphore(2);
+
+// ---------------------------------------------------------------------------
+// DB helper utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert DB HistoricalPrice rows to CandleBar array.
+ * Filters out rows with invalid OHLCV data.
+ */
+function dbRowsToBars(rows: { date: string; open: number; high: number; low: number; close: number; volume: number }[]): CandleBar[] {
+  return rows
+    .filter((r) => r.close != null && !isNaN(r.close) && r.close > 0)
+    .map((r) => ({
+      time:   r.date,
+      open:   +r.open.toFixed(2),
+      high:   +r.high.toFixed(2),
+      low:    +r.low.toFixed(2),
+      close:  +r.close.toFixed(2),
+      volume: r.volume ?? 0,
+    }));
+}
+
+/**
+ * Slice a full 2-year bar array to the requested range without hitting Yahoo Finance.
+ * Supports: "1mo" | "3mo" | "6mo" | "1y" | "2y"
+ */
+export function sliceBarsByRange(bars: CandleBar[], range: string): CandleBar[] {
+  if (!bars.length) return bars;
+  const monthsMap: Record<string, number> = {
+    "1mo":  1, "3mo":  3, "6mo":  6, "1y": 12, "2y": 24,
+  };
+  const months = monthsMap[range];
+  if (!months) return bars; // unknown range — return all
+  // Calculate cutoff date (today - N months)
+  const now = new Date();
+  const cutoff = new Date(now.getFullYear(), now.getMonth() - months, now.getDate());
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  return bars.filter((b) => b.time >= cutoffStr);
+}
 
 // ---------------------------------------------------------------------------
 // HTTP helper
@@ -360,6 +410,7 @@ function parseSparkResponse(body: string, nameMap: Map<string, string>): StockQu
     const dataTimestamp = meta.regularMarketTime ?? Math.floor(now / 1000);
     const priceLabel = marketStateLabel(marketState);
 
+    const twIsStale = isDataFromPreviousDay(dataTimestamp);
     quotes.push({
       symbol,
       name,
@@ -377,9 +428,10 @@ function parseSparkResponse(body: string, nameMap: Map<string, string>): StockQu
       fetchedAt: now,
       source: "Yahoo Finance",
       sourceUrl: `https://finance.yahoo.com/quote/${symbol}.${suffix}`,
-      isStale: isDataFromPreviousDay(dataTimestamp),
+      isStale: twIsStale,
       marketState,
       priceLabel,
+      quoteStatus: twIsStale ? "stale" : "fresh",
     });
   }
   return quotes;
@@ -473,6 +525,7 @@ async function fetchUSQuotesSpark(
         const dataTimestamp = meta.regularMarketTime ?? Math.floor(now / 1000);
         const priceLabel = marketStateLabel(marketState);
 
+        const usIsStale = isDataFromPreviousDay(dataTimestamp);
         allQuotes.push({
           symbol,
           name,
@@ -490,9 +543,10 @@ async function fetchUSQuotesSpark(
           fetchedAt: now,
           source: "Yahoo Finance",
           sourceUrl: `https://finance.yahoo.com/quote/${symbol}`,
-          isStale: isDataFromPreviousDay(dataTimestamp),
+          isStale: usIsStale,
           marketState,
           priceLabel,
+          quoteStatus: usIsStale ? "stale" : "fresh",
         });
       }
     } catch (e: any) {
@@ -678,6 +732,7 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
     if (!isNaN(d.getTime())) dataTimestamp = Math.floor(d.getTime() / 1000);
   } catch {}
 
+  const finIsStale = isDataFromPreviousDay(dataTimestamp);
   return {
     symbol: row.symbol.replace("^", "").replace("=X", ""),
     yahooSymbol: row.symbol,
@@ -697,10 +752,11 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
     source: "Perplexity Finance",
     sourceUrl: `https://perplexity.ai/finance/${row.symbol.replace("^", "")}`,
     // Stale only if data is from a previous calendar day (TPE UTC+8)
-    isStale: isDataFromPreviousDay(dataTimestamp),
+    isStale: finIsStale,
     // Finance API 不區分狀態，統一補預設値（指數用）
     marketState: "REGULAR" as StockQuote["marketState"],
     priceLabel: "即時",
+    quoteStatus: finIsStale ? "stale" : "fresh",
   };
 }
 
@@ -709,7 +765,7 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
 // Also used for TW OTC ETFs (e.g. 00719B) with .TWO suffix, since TWSE STOCK_DAY only covers listed stocks.
 // ---------------------------------------------------------------------------
 
-async function fetchYahooHistory(symbol: string, range = "3mo", yahooSuffix = ""): Promise<HistoryResult> {
+async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = ""): Promise<HistoryResult> {
   const tickerForYahoo = yahooSuffix ? `${symbol}.${yahooSuffix}` : symbol;
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(tickerForYahoo)}?interval=1d&range=${range}`;
   // Use semaphore to cap concurrent Yahoo history requests (avoids 429 under load)
@@ -724,26 +780,39 @@ async function fetchYahooHistory(symbol: string, range = "3mo", yahooSuffix = ""
 
   const bars: CandleBar[] = [];
   for (let i = 0; i < timestamps.length; i++) {
-    if (quote.close?.[i] == null) continue;
+    const close = quote.close?.[i];
+    // Filter: close must be a valid positive number
+    if (close == null || isNaN(close) || close <= 0) continue;
+    const open  = quote.open?.[i];
+    const high  = quote.high?.[i];
+    const low   = quote.low?.[i];
     bars.push({
       time: new Date(timestamps[i] * 1000).toISOString().split("T")[0],
-      open: +(quote.open?.[i] ?? quote.close[i]).toFixed(2),
-      high: +(quote.high?.[i] ?? quote.close[i]).toFixed(2),
-      low: +(quote.low?.[i] ?? quote.close[i]).toFixed(2),
-      close: +quote.close[i].toFixed(2),
+      open:   (open  != null && !isNaN(open)  && open  > 0) ? +open.toFixed(2)  : +close.toFixed(2),
+      high:   (high  != null && !isNaN(high)  && high  > 0) ? +high.toFixed(2)  : +close.toFixed(2),
+      low:    (low   != null && !isNaN(low)   && low   > 0) ? +low.toFixed(2)   : +close.toFixed(2),
+      close:  +close.toFixed(2),
       volume: quote.volume?.[i] ?? 0,
     });
   }
 
   bars.sort((a, b) => a.time.localeCompare(b.time));
-  const deduped = bars.filter((b, i) => i === 0 || b.time !== bars[i - 1].time);
+  // Deduplicate — keep last bar per date (Yahoo sometimes returns duplicates)
+  const deduped: CandleBar[] = [];
+  for (const b of bars) {
+    if (deduped.length > 0 && deduped[deduped.length - 1].time === b.time) {
+      deduped[deduped.length - 1] = b; // keep the later one
+    } else {
+      deduped.push(b);
+    }
+  }
 
   return {
     symbol,
     bars: deduped,
     fetchedAt: Date.now(),
     source: "Yahoo Finance",
-    sourceUrl: `https://finance.yahoo.com/quote/${symbol}/history`,
+    sourceUrl: `https://finance.yahoo.com/quote/${tickerForYahoo}/history`,
     dataFrom: deduped[0]?.time ?? "",
     dataTo: deduped[deduped.length - 1]?.time ?? "",
   };
@@ -825,6 +894,133 @@ async function injectTodayBar(
 }
 
 // ---------------------------------------------------------------------------
+// DB-first historical data sync
+// ---------------------------------------------------------------------------
+
+/**
+ * DB-first strategy for historical data:
+ * 1. Check DB for existing bars
+ * 2. If no DB data: fetch 2y from Yahoo, write ALL to DB
+ * 3. If DB data exists: find gap from lastStoredDate to today, fetch only the gap, upsert
+ * 4. Return DB rows sliced to the requested range
+ * 5. If Yahoo fetch fails at any point: return what we have in DB (graceful degradation)
+ *
+ * Today's incomplete bar is NOT written to DB — only injected into the API response.
+ */
+export async function getOrSyncHistoricalData(
+  symbol: string,
+  market: "TW" | "US",
+  range = "3mo"
+): Promise<HistoryResult> {
+  const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
+  const now = Date.now();
+  const todayStr = todayTPE();
+
+  // Step 1: Check what we have in DB
+  const lastStoredDate = await storage.getLatestHistoricalDate(symbol, market);
+
+  let refreshAttempted = false;
+  let refreshSucceeded = false;
+
+  if (!lastStoredDate) {
+    // No DB data at all — fetch 2 years and store everything except today's bar
+    console.log(`[getOrSyncHistoricalData] ${symbol}: no DB data, fetching 2y from Yahoo...`);
+    refreshAttempted = true;
+    try {
+      const fetched = await fetchYahooHistory(symbol, "2y", suffix);
+      // Filter out today's incomplete bar before writing to DB
+      const barsForDB = fetched.bars.filter((b) => b.time < todayStr);
+      if (barsForDB.length > 0) {
+        const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
+          symbol, market,
+          date: b.time,
+          open: b.open, high: b.high, low: b.low, close: b.close,
+          volume: b.volume,
+          updatedAt: now,
+        }));
+        await storage.upsertHistoricalPrices(rows);
+      }
+      refreshSucceeded = true;
+      console.log(`[getOrSyncHistoricalData] ${symbol}: stored ${barsForDB.length} bars to DB`);
+    } catch (e: any) {
+      console.error(`[getOrSyncHistoricalData] ${symbol}: initial fetch failed: ${e.message}`);
+      // No DB data and fetch failed — return empty result
+      return {
+        symbol, bars: [], fetchedAt: now,
+        source: "Yahoo Finance",
+        sourceUrl: `https://finance.yahoo.com/quote/${symbol}`,
+        dataFrom: "", dataTo: "",
+        fromDatabase: false, refreshAttempted: true, refreshSucceeded: false,
+        lastStoredDate: undefined,
+      };
+    }
+  } else {
+    // We have DB data — check if we need to fill a gap
+    // Gap = from (lastStoredDate + 1 day) to yesterday (don't store today's bar)
+    const yesterday = new Date(Date.now() - 24 * 3600_000 + 8 * 3600_000)
+      .toISOString().slice(0, 10);
+    if (lastStoredDate < yesterday) {
+      // There's a gap — fetch from Yahoo to fill it (still fetch 2y to get full range,
+      // then upsert only bars newer than lastStoredDate and older than today)
+      refreshAttempted = true;
+      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate} → ${yesterday}), refreshing...`);
+      try {
+        const fetched = await fetchYahooHistory(symbol, "2y", suffix);
+        const barsForDB = fetched.bars.filter(
+          (b) => b.time > lastStoredDate && b.time < todayStr
+        );
+        if (barsForDB.length > 0) {
+          const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
+            symbol, market,
+            date: b.time,
+            open: b.open, high: b.high, low: b.low, close: b.close,
+            volume: b.volume,
+            updatedAt: now,
+          }));
+          await storage.upsertHistoricalPrices(rows);
+        }
+        refreshSucceeded = true;
+        console.log(`[getOrSyncHistoricalData] ${symbol}: upserted ${barsForDB.length} new bars`);
+      } catch (e: any) {
+        // Gap fill failed, but we still have old DB data — serve it with a flag
+        console.warn(`[getOrSyncHistoricalData] ${symbol}: gap fill failed: ${e.message}, serving DB data`);
+        refreshSucceeded = false;
+      }
+    }
+    // else: DB is up to date, no refresh needed
+  }
+
+  // Step 2: Read from DB and slice to requested range
+  const dbRows = await storage.getHistoricalPrices(symbol, market);
+  const allBars = dbRowsToBars(dbRows);
+  const slicedBars = sliceBarsByRange(allBars, range);
+
+  // Step 3: Inject today's live bar (in-memory only, not written to DB)
+  const baseResult: HistoryResult = {
+    symbol,
+    bars: slicedBars,
+    fetchedAt: now,
+    source: "Yahoo Finance",
+    sourceUrl: `https://finance.yahoo.com/quote/${symbol}`,
+    dataFrom: slicedBars[0]?.time ?? "",
+    dataTo: slicedBars[slicedBars.length - 1]?.time ?? "",
+    fromDatabase: true,
+    refreshAttempted,
+    refreshSucceeded,
+    lastStoredDate: lastStoredDate ?? undefined,
+  };
+
+  const { result: withTodayBar, isLive } = await injectTodayBar(baseResult, symbol, market);
+
+  // Cache with short TTL when live bar injected
+  const cacheTtl = isLive ? QUOTE_TTL_MS : HISTORY_TTL_MS;
+  const cacheKey = `hist_${symbol}_${market}_${range}`;
+  historyCache.set(cacheKey, { data: withTodayBar, fetchedAt: now, ttl: cacheTtl });
+
+  return withTodayBar;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -881,10 +1077,18 @@ export async function getAllQuotes(
       twQuotes.forEach((q) => quoteCache.set(`${q.symbol}_TW`, { data: q, fetchedAt: Date.now() }));
     } catch (e: any) {
       errors.push(`TW quotes: ${e.message}`);
-      // Fallback: serve stale cache if available
+      // Fallback: serve stale cache if available, mark as error
       twStocks.forEach((s) => {
         const c = quoteCache.get(`${s.symbol}_TW`);
-        if (c) twQuotes.push({ ...c.data, isStale: true });
+        if (c) twQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
+        else twQuotes.push({
+          symbol: s.symbol, name: s.name, price: 0, change: 0, changePercent: 0,
+          volume: 0, high: 0, low: 0, open: 0, prevClose: 0, market: "TW",
+          currency: "TWD", dataTimestamp: 0, fetchedAt: Date.now(),
+          source: "", sourceUrl: "", isStale: true,
+          marketState: "CLOSED", priceLabel: "收盤",
+          quoteStatus: "error", isFallbackCache: false,
+        });
       });
     }
   }
@@ -903,7 +1107,7 @@ export async function getAllQuotes(
     for (const s of usStocks) {
       if (!usQuotes.find((q) => q.symbol === s.symbol)) {
         const c = quoteCache.get(`${s.symbol}_US`);
-        if (c) usQuotes.push({ ...c.data, isStale: true });
+        if (c) usQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
         else errors.push(`${s.symbol}: no data`);
       }
     }
@@ -911,7 +1115,7 @@ export async function getAllQuotes(
     errors.push(`US quotes (Yahoo Spark): ${e.message}`);
     for (const s of usStocks) {
       const c = quoteCache.get(`${s.symbol}_US`);
-      if (c) usQuotes.push({ ...c.data, isStale: true });
+      if (c) usQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
     }
   }
 
@@ -936,14 +1140,14 @@ export async function getAllQuotes(
         quoteCache.set(`idx_${key}`, { data: q, fetchedAt: Date.now() });
       } else {
         const c = quoteCache.get(`idx_${key}`);
-        if (c) indexQuotes.push({ ...c.data, isStale: true });
+        if (c) indexQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
       }
     }
   } catch (e: any) {
     errors.push(`Finance API (indices): ${e.message}`);
     for (const [key] of Object.entries(INDEX_SYMBOLS)) {
       const c = quoteCache.get(`idx_${key}`);
-      if (c) indexQuotes.push({ ...c.data, isStale: true });
+      if (c) indexQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
     }
   }
 
@@ -962,66 +1166,10 @@ export async function getHistory(
 ): Promise<HistoryResult> {
   const cacheKey = `hist_${symbol}_${market}_${range}`;
   const cached = historyCache.get(cacheKey);
-  if (isCacheValid(cached, HISTORY_TTL_MS)) return cached!.data;
+  if (isCacheValid(cached, HISTORY_TTL_MS)) return { ...cached!.data, fromCache: true };
 
-  const rangeToMonths: Record<string, number> = {
-    "1mo": 1, "3mo": 3, "6mo": 6, "1y": 12, "2y": 24,
-  };
-
-  let result: HistoryResult;
-  if (market === "TW") {
-    // Use Yahoo Finance for ALL Taiwan stocks (same source as real-time quotes).
-    // .TW suffix for TSE-listed, .TWO suffix for OTC-listed (e.g. 00719B).
-    // This ensures K-line history and live prices come from the same data source.
-    const suffix = yahooTWSuffix(symbol);
-    try {
-      result = await fetchYahooHistory(symbol, range, suffix);
-      result = {
-        ...result,
-        source: "Yahoo Finance",
-        sourceUrl: `https://finance.yahoo.com/quote/${symbol}.${suffix}/history`,
-      };
-    } catch (e: any) {
-      console.warn(`[getHistory] Yahoo Finance failed for ${symbol}.${suffix}: ${e.message}`);
-      if (suffix === "TWO") {
-        // OTC ETF: Yahoo Finance is the only reliable source — retry once after backoff
-        console.warn(`[getHistory] Retrying ${symbol}.TWO after 3s...`);
-        await sleep(3000);
-        try {
-          result = await fetchYahooHistory(symbol, range, "TWO");
-          result = { ...result, source: "Yahoo Finance", sourceUrl: `https://finance.yahoo.com/quote/${symbol}.TWO/history` };
-        } catch (e2: any) {
-          throw new Error(`Yahoo Finance unavailable for OTC ETF ${symbol}: ${e2.message}`);
-        }
-      } else {
-        // TSE stock: fallback to TWSE STOCK_DAY
-        console.warn(`[getHistory] Falling back to TWSE for ${symbol}`);
-        const months = rangeToMonths[range] ?? 3;
-        result = await fetchTWSEHistory(symbol, months);
-        // Ensure source label is correct
-        result = { ...result, source: "TWSE 臺灣證券交易所 (fallback)", sourceUrl: result.sourceUrl };
-      }
-    }
-  } else {
-    try {
-      result = await fetchYahooHistory(symbol, range);
-    } catch (e: any) {
-      // Stale cache fallback: return expired cache if fresh fetch fails
-      if (cached) {
-        console.warn(`[getHistory] US ${symbol} fetch failed, serving stale cache: ${e.message}`);
-        return { ...cached.data, source: cached.data.source + " (stale)" };
-      }
-      throw e;
-    }
-  }
-
-  // Inject today's intraday bar if market is open
-  const { result: finalResult, isLive } = await injectTodayBar(result, symbol, market);
-
-  // Use short TTL (60s) when today's live bar is injected; otherwise 30min
-  const cacheTtl = isLive ? QUOTE_TTL_MS : HISTORY_TTL_MS;
-  historyCache.set(cacheKey, { data: finalResult, fetchedAt: Date.now(), ttl: cacheTtl });
-  return finalResult;
+  // Use DB-first strategy: getOrSyncHistoricalData handles fetch, DB upsert, slicing, and today-bar injection
+  return getOrSyncHistoricalData(symbol, market, range);
 }
 
 export async function getPortfolioQuotes(
@@ -1052,14 +1200,14 @@ export async function getPortfolioQuotes(
       for (const s of usSymbols) {
         if (!results.find((r) => r.symbol === s.symbol)) {
           const cached = quoteCache.get(`${s.symbol}_US`);
-          if (cached) results.push({ ...cached.data, isStale: true, name: s.name || cached.data.name });
+          if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
         }
       }
     } catch (e: any) {
       console.error("getPortfolioQuotes US error:", e.message);
       for (const s of usSymbols) {
         const cached = quoteCache.get(`${s.symbol}_US`);
-        if (cached) results.push({ ...cached.data, isStale: true, name: s.name || cached.data.name });
+        if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
       }
     }
   }

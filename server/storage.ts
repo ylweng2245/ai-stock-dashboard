@@ -3,10 +3,11 @@ import {
   type Alert, type InsertAlert, alerts,
   type WatchlistItem, type InsertWatchlist, watchlist,
   type Transaction, type InsertTransaction, transactions,
+  type HistoricalPrice, type InsertHistoricalPrice, historicalPrices,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, asc } from "drizzle-orm";
+import { eq, asc, and, gte, lte, max, desc } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -32,6 +33,25 @@ try {
     total_cost REAL NOT NULL,
     currency TEXT NOT NULL
   )`);
+} catch {
+  // Already exists — ignore
+}
+
+// Ensure historical_prices table exists (migration for existing DBs)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS historical_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS hist_sym_market_date ON historical_prices (symbol, market, date)`);
 } catch {
   // Already exists — ignore
 }
@@ -64,6 +84,13 @@ export interface IStorage {
   removeFromWatchlist(id: number): Promise<void>;
   updateWatchlistOrder(id: number, sortOrder: number): Promise<void>;
   seedDefaultWatchlist(defaults: Array<{ symbol: string; name: string; market: string }>): Promise<void>;
+
+  // Historical Prices
+  getHistoricalPrices(symbol: string, market: string): Promise<HistoricalPrice[]>;
+  getHistoricalPricesByRange(symbol: string, market: string, fromDate: string, toDate: string): Promise<HistoricalPrice[]>;
+  getLatestHistoricalDate(symbol: string, market: string): Promise<string | null>;
+  upsertHistoricalPrices(rows: InsertHistoricalPrice[]): Promise<void>;
+  deleteHistoricalPrices(symbol: string, market: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -168,6 +195,72 @@ export class DatabaseStorage implements IStorage {
         existingKeys.add(key);
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Historical Prices
+  // ---------------------------------------------------------------------------
+
+  async getHistoricalPrices(symbol: string, market: string): Promise<HistoricalPrice[]> {
+    return db.select().from(historicalPrices)
+      .where(and(eq(historicalPrices.symbol, symbol), eq(historicalPrices.market, market)))
+      .orderBy(asc(historicalPrices.date))
+      .all();
+  }
+
+  async getHistoricalPricesByRange(
+    symbol: string,
+    market: string,
+    fromDate: string,
+    toDate: string
+  ): Promise<HistoricalPrice[]> {
+    return db.select().from(historicalPrices)
+      .where(
+        and(
+          eq(historicalPrices.symbol, symbol),
+          eq(historicalPrices.market, market),
+          gte(historicalPrices.date, fromDate),
+          lte(historicalPrices.date, toDate)
+        )
+      )
+      .orderBy(asc(historicalPrices.date))
+      .all();
+  }
+
+  async getLatestHistoricalDate(symbol: string, market: string): Promise<string | null> {
+    const row = db.select({ maxDate: max(historicalPrices.date) })
+      .from(historicalPrices)
+      .where(and(eq(historicalPrices.symbol, symbol), eq(historicalPrices.market, market)))
+      .get();
+    return row?.maxDate ?? null;
+  }
+
+  async upsertHistoricalPrices(rows: InsertHistoricalPrice[]): Promise<void> {
+    if (rows.length === 0) return;
+    // Use raw SQL for SQLite INSERT OR REPLACE for efficient upsert
+    const stmt = sqlite.prepare(`
+      INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
+      VALUES (@symbol, @market, @date, @open, @high, @low, @close, @volume, @updatedAt)
+      ON CONFLICT (symbol, market, date) DO UPDATE SET
+        open = excluded.open,
+        high = excluded.high,
+        low = excluded.low,
+        close = excluded.close,
+        volume = excluded.volume,
+        updated_at = excluded.updated_at
+    `);
+    const upsertMany = sqlite.transaction((items: InsertHistoricalPrice[]) => {
+      for (const row of items) {
+        stmt.run(row);
+      }
+    });
+    upsertMany(rows);
+  }
+
+  async deleteHistoricalPrices(symbol: string, market: string): Promise<void> {
+    db.delete(historicalPrices)
+      .where(and(eq(historicalPrices.symbol, symbol), eq(historicalPrices.market, market)))
+      .run();
   }
 }
 
