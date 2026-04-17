@@ -1,20 +1,27 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Sparkles, Send, Loader2, MessageSquare, TrendingUp, Shield, Zap } from "lucide-react";
-import { STOCK_META, ALL_SYMBOLS, type StockQuote } from "@/lib/stockData";
+import { STOCK_META, type StockQuote } from "@/lib/stockData";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
-import { useQuery } from "@tanstack/react-query";
+import { useActiveSymbol } from "@/context/ActiveSymbolContext";
+import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
+
+interface WatchlistItem {
+  id: number;
+  symbol: string;
+  name: string;
+  market: "TW" | "US";
+  sortOrder: number;
+}
 
 interface QuotesResponse {
   quotes: StockQuote[];
 }
-
-const allStockMeta = ALL_SYMBOLS.map((s) => ({ symbol: s, ...STOCK_META[s] }));
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -28,18 +35,39 @@ const quickPrompts = [
 ];
 
 export default function AIInsights() {
-  const [selectedSymbol, setSelectedSymbol] = useState("2330");
+  // ─── Global symbol state (v3) ──────────────────────────────────────────────
+  const { activeSymbol, activeMarket } = useActiveSymbol();
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // Clear messages when symbol changes
+  const [lastSymbol, setLastSymbol] = useState(activeSymbol);
+  if (activeSymbol !== lastSymbol) {
+    setLastSymbol(activeSymbol);
+    setMessages([]);
+  }
+
+  // Fetch live watchlist for meta
+  const { data: watchlist } = useQuery<WatchlistItem[]>({
+    queryKey: ["/api/watchlist"],
+    queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
+    staleTime: 30_000,
+  });
+
+  const meta = useMemo(() => {
+    const wItem = watchlist?.find((w) => w.symbol === activeSymbol);
+    if (wItem) return { name: wItem.name, market: wItem.market };
+    return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
+  }, [watchlist, activeSymbol, activeMarket]);
 
   const { data: quotesData } = useQuery<QuotesResponse>({
     queryKey: ["/api/quotes"],
     queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
     staleTime: 55_000,
   });
-  const liveQuote = quotesData?.quotes.find((q) => q.symbol === selectedSymbol);
-  const meta = STOCK_META[selectedSymbol] ?? { name: selectedSymbol, market: "TW" as const };
+  const liveQuote = quotesData?.quotes.find((q) => q.symbol === activeSymbol);
   const currentPrice = liveQuote?.price ?? 0;
   const currentChange = liveQuote?.changePercent ?? 0;
 
@@ -47,14 +75,14 @@ export default function AIInsights() {
     const text = prompt || inputValue;
     if (!text.trim() || isLoading) return;
 
-    const userMsg = `[${selectedSymbol} ${meta.name}] ${text}`;
+    const userMsg = `[${activeSymbol} ${meta.name}] ${text}`;
     setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setInputValue("");
     setIsLoading(true);
 
     try {
       const res = await apiRequest("POST", "/api/ai/chat", {
-        symbol: selectedSymbol,
+        symbol: activeSymbol,
         name: meta.name,
         price: currentPrice,
         change: currentChange,
@@ -64,7 +92,7 @@ export default function AIInsights() {
       const data = await res.json();
       setMessages((prev) => [...prev, { role: "assistant", content: data.response }]);
     } catch {
-      const fallback = `抱歉，AI 服務暫時無法連接。請稍後再試，或確認網路連線。\n\n股票：${selectedSymbol} ${meta.name}\n目前價格：${currentPrice ? (meta.market === "TW" ? "NT" : "$") + currentPrice.toLocaleString() : "載入中..."}`;
+      const fallback = `抱歉，AI 服務暫時無法連接。請稍後再試，或確認網路連線。\n\n股票：${activeSymbol} ${meta.name}\n目前價格：${currentPrice ? (meta.market === "TW" ? "NT" : "$") + currentPrice.toLocaleString() : "載入中..."}`;
       setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
     }
 
@@ -78,18 +106,8 @@ export default function AIInsights() {
           <h1 className="text-xl font-semibold">AI 智慧洞察</h1>
           <p className="text-sm text-muted-foreground mt-0.5">LLM 驅動的股票分析助手</p>
         </div>
-        <Select value={selectedSymbol} onValueChange={(v) => { setSelectedSymbol(v); setMessages([]); }}>
-          <SelectTrigger className="w-[200px]" data-testid="stock-selector-ai">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {allStockMeta.map((s) => (
-              <SelectItem key={s.symbol} value={s.symbol}>
-                {s.symbol} — {s.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Mobile: symbol picker trigger */}
+        <AnalysisSymbolSidebarMobile />
       </div>
 
       {/* Quick Actions */}
@@ -116,7 +134,7 @@ export default function AIInsights() {
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-primary" />
             <CardTitle className="text-sm font-semibold">
-              AI 分析 — {selectedSymbol} {meta.name}
+              AI 分析 — {activeSymbol} {meta.name}
               {liveQuote && (
                 <span className={cn("ml-2 text-xs font-normal", liveQuote.changePercent >= 0 ? "text-gain" : "text-loss")}>
                   {meta.market === "TW" ? "NT" : "$"}{liveQuote.price.toLocaleString()}

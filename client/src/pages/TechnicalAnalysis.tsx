@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -19,6 +19,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ComposedChart, Area,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
+import { useActiveSymbol } from "@/context/ActiveSymbolContext";
+import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
 
 // ─── Trade dot types ─────────────────────────────────────────────────────────
 interface TradeDot {
@@ -121,56 +123,40 @@ const RANGE_OPTIONS = [
   { value: "1y",  label: "1年" },
 ];
 
-interface WatchlistItem {
-  id: number;
-  symbol: string;
-  name: string;
-  market: "TW" | "US";
-  sortOrder: number;
-}
-
 export default function TechnicalAnalysis() {
-  const [selectedSymbol, setSelectedSymbol] = useState("2330");
+  // ─── Global symbol state (v3) ──────────────────────────────────────────────
+  const { activeSymbol, activeMarket } = useActiveSymbol();
   const [range, setRange] = useState("3mo");
 
-  // Fetch live watchlist from DB (same source as Dashboard)
-  const { data: watchlist } = useQuery<WatchlistItem[]>({
+  // Derive meta from watchlist (fallback to STOCK_META)
+  const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
     staleTime: 30_000,
   });
 
-  // When watchlist loads, if current symbol not in list, switch to first item
-  useEffect(() => {
-    if (!watchlist || watchlist.length === 0) return;
-    const inList = watchlist.some((w) => w.symbol === selectedSymbol);
-    if (!inList) setSelectedSymbol(watchlist[0].symbol);
-  }, [watchlist]);
-
-  // Build meta from watchlist (live), fallback to static STOCK_META
   const meta = useMemo(() => {
-    const wItem = watchlist?.find((w) => w.symbol === selectedSymbol);
+    const wItem = watchlist?.find((w) => w.symbol === activeSymbol);
     if (wItem) return { name: wItem.name, market: wItem.market };
-    return STOCK_META[selectedSymbol] ?? { name: selectedSymbol, market: "TW" as const };
-  }, [watchlist, selectedSymbol]);
+    return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
+  }, [watchlist, activeSymbol, activeMarket]);
 
   const { data, isLoading, isError, isFetching } = useQuery<HistoryResponse>({
-    queryKey: ["/api/history", selectedSymbol, meta.market, range],
+    queryKey: ["/api/history", activeSymbol, meta.market, range],
     queryFn: () =>
-      apiRequest("GET", `/api/history/${selectedSymbol}?market=${meta.market}&range=${range}`)
+      apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=${range}`)
         .then((r) => r.json()),
-    staleTime: 55_000,            // 55 秒（配合後端 60s 動態 TTL）
-    refetchInterval: 60_000,      // 盤中每 60 秒自動重新取得，確保今日 K 棒更新
-    refetchIntervalInBackground: false, // 頁面在背景時暫停（省資源）
-    // v2: keep previous data visible while new range/symbol loads (防止切換時空白閃爍)
+    staleTime: 55_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
     placeholderData: (prev: HistoryResponse | undefined) => prev,
   });
 
   // Fetch transactions for this symbol to overlay buy/sell dots
   const { data: symbolTxns } = useQuery<Transaction[]>({
-    queryKey: ["/api/transactions", selectedSymbol],
+    queryKey: ["/api/transactions", activeSymbol],
     queryFn: () =>
-      apiRequest("GET", `/api/transactions/${selectedSymbol}?market=${meta.market}`)
+      apiRequest("GET", `/api/transactions/${activeSymbol}?market=${meta.market}`)
         .then(r => r.json()),
     staleTime: 30_000,
   });
@@ -186,7 +172,6 @@ export default function TechnicalAnalysis() {
     const map = new Map<string, TradeDot>();
     if (!symbolTxns?.length) return map;
     for (const tx of symbolTxns) {
-      // When multiple trades on same day, show the latest one (or you could merge)
       map.set(tx.tradeDate, {
         date: tx.tradeDate.slice(5),
         fullDate: tx.tradeDate,
@@ -218,7 +203,6 @@ export default function TechnicalAnalysis() {
           bbUpper: bollingerData.upper[i] ?? null,
           bbMiddle: bollingerData.middle[i] ?? null,
           bbLower: bollingerData.lower[i] ?? null,
-          // Trade dot overlay: value = close price (so it appears at correct y-position)
           tradeDot: tradeInfo ? d.close : null,
           tradeInfo,
         };
@@ -237,7 +221,6 @@ export default function TechnicalAnalysis() {
   const macdSignal = lastMACD > lastSignal ? "多頭" : "空頭";
   const bbPosition = lastClose > lastBBUpper ? "超漲" : lastClose < lastBBLower ? "超跌" : "區間內";
 
-  // Thin out x-axis ticks based on data length
   const xInterval = Math.max(1, Math.floor(chartData.length / 12));
 
   return (
@@ -249,6 +232,8 @@ export default function TechnicalAnalysis() {
           <p className="text-sm text-muted-foreground mt-0.5">RSI、MACD、布林通道指標（真實歷史數據）</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Mobile: symbol picker trigger */}
+          <AnalysisSymbolSidebarMobile />
           <Select value={range} onValueChange={setRange}>
             <SelectTrigger className="w-[110px]" data-testid="range-selector">
               <SelectValue />
@@ -259,47 +244,6 @@ export default function TechnicalAnalysis() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={selectedSymbol} onValueChange={setSelectedSymbol}>
-            <SelectTrigger className="w-[200px]" data-testid="stock-selector">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(watchlist ?? []).length > 0 ? (
-                // Group by market
-                (() => {
-                  const tw = (watchlist ?? []).filter((w) => w.market === "TW");
-                  const us = (watchlist ?? []).filter((w) => w.market === "US");
-                  return (
-                    <>
-                      {tw.length > 0 && (
-                        <>
-                          <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">台股</div>
-                          {tw.map((w) => (
-                            <SelectItem key={w.symbol} value={w.symbol}>
-                              {w.symbol} — {w.name}
-                            </SelectItem>
-                          ))}
-                        </>
-                      )}
-                      {us.length > 0 && (
-                        <>
-                          <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">美股</div>
-                          {us.map((w) => (
-                            <SelectItem key={w.symbol} value={w.symbol}>
-                              {w.symbol} — {w.name}
-                            </SelectItem>
-                          ))}
-                        </>
-                      )}
-                    </>
-                  );
-                })()
-              ) : (
-                // Fallback while loading
-                <SelectItem value={selectedSymbol}>{selectedSymbol}</SelectItem>
-              )}
-            </SelectContent>
-          </Select>
           {isFetching && <RefreshCw className="w-4 h-4 text-muted-foreground animate-spin" />}
         </div>
       </div>
@@ -308,11 +252,11 @@ export default function TechnicalAnalysis() {
       {isError && (
         <div className="flex items-center gap-2 text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-lg px-3 py-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
-          無法取得 {selectedSymbol} 歷史數據，請稍後重試。
+          無法取得 {activeSymbol} 歷史數據，請稍後重試。
         </div>
       )}
 
-      {/* DB fallback notice: data came from DB but live refresh failed */}
+      {/* DB fallback notice */}
       {!isError && data?.fromDatabase && data?.refreshAttempted && !data?.refreshSucceeded && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 border border-border rounded-lg px-3 py-2">
           <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -372,7 +316,7 @@ export default function TechnicalAnalysis() {
         <CardHeader className="pb-2 pt-4 px-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-sm font-semibold">
-              {selectedSymbol} {meta.name} — 價格走勢與布林通道
+              {activeSymbol} {meta.name} — 價格走勢與布林通道
             </CardTitle>
             {data && (
               <span className="text-[11px] text-muted-foreground tabular-nums">

@@ -1,7 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -18,6 +17,8 @@ import {
   ResponsiveContainer, Cell, LineChart, Line,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
+import { useActiveSymbol } from "@/context/ActiveSymbolContext";
+import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
 
 interface WatchlistItem {
   id: number;
@@ -36,35 +37,28 @@ interface HistoryResponse {
 }
 
 export default function MLPrediction() {
-  const [selectedSymbol, setSelectedSymbol] = useState("2330");
+  // ─── Global symbol state (v3) ──────────────────────────────────────────────
+  const { activeSymbol, activeMarket } = useActiveSymbol();
   const [isRunning, setIsRunning] = useState(false);
   const [runKey, setRunKey] = useState(0);
 
-  // Fetch live watchlist from DB (same as TechnicalAnalysis)
+  // Fetch live watchlist for meta
   const { data: watchlist } = useQuery<WatchlistItem[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
     staleTime: 30_000,
   });
 
-  // When watchlist loads, if current symbol not in list, switch to first item
-  useEffect(() => {
-    if (!watchlist || watchlist.length === 0) return;
-    const inList = watchlist.some((w) => w.symbol === selectedSymbol);
-    if (!inList) setSelectedSymbol(watchlist[0].symbol);
-  }, [watchlist]);
-
-  // Build meta from watchlist (live), fallback to static STOCK_META
   const meta = useMemo(() => {
-    const wItem = watchlist?.find((w) => w.symbol === selectedSymbol);
+    const wItem = watchlist?.find((w) => w.symbol === activeSymbol);
     if (wItem) return { name: wItem.name, market: wItem.market };
-    return STOCK_META[selectedSymbol] ?? { name: selectedSymbol, market: "TW" as const };
-  }, [watchlist, selectedSymbol]);
+    return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
+  }, [watchlist, activeSymbol, activeMarket]);
 
   const { data: histData, isLoading } = useQuery<HistoryResponse>({
-    queryKey: ["/api/history", selectedSymbol, meta.market, "3mo"],
+    queryKey: ["/api/history", activeSymbol, meta.market, "3mo"],
     queryFn: () =>
-      apiRequest("GET", `/api/history/${selectedSymbol}?market=${meta.market}&range=3mo`)
+      apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=3mo`)
         .then((r) => r.json()),
     staleTime: 25 * 60_000,
   });
@@ -123,39 +117,8 @@ export default function MLPrediction() {
           <p className="text-sm text-muted-foreground mt-0.5">Random Forest 機器學習模型（基於真實歷史數據）</p>
         </div>
         <div className="flex items-center gap-3">
-          <Select value={selectedSymbol} onValueChange={setSelectedSymbol}>
-            <SelectTrigger className="w-[200px]" data-testid="stock-selector-ml">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(watchlist ?? []).length > 0 ? (() => {
-                const tw = (watchlist ?? []).filter((w) => w.market === "TW");
-                const us = (watchlist ?? []).filter((w) => w.market === "US");
-                return (
-                  <>
-                    {tw.length > 0 && (
-                      <>
-                        <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">台股</div>
-                        {tw.map((w) => (
-                          <SelectItem key={w.symbol} value={w.symbol}>{w.symbol} — {w.name}</SelectItem>
-                        ))}
-                      </>
-                    )}
-                    {us.length > 0 && (
-                      <>
-                        <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">美股</div>
-                        {us.map((w) => (
-                          <SelectItem key={w.symbol} value={w.symbol}>{w.symbol} — {w.name}</SelectItem>
-                        ))}
-                      </>
-                    )}
-                  </>
-                );
-              })() : (
-                <SelectItem value={selectedSymbol}>{selectedSymbol}</SelectItem>
-              )}
-            </SelectContent>
-          </Select>
+          {/* Mobile: symbol picker trigger */}
+          <AnalysisSymbolSidebarMobile />
           <Button
             onClick={handleRunPrediction}
             disabled={isRunning || isLoading || !prediction}
