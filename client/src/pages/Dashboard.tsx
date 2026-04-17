@@ -39,6 +39,512 @@ interface QuotesResponse {
   dataSourceUrl: string;
 }
 
+// ─── Market Overview types (matching server payload) ─────────────────────────
+
+type SignalLevel = "strong_bull" | "bull" | "neutral" | "bear" | "strong_bear";
+
+interface IndicatorCard {
+  key: string;
+  label: string;
+  value: number | null;
+  value2?: number | null;
+  meta?: string | null;
+  change?: number | null;
+  changePct?: number | null;
+  date: string | null;
+  signal: SignalLevel | null;
+  signalText: string | null;
+  sparkline: number[];
+  stale: boolean;
+}
+
+interface MarketOverviewPayload {
+  tw: IndicatorCard[];
+  us: IndicatorCard[];
+  summary: { tw: string; us: string };
+  updatedAt: string;
+}
+
+// ─── Signal badge ─────────────────────────────────────────────────────────────
+
+const SIGNAL_COLORS: Record<SignalLevel, string> = {
+  strong_bull: "bg-red-500/15 text-red-400 border-red-500/30",
+  bull: "bg-red-400/10 text-red-400 border-red-400/25",
+  neutral: "bg-muted/40 text-muted-foreground border-border",
+  bear: "bg-emerald-400/10 text-emerald-400 border-emerald-400/25",
+  strong_bear: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+};
+
+function SignalBadge({ signal, text }: { signal: SignalLevel | null; text: string | null }) {
+  if (!signal || !text) return null;
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded border font-medium tabular-nums", SIGNAL_COLORS[signal])}>
+      {text}
+    </span>
+  );
+}
+
+// ─── Sparkline ────────────────────────────────────────────────────────────────
+
+function Sparkline({ data, signal }: { data: number[]; signal: SignalLevel | null }) {
+  if (data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const w = 64, h = 24, pts = data.length;
+  const coords = data.map((v, i) => {
+    const x = (i / (pts - 1)) * w;
+    const y = h - ((v - min) / range) * (h - 2) - 1;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const polyline = coords.join(" ");
+  // Color by signal
+  const stroke =
+    signal === "strong_bull" || signal === "bull" ? "#f87171"
+    : signal === "strong_bear" || signal === "bear" ? "#34d399"
+    : "#6b7280";
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0 opacity-70">
+      <polyline
+        points={polyline}
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// ─── Indicator Card (Market Overview) ────────────────────────────────────────
+
+function fmt(v: number | null | undefined, decimals = 2): string {
+  if (v === null || v === undefined) return "—";
+  return v.toLocaleString("zh-TW", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function fmtChange(v: number | null | undefined, decimals = 2, pct = false): string {
+  if (v === null || v === undefined) return "";
+  const sign = v > 0 ? "+" : "";
+  const str = Math.abs(v).toLocaleString("zh-TW", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return `${sign === "+" ? "" : ""}${v < 0 ? "-" : sign}${str}${pct ? "%" : ""}`;
+}
+
+function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boolean }) {
+  if (isLoading) {
+    return (
+      <div className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="h-5 w-28" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+    );
+  }
+
+  const isGain = (v: number | null | undefined) => v !== null && v !== undefined && v > 0;
+  const isLoss = (v: number | null | undefined) => v !== null && v !== undefined && v < 0;
+
+  // ─── TAIEX ─────────────────────────────────────────────────────────
+  if (card.key === "taiex") {
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 0)}</span>
+          {card.changePct !== null && card.changePct !== undefined && (
+            <span className={cn("text-xs tabular-nums font-medium", isGain(card.changePct) ? "text-gain" : isLoss(card.changePct) ? "text-loss" : "text-muted-foreground")}>
+              {fmtChange(card.changePct, 2, true)}
+            </span>
+          )}
+        </div>
+        {card.value2 !== null && card.value2 !== undefined && (
+          <div className="text-[10px] text-muted-foreground mt-0.5">
+            成交值 {fmt(card.value2, 0)} 億
+          </div>
+        )}
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 成交值 ────────────────────────────────────────────────────────
+  if (card.key === "tw_volume") {
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 0)}</span>
+          <span className="text-[11px] text-muted-foreground">億</span>
+        </div>
+        <div className="mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 漲跌家數 ───────────────────────────────────────────────────────
+  if (card.key === "tw_adv_dec") {
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums text-gain">{fmt(card.value, 0)}</span>
+          <span className="text-[11px] text-muted-foreground">漲</span>
+          <span className="text-base font-semibold tabular-nums text-loss">{fmt(card.value2, 0)}</span>
+          <span className="text-[11px] text-muted-foreground">跌</span>
+        </div>
+        <div className="mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 外資買賣超 ─────────────────────────────────────────────────────
+  if (card.key === "tw_foreign_net") {
+    const v = card.value;
+    const colorClass = isGain(v) ? "text-gain" : isLoss(v) ? "text-loss" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className={cn("text-base font-semibold tabular-nums", colorClass)}>
+            {fmtChange(v, 0)}
+          </span>
+          <span className="text-[11px] text-muted-foreground">億</span>
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 融資餘額 ───────────────────────────────────────────────────────
+  if (card.key === "tw_margin") {
+    const chg = card.value2;
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 0)}</span>
+          <span className="text-[11px] text-muted-foreground">億</span>
+          {chg !== null && chg !== undefined && (
+            <span className={cn("text-xs tabular-nums ml-1", isGain(chg) ? "text-gain" : isLoss(chg) ? "text-loss" : "text-muted-foreground")}>
+              ({fmtChange(chg, 0)})
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── USD/TWD ────────────────────────────────────────────────────────
+  if (card.key === "usdtwd") {
+    const chg = card.change;
+    // TWD weakening (rate goes up) → red (bad for market)
+    const colorClass = isGain(chg) ? "text-loss" : isLoss(chg) ? "text-gain" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 3)}</span>
+          {chg !== null && chg !== undefined && chg !== 0 && (
+            <span className={cn("text-xs tabular-nums font-medium", colorClass)}>
+              {fmtChange(chg, 3)}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── DJIA / S&P500 / Nasdaq / SOX (US index with price + change%) ──
+  if (["djia", "sp500", "nasdaq", "sox"].includes(card.key)) {
+    const chgPct = card.changePct;
+    const colorClass = isGain(chgPct) ? "text-gain" : isLoss(chgPct) ? "text-loss" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 0)}</span>
+          {chgPct !== null && chgPct !== undefined && (
+            <span className={cn("text-xs tabular-nums font-medium", colorClass)}>
+              {fmtChange(chgPct, 2, true)}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── VIX ────────────────────────────────────────────────────────────
+  if (card.key === "vix") {
+    const chg = card.change;
+    // VIX going up = bearish (green = loss)
+    const colorClass = isGain(chg) ? "text-loss" : isLoss(chg) ? "text-gain" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums">{fmt(card.value, 2)}</span>
+          {chg !== null && chg !== undefined && chg !== 0 && (
+            <span className={cn("text-xs tabular-nums font-medium", colorClass)}>
+              {fmtChange(chg, 2)}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Fear & Greed ────────────────────────────────────────────────────
+  if (card.key === "fear_greed") {
+    const score = card.value ?? 0;
+    const pct = Math.min(100, Math.max(0, score));
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums">{card.value ?? "—"}</span>
+          {card.meta && (
+            <span className="text-[10px] text-muted-foreground">{card.meta}</span>
+          )}
+        </div>
+        {/* Progress bar */}
+        <div className="mt-1.5 h-1.5 bg-muted/50 rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all"
+            style={{
+              width: `${pct}%`,
+              background: pct >= 55 ? "#f87171" : pct >= 45 ? "#9ca3af" : "#34d399",
+            }}
+          />
+        </div>
+        <div className="mt-1">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── US 10Y ─────────────────────────────────────────────────────────
+  if (card.key === "us_10y") {
+    const chg = card.change;
+    // Rising yield = bearish
+    const colorClass = isGain(chg) ? "text-loss" : isLoss(chg) ? "text-gain" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums">{card.value !== null && card.value !== undefined ? `${card.value.toFixed(2)}%` : "—"}</span>
+          {chg !== null && chg !== undefined && chg !== 0 && (
+            <span className={cn("text-xs tabular-nums font-medium", colorClass)}>
+              {fmtChange(chg, 3, false)} pp
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── US CPI ─────────────────────────────────────────────────────────
+  if (card.key === "us_cpi") {
+    const chg = card.change;
+    // Rising CPI = bearish
+    const colorClass = isGain(chg) ? "text-loss" : isLoss(chg) ? "text-gain" : "text-muted-foreground";
+    return (
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-base font-semibold tabular-nums">{card.value !== null && card.value !== undefined ? `${card.value.toFixed(1)}%` : "—"}</span>
+          {chg !== null && chg !== undefined && chg !== 0 && (
+            <span className={cn("text-xs tabular-nums font-medium", colorClass)}>
+              {fmtChange(chg, 1, false)} pp
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mt-1.5">
+          <SignalBadge signal={card.signal} text={card.signalText} />
+          <Sparkline data={card.sparkline} signal={card.signal} />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── fallback generic ────────────────────────────────────────────────
+  return (
+    <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+      <div className="text-[11px] text-muted-foreground mb-1">{card.label}</div>
+      <div className="text-base font-semibold tabular-nums">{fmt(card.value)}</div>
+      <div className="mt-1"><SignalBadge signal={card.signal} text={card.signalText} /></div>
+    </div>
+  );
+}
+
+// ─── Market Overview Section ──────────────────────────────────────────────────
+
+function MarketOverviewSection() {
+  const { data, isLoading, isError, refetch, isFetching } = useQuery<MarketOverviewPayload>({
+    queryKey: ["/api/market-overview"],
+    queryFn: () => apiRequest("GET", "/api/market-overview").then((r) => r.json()),
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 4 * 60 * 1000,
+  });
+
+  const tw = data?.tw ?? [];
+  const us = data?.us ?? [];
+
+  const updatedTime = data?.updatedAt
+    ? new Date(data.updatedAt).toLocaleTimeString("zh-TW", {
+        timeZone: "Asia/Taipei",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+
+  return (
+    <div className="space-y-3" data-testid="market-overview-section">
+      {/* Section header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">市場指標</h2>
+          {updatedTime && (
+            <span className="text-[10px] text-muted-foreground tabular-nums">更新 {updatedTime}</span>
+          )}
+        </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="p-1.5 rounded hover:bg-muted/40 transition-colors disabled:opacity-50"
+          title="刷新市場指標"
+          data-testid="btn-refresh-market-overview"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5 text-muted-foreground", isFetching && "animate-spin")} />
+        </button>
+      </div>
+
+      {isError && (
+        <div className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          市場指標載入失敗，顯示最後緩存數據。
+        </div>
+      )}
+
+      {/* TW indicators */}
+      <div>
+        <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">台灣市場</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          {isLoading
+            ? Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-5 w-20" />
+                  <Skeleton className="h-3 w-12" />
+                </div>
+              ))
+            : tw.map((card) => (
+                <OverviewCard key={card.key} card={card} isLoading={false} />
+              ))}
+        </div>
+      </div>
+
+      {/* US indicators — DJIA first (guaranteed by server assembly order) */}
+      <div>
+        <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">美國市場</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {isLoading
+            ? Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-5 w-20" />
+                  <Skeleton className="h-3 w-12" />
+                </div>
+              ))
+            : us.map((card) => (
+                <OverviewCard key={card.key} card={card} isLoading={false} />
+              ))}
+        </div>
+      </div>
+
+      {/* Summary */}
+      {data?.summary && (
+        <div className="grid sm:grid-cols-2 gap-2">
+          <div className="bg-muted/20 border border-border/50 rounded-lg px-3 py-2" data-testid="summary-tw">
+            <span className="text-[10px] font-semibold text-muted-foreground mr-2">台股</span>
+            <span className="text-[11px]">{data.summary.tw}</span>
+          </div>
+          <div className="bg-muted/20 border border-border/50 rounded-lg px-3 py-2" data-testid="summary-us">
+            <span className="text-[10px] font-semibold text-muted-foreground mr-2">美股</span>
+            <span className="text-[11px]">{data.summary.us}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Existing dashboard helpers (KPICard, StockRow, WatchlistEditor…) ─────────
+
 function KPICard({
   title,
   value,
@@ -172,7 +678,7 @@ function WatchlistEditor({ market }: { market: "TW" | "US" }) {
   const [dragOverId, setDragOverId] = useState<number | null>(null);
   const dragItemId = useRef<number | null>(null);
 
-  const { data: watchlistItems = [], refetch: refetchWatchlist } = useQuery<WatchlistItem[]>({
+  const { data: watchlistItems = [] } = useQuery<WatchlistItem[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
   });
@@ -217,12 +723,10 @@ function WatchlistEditor({ market }: { market: "TW" | "US" }) {
     addMutation.mutate({ symbol: trimmedSymbol, name: trimmedName, market });
   };
 
-  // Drag handlers
   const handleDragStart = (e: React.DragEvent, id: number) => {
     dragItemId.current = id;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", String(id));
-    // Slight delay so drag image appears before opacity change
     requestAnimationFrame(() => {
       (e.target as HTMLElement).style.opacity = "0.4";
     });
@@ -312,20 +816,15 @@ function WatchlistEditor({ market }: { market: "TW" | "US" }) {
               )}
               data-testid={`watchlist-item-${item.symbol}`}
             >
-              {/* Drag handle */}
               <span className="cursor-grab active:cursor-grabbing text-muted-foreground/50 hover:text-muted-foreground shrink-0 touch-none">
                 <GripVertical className="w-4 h-4" />
               </span>
-
-              {/* Symbol + name */}
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Badge variant="outline" className="text-[10px] h-5 px-1.5 font-mono shrink-0">
                   {item.symbol}
                 </Badge>
                 <span className="text-sm truncate">{item.name}</span>
               </div>
-
-              {/* Delete — always visible */}
               <button
                 onClick={() => removeMutation.mutate(item.id)}
                 disabled={removeMutation.isPending}
@@ -374,7 +873,6 @@ export default function Dashboard() {
   data?.quotes.forEach((q) => quoteMap.set(q.symbol, q));
   data?.indices.forEach((q) => quoteMap.set(q.symbol, q));
 
-  // Build display lists sorted by watchlist sortOrder
   const watchlistMap = new Map<string, WatchlistItem>();
   watchlistItems.forEach((item) => watchlistMap.set(`${item.symbol}_${item.market}`, item));
 
@@ -443,6 +941,9 @@ export default function Dashboard() {
           部分股票取得失敗：{data.errors.join(" · ")}
         </div>
       )}
+
+      {/* ── NEW: Market Indicators Section ── */}
+      <MarketOverviewSection />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -591,7 +1092,6 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
-              {/* Taiwan stocks — sorted by changePercent, label = name */}
               {twStocks.length > 0 && (
                 <div>
                   <div className="text-[11px] font-semibold text-muted-foreground mb-2 tracking-wide">台股</div>
@@ -622,7 +1122,6 @@ export default function Dashboard() {
                   </div>
                 </div>
               )}
-              {/* US stocks — sorted by changePercent, label = symbol */}
               {usStocks.length > 0 && (
                 <div>
                   <div className="text-[11px] font-semibold text-muted-foreground mb-2 tracking-wide">美股</div>

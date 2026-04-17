@@ -4,6 +4,7 @@ import {
   type WatchlistItem, type InsertWatchlist, watchlist,
   type Transaction, type InsertTransaction, transactions,
   type HistoricalPrice, type InsertHistoricalPrice, historicalPrices,
+  type MarketIndicator, type InsertMarketIndicator, marketIndicators,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -91,6 +92,11 @@ export interface IStorage {
   getLatestHistoricalDate(symbol: string, market: string): Promise<string | null>;
   upsertHistoricalPrices(rows: InsertHistoricalPrice[]): Promise<void>;
   deleteHistoricalPrices(symbol: string, market: string): Promise<void>;
+
+  // Market Indicators
+  getIndicatorHistory(indicatorKey: string, fromDate?: string): Promise<MarketIndicator[]>;
+  getLatestIndicatorDate(indicatorKey: string): Promise<string | null>;
+  upsertIndicatorHistory(rows: InsertMarketIndicator[]): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -262,6 +268,83 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(historicalPrices.symbol, symbol), eq(historicalPrices.market, market)))
       .run();
   }
+
+  // ---------------------------------------------------------------------------
+  // Market Indicators
+  // ---------------------------------------------------------------------------
+
+  async getIndicatorHistory(indicatorKey: string, fromDate?: string): Promise<MarketIndicator[]> {
+    if (fromDate) {
+      return db.select().from(marketIndicators)
+        .where(and(eq(marketIndicators.indicatorKey, indicatorKey), gte(marketIndicators.date, fromDate)))
+        .orderBy(asc(marketIndicators.date))
+        .all();
+    }
+    return db.select().from(marketIndicators)
+      .where(eq(marketIndicators.indicatorKey, indicatorKey))
+      .orderBy(asc(marketIndicators.date))
+      .all();
+  }
+
+  async getLatestIndicatorDate(indicatorKey: string): Promise<string | null> {
+    const row = db.select({ maxDate: max(marketIndicators.date) })
+      .from(marketIndicators)
+      .where(eq(marketIndicators.indicatorKey, indicatorKey))
+      .get();
+    return row?.maxDate ?? null;
+  }
+
+  async upsertIndicatorHistory(rows: InsertMarketIndicator[]): Promise<void> {
+    if (rows.length === 0) return;
+    const stmt = sqlite.prepare(`
+      INSERT INTO market_indicators
+        (indicator_key, market, frequency, date, value, value2, meta_json, source, created_at, updated_at)
+      VALUES
+        (@indicatorKey, @market, @frequency, @date, @value, @value2, @metaJson, @source, @createdAt, @updatedAt)
+      ON CONFLICT (indicator_key, date) DO UPDATE SET
+        value = excluded.value,
+        value2 = excluded.value2,
+        meta_json = excluded.meta_json,
+        updated_at = excluded.updated_at
+    `);
+    const upsertMany = sqlite.transaction((items: InsertMarketIndicator[]) => {
+      for (const r of items) {
+        stmt.run({
+          indicatorKey: r.indicatorKey,
+          market: r.market,
+          frequency: r.frequency,
+          date: r.date,
+          value: r.value,
+          value2: r.value2 ?? null,
+          metaJson: r.metaJson ?? null,
+          source: r.source ?? "",
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        });
+      }
+    });
+    upsertMany(rows);
+  }
+}
+
+// Ensure market_indicators table + index exist (migration-safe)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS market_indicators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    indicator_key TEXT NOT NULL,
+    market TEXT NOT NULL,
+    frequency TEXT NOT NULL,
+    date TEXT NOT NULL,
+    value REAL NOT NULL,
+    value2 REAL,
+    meta_json TEXT,
+    source TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS mkt_indicator_key_date ON market_indicators (indicator_key, date)`);
+} catch {
+  // Already exists — ignore
 }
 
 export const storage = new DatabaseStorage();

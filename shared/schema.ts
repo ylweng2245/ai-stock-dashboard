@@ -81,3 +81,24 @@ export const historicalPrices = sqliteTable("historical_prices", {
 export const insertHistoricalPriceSchema = createInsertSchema(historicalPrices).omit({ id: true });
 export type InsertHistoricalPrice = z.infer<typeof insertHistoricalPriceSchema>;
 export type HistoricalPrice = typeof historicalPrices.$inferSelect;
+
+// Market overview indicators (TAIEX, VIX, US10Y, CPI, etc.)
+export const marketIndicators = sqliteTable("market_indicators", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  indicatorKey: text("indicator_key").notNull(),   // e.g. 'TAIEX', 'VIX', 'US10Y', 'US_CPI'
+  market: text("market").notNull(),                // 'TW' | 'US'
+  frequency: text("frequency").notNull(),          // 'daily' | 'monthly'
+  date: text("date").notNull(),                    // 'YYYY-MM-DD'
+  value: real("value").notNull(),                  // main value
+  value2: real("value2"),                          // optional secondary value
+  metaJson: text("meta_json"),                     // JSON string for extra fields
+  source: text("source").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (t) => ({
+  indicatorDateIdx: uniqueIndex("mkt_indicator_key_date").on(t.indicatorKey, t.date),
+}));
+
+export const insertMarketIndicatorSchema = createInsertSchema(marketIndicators).omit({ id: true });
+export type InsertMarketIndicator = z.infer<typeof insertMarketIndicatorSchema>;
+export type MarketIndicator = typeof marketIndicators.$inferSelect;

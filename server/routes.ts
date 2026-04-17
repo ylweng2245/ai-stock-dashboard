@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import { storage } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction } from "@shared/schema";
 import Anthropic from "@anthropic-ai/sdk";
+import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -457,6 +458,67 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to compute portfolio", detail: e.message });
     }
   });
+
+  // ─── Market Overview ────────────────────────────────────────────────────
+  // Cache the last assembled payload to avoid re-fetching on every request.
+  // Background refresh runs on first request and then every 5 minutes.
+  interface OverviewCacheEntry { payload: MarketOverviewPayload; fetchedAt: number; }
+  let overviewCache: OverviewCacheEntry | null = null;
+  let overviewRefreshing = false;
+
+  async function runOverviewRefresh(): Promise<void> {
+    try {
+      await refreshAllIndicators();
+      const payload = await assembleMarketOverview();
+      overviewCache = { payload, fetchedAt: Date.now() };
+    } catch (e: any) {
+      console.error("[market-overview] refresh error:", e.message);
+    } finally {
+      overviewRefreshing = false;
+    }
+  }
+
+  async function getOverviewPayload() {
+    const now = Date.now();
+    const CACHE_TTL = 5 * 60 * 1000; // 5 min
+    // Return fresh cache immediately
+    if (overviewCache && now - overviewCache.fetchedAt < CACHE_TTL) {
+      return overviewCache.payload;
+    }
+    if (!overviewRefreshing) {
+      overviewRefreshing = true;
+      // Run refresh non-blocking so first call still gets stale data quickly
+      void runOverviewRefresh();
+    }
+    // If we have any cache (even stale), return it immediately
+    if (overviewCache) return overviewCache.payload;
+    // First ever call — must wait for data
+    await new Promise<void>(resolve => {
+      const poll = setInterval(() => {
+        if (!overviewRefreshing || overviewCache !== null) {
+          clearInterval(poll);
+          resolve();
+        }
+      }, 200);
+    });
+    // TS narrows overviewCache inside async callback — cast to bypass
+    const cached = overviewCache as OverviewCacheEntry | null;
+    return cached ? cached.payload : null;
+  }
+
+  app.get("/api/market-overview", async (_req, res) => {
+    try {
+      const payload = await getOverviewPayload();
+      if (!payload) return res.status(503).json({ error: "Market data not yet available" });
+      res.json(payload);
+    } catch (e: any) {
+      console.error("[market-overview] route error:", e.message);
+      res.status(500).json({ error: "Failed to load market overview", detail: e.message });
+    }
+  });
+
+  // Warm up cache on server start (non-blocking)
+  getOverviewPayload().catch(() => {});
 
   return httpServer;
 }
