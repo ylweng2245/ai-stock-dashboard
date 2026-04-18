@@ -199,46 +199,131 @@ function IntradayChart({ indicatorKey, prevClose, height = 56 }: {
 }
 
 // ─── Bar Chart (for 外資/融資 3-month history) ───────────────────────────────
+// SVG-based dark-background bi-directional bar chart with gridlines and zero baseline
 
-function BarChart({ history, zeroBase = true }: {
+function BarChart({ history }: {
   history: Array<{ date: string; value: number }>;
-  zeroBase?: boolean;
 }) {
   if (!history || history.length < 2) return null;
+
   const last60 = history.slice(-60);
   const values = last60.map(h => h.value);
   const maxAbs = Math.max(...values.map(Math.abs), 1);
 
+  // SVG dimensions
+  const W = 300;
+  const H = 72;
+  const PADL = 32; // left padding for Y-axis labels
+  const PADR = 4;
+  const PADT = 6;
+  const PADB = 18; // bottom padding for X-axis labels
+  const chartW = W - PADL - PADR;
+  const chartH = H - PADT - PADB;
+
+  const n = last60.length;
+  const barW = Math.max(1, Math.floor((chartW / n) * 0.65));
+  const barGap = chartW / n;
+
+  // Y position mapping: 0 line is at vertical midpoint
+  const zeroY = PADT + chartH / 2;
+  const halfH = chartH / 2 - 1;
+
+  // Gridline Y values: ±1/2 of maxAbs
+  const gridLevels = [maxAbs, maxAbs / 2, 0, -maxAbs / 2, -maxAbs];
+
+  // Y-axis label formatter
+  const fmtY = (v: number) => {
+    const abs = Math.abs(v);
+    if (abs >= 100) return `${(v / 100).toFixed(0)}百`;
+    return `${v.toFixed(0)}`;
+  };
+
+  // X-axis tick positions: show ~5 evenly spaced date labels
+  const xTickIdxs: number[] = [];
+  const step = Math.max(1, Math.floor(n / 5));
+  for (let i = 0; i < n; i += step) xTickIdxs.push(i);
+  if (xTickIdxs[xTickIdxs.length - 1] !== n - 1) xTickIdxs.push(n - 1);
+
   return (
-    <div className="flex items-end gap-px h-12 w-full" style={{ minWidth: 0 }}>
-      {last60.map((h, i) => {
-        const pct = Math.abs(h.value) / maxAbs;
-        const isPos = h.value >= 0;
-        const barH = Math.max(2, Math.round(pct * 44));
-        return (
-          <div
-            key={h.date ?? i}
-            className="flex-1 flex flex-col items-center justify-end"
-            style={{ minWidth: 1 }}
-            title={`${h.date}: ${h.value >= 0 ? "" : "-"}${Math.abs(h.value).toFixed(0)}億`}
-          >
-            {/* Bar above zero: red (買超/增加) */}
-            {isPos && (
-              <div
-                className="w-full rounded-t-sm"
-                style={{ height: barH, background: "#f87171", opacity: 0.8 }}
+    <div style={{ width: "100%", minWidth: 0 }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        preserveAspectRatio="none"
+        style={{ display: "block", borderRadius: 6, background: "#0f1117" }}
+        role="img"
+        aria-label="近3個月直方圖"
+      >
+        {/* Horizontal gridlines */}
+        {gridLevels.map((lv, gi) => {
+          const y = zeroY - (lv / maxAbs) * halfH;
+          const isZero = lv === 0;
+          return (
+            <g key={gi}>
+              <line
+                x1={PADL} y1={y} x2={W - PADR} y2={y}
+                stroke={isZero ? "#6b7280" : "#1f2937"}
+                strokeWidth={isZero ? 1 : 0.5}
+                strokeDasharray={isZero ? "none" : "2,3"}
               />
-            )}
-            {/* Bar below zero: green (賣超/減少) */}
-            {!isPos && (
-              <div
-                className="w-full rounded-b-sm"
-                style={{ height: barH, background: "#34d399", opacity: 0.8 }}
-              />
-            )}
-          </div>
-        );
-      })}
+              {/* Y-axis label */}
+              <text
+                x={PADL - 3} y={y + 3}
+                textAnchor="end"
+                fontSize={6.5}
+                fill="#4b5563"
+                fontFamily="monospace"
+              >
+                {fmtY(lv)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Bars */}
+        {last60.map((h, i) => {
+          const cx = PADL + i * barGap + barGap / 2;
+          const x = cx - barW / 2;
+          const isPos = h.value >= 0;
+          const pct = Math.abs(h.value) / maxAbs;
+          const barH2 = Math.max(1, pct * halfH);
+          const color = isPos ? "#e05252" : "#34d399"; // slightly desaturated red vs green
+          const y = isPos ? zeroY - barH2 : zeroY;
+          return (
+            <rect
+              key={h.date ?? i}
+              x={x}
+              y={y}
+              width={barW}
+              height={barH2}
+              fill={color}
+              opacity={0.85}
+              rx={0.5}
+            >
+              <title>{`${h.date}: ${isPos ? "" : "-"}${Math.abs(h.value).toFixed(0)}億`}</title>
+            </rect>
+          );
+        })}
+
+        {/* X-axis date labels */}
+        {xTickIdxs.map((idx) => {
+          const cx = PADL + idx * barGap + barGap / 2;
+          const label = last60[idx]?.date?.slice(5) ?? "";
+          return (
+            <text
+              key={idx}
+              x={cx}
+              y={H - 3}
+              textAnchor="middle"
+              fontSize={6}
+              fill="#4b5563"
+              fontFamily="monospace"
+            >
+              {label}
+            </text>
+          );
+        })}
+      </svg>
     </div>
   );
 }
@@ -273,7 +358,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
   // ─── TAIEX (成交值 already merged in) ─────────────────────────────
   if (card.key === "taiex") {
     return (
-      <div className="bg-card border border-border rounded-lg p-3 col-span-2 sm:col-span-1" data-testid={`overview-card-${card.key}`}>
+      <div className="bg-card border border-border rounded-lg p-3 col-span-2 lg:col-span-2" data-testid={`overview-card-${card.key}`}>
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
           {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
@@ -320,26 +405,36 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
           <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
           {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
         </div>
-        {/* Row 1: 上漲 */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
-            <div className="w-20 shrink-0">
-              <span className="text-[10px] text-muted-foreground">漲停</span>
-              <span className="text-[10px] text-gain font-semibold ml-1">{limitUp}</span>
-              <span className="text-[10px] text-muted-foreground ml-1">上漲</span>
-              <span className="text-[11px] text-gain font-bold ml-1">{fmt(card.value, 0)}</span>
+               {/* Two-section layout: label row + value row, then bar */}
+        <div className="space-y-2">
+          {/* 上漲區塊 */}
+          <div className="flex items-center gap-3">
+            {/* Left: two-line label/value */}
+            <div className="w-24 shrink-0 space-y-0.5">
+              <div className="text-[10px] text-muted-foreground leading-none">
+                漲停&nbsp;<span className="text-gain font-semibold">{limitUp}</span>
+                <span className="mx-1 opacity-30">/</span>上漲
+              </div>
+              <div className="text-sm font-bold tabular-nums text-gain leading-tight">
+                {fmt(card.value, 0)}
+              </div>
             </div>
+            {/* Right: red progress bar */}
             <div className="flex-1 h-2 bg-muted/30 rounded-full overflow-hidden">
               <div className="h-full rounded-full bg-red-400" style={{ width: `${(advPct * 100).toFixed(1)}%` }} />
             </div>
           </div>
-          {/* Row 2: 下跌 */}
-          <div className="flex items-center gap-2">
-            <div className="w-20 shrink-0">
-              <span className="text-[10px] text-muted-foreground">跌停</span>
-              <span className="text-[10px] text-loss font-semibold ml-1">{limitDown}</span>
-              <span className="text-[10px] text-muted-foreground ml-1">下跌</span>
-              <span className="text-[11px] text-loss font-bold ml-1">{fmt(card.value2, 0)}</span>
+
+          {/* 下跌區塊 */}
+          <div className="flex items-center gap-3">
+            <div className="w-24 shrink-0 space-y-0.5">
+              <div className="text-[10px] text-muted-foreground leading-none">
+                跌停&nbsp;<span className="text-loss font-semibold">{limitDown}</span>
+                <span className="mx-1 opacity-30">/</span>下跌
+              </div>
+              <div className="text-sm font-bold tabular-nums text-loss leading-tight">
+                {fmt(card.value2, 0)}
+              </div>
             </div>
             <div className="flex-1 h-2 bg-muted/30 rounded-full overflow-hidden">
               <div className="h-full rounded-full bg-emerald-400" style={{ width: `${(decPct * 100).toFixed(1)}%` }} />
@@ -376,10 +471,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
         {card.history && card.history.length > 2 && (
           <div className="mt-2">
             <BarChart history={card.history} />
-            <div className="flex justify-between mt-0.5">
-              <span className="text-[9px] text-muted-foreground/50">{card.history[0]?.date?.slice(5)}</span>
-              <span className="text-[9px] text-muted-foreground/50">{card.history[card.history.length - 1]?.date?.slice(5)}</span>
-            </div>
+
           </div>
         )}
       </div>
@@ -412,10 +504,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
         {card.history && card.history.length > 2 && (
           <div className="mt-2">
             <BarChart history={card.history} />
-            <div className="flex justify-between mt-0.5">
-              <span className="text-[9px] text-muted-foreground/50">{card.history[0]?.date?.slice(5)}</span>
-              <span className="text-[9px] text-muted-foreground/50">{card.history[card.history.length - 1]?.date?.slice(5)}</span>
-            </div>
+
           </div>
         )}
       </div>
@@ -621,7 +710,7 @@ function MarketOverviewSection() {
       {/* TW Section — fixed order: 加權(+成交值), 漲跌家數, 外資, 融資金額, USD/TWD */}
       <div>
         <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">台灣市場</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
           {isLoading
             ? Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
