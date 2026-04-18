@@ -328,6 +328,77 @@ function BarChart({ history }: {
   );
 }
 
+
+// ─── Bar Chart Compact (for wide cards — no axis labels, max space for bars) ──
+
+function BarChartCompact({ history }: {
+  history: Array<{ date: string; value: number }>;
+}) {
+  if (!history || history.length < 2) return null;
+
+  const last65 = history.slice(-65);
+  const values = last65.map(h => h.value);
+  const maxAbs = Math.max(...values.map(Math.abs), 1);
+
+  const W = 400;
+  const H = 80;
+  const PAD = 4; // minimal padding on all sides
+  const chartW = W - PAD * 2;
+  const chartH = H - PAD * 2;
+
+  const n = last65.length;
+  const barGap = chartW / n;
+  const barW = Math.max(1.5, barGap * 0.68);
+
+  const zeroY = PAD + chartH / 2;
+  const halfH = chartH / 2 - 1;
+
+  return (
+    <div style={{ width: "100%", minWidth: 0 }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        preserveAspectRatio="none"
+        style={{ display: "block", borderRadius: 6, background: "#0f1117" }}
+        role="img"
+        aria-label="近3個月每日直方圖"
+      >
+        {/* Zero baseline */}
+        <line
+          x1={PAD} y1={zeroY} x2={W - PAD} y2={zeroY}
+          stroke="#6b7280" strokeWidth={0.8}
+        />
+        {/* Subtle grid at ±50% */}
+        {[-0.5, 0.5].map((frac, gi) => {
+          const y = zeroY - frac * halfH;
+          return (
+            <line key={gi}
+              x1={PAD} y1={y} x2={W - PAD} y2={y}
+              stroke="#1f2937" strokeWidth={0.5} strokeDasharray="2,3"
+            />
+          );
+        })}
+        {/* Bars */}
+        {last65.map((h, i) => {
+          const cx = PAD + i * barGap + barGap / 2;
+          const x = cx - barW / 2;
+          const isPos = h.value >= 0;
+          const pct = Math.abs(h.value) / maxAbs;
+          const bh = Math.max(1.5, pct * halfH);
+          const color = isPos ? "#e05252" : "#34d399";
+          const y = isPos ? zeroY - bh : zeroY;
+          return (
+            <rect key={h.date ?? i} x={x} y={y} width={barW} height={bh}
+              fill={color} opacity={0.88} rx={0.5}>
+              <title>{`${h.date}: ${isPos ? "" : "-"}${Math.abs(h.value).toFixed(0)}億`}</title>
+            </rect>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 // ─── Indicator Card (Market Overview) ────────────────────────────────────────
 
 function fmt(v: number | null | undefined, decimals = 2): string {
@@ -355,37 +426,74 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
   const isGain = (v: number | null | undefined) => v !== null && v !== undefined && v > 0;
   const isLoss = (v: number | null | undefined) => v !== null && v !== undefined && v < 0;
 
-  // ─── TAIEX (成交值 already merged in) ─────────────────────────────
+  // ─── TAIEX + breadth bar (漲跌家數併入) ──────────────────────────
   if (card.key === "taiex") {
+    // Look up adv/dec from sibling tw_adv_dec card via meta embedded in extra fields
+    // We receive adv/dec via card.extra if available, otherwise 0
+    const advDec = (card as any)._advDec as { adv: number; dec: number; limitUp: number; limitDown: number } | undefined;
+    const adv = advDec?.adv ?? 0;
+    const dec = advDec?.dec ?? 0;
+    const total = adv + dec || 1;
+    const advPct = adv / total;
+    const hasAdvDec = adv > 0 || dec > 0;
+
     return (
-      <div className="bg-card border border-border rounded-lg p-3 col-span-2 lg:col-span-2" data-testid={`overview-card-${card.key}`}>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
-          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
-        </div>
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="text-xl font-bold tabular-nums">{fmt(card.value, 0)}</span>
-          {card.changePct !== null && card.changePct !== undefined && (
-            <span className={cn("text-sm tabular-nums font-semibold", isGain(card.changePct) ? "text-gain" : isLoss(card.changePct) ? "text-loss" : "text-muted-foreground")}>
-              {fmtChange(card.changePct, 2, true)}
-            </span>
+      <div className="bg-card border border-border rounded-lg p-4" data-testid={`overview-card-${card.key}`}>
+        {/* Top row: left = main info, right = breadth */}
+        <div className="flex gap-4">
+          {/* Left: main data */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+              {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+            </div>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-xl font-bold tabular-nums">{fmt(card.value, 0)}</span>
+              {card.changePct !== null && card.changePct !== undefined && (
+                <span className={cn("text-sm tabular-nums font-semibold", isGain(card.changePct) ? "text-gain" : isLoss(card.changePct) ? "text-loss" : "text-muted-foreground")}>
+                  {fmtChange(card.changePct, 2, true)}
+                </span>
+              )}
+            </div>
+            {card.value2 !== null && card.value2 !== undefined && (
+              <div className="text-[11px] text-muted-foreground mt-0.5">
+                成交值 <span className="font-medium text-foreground">{fmt(card.value2, 0)}</span> 億
+              </div>
+            )}
+          </div>
+          {/* Right: breadth bar */}
+          {hasAdvDec && (
+            <div className="w-32 shrink-0 flex flex-col justify-center gap-1">
+              <div className="flex justify-between items-baseline">
+                <span className="text-xs font-bold tabular-nums text-gain">{fmt(adv, 0)}</span>
+                <span className="text-xs font-bold tabular-nums text-loss">{fmt(dec, 0)}</span>
+              </div>
+              {/* Breadth bar: red (adv) | green (dec) */}
+              <div className="h-2.5 w-full rounded-full overflow-hidden flex" title={`上漲 ${adv} / 下跌 ${dec}`}>
+                <div className="h-full bg-red-400" style={{ width: `${(advPct * 100).toFixed(1)}%` }} />
+                <div className="h-full bg-emerald-500 flex-1" />
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[9px] text-muted-foreground">上漲</span>
+                <span className="text-[9px] text-muted-foreground">下跌</span>
+              </div>
+            </div>
           )}
         </div>
-        {/* 成交值 row */}
-        {card.value2 !== null && card.value2 !== undefined && (
-          <div className="text-[11px] text-muted-foreground mt-0.5">
-            成交值 <span className="font-medium text-foreground">{fmt(card.value2, 0)}</span> 億
-          </div>
-        )}
         {/* Intraday chart */}
-        <div className="mt-2">
-          <IntradayChart indicatorKey="taiex" height={56} />
+        <div className="mt-3">
+          <IntradayChart indicatorKey="taiex" height={64} />
         </div>
         <div className="flex items-center justify-between mt-1.5">
           <SignalBadge signal={card.signal} text={card.signalText} />
         </div>
       </div>
     );
+  }
+
+  // ─── 漲跌家數 — REMOVED (merged into taiex card) ──────────────────
+  if (card.key === "tw_adv_dec") {
+    return null; // hidden — data is passed to taiex card via twOrdered lookup
   }
 
   // ─── 漲跌家數 (雙列 + 水平長條圖) ──────────────────────────────────
@@ -448,65 +556,75 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
     );
   }
 
-  // ─── 外資買賣超 (數值+結論+3月直方圖) ─────────────────────────────
+  // ─── 外資買賣超 — 寬型橫向卡（左1/3文字 + 右2/3圖） ──────────────
   if (card.key === "tw_foreign_net") {
     const v = card.value;
     const colorClass = isGain(v) ? "text-gain" : isLoss(v) ? "text-loss" : "text-muted-foreground";
     return (
-      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
-          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-baseline gap-1">
-            <span className={cn("text-base font-bold tabular-nums", colorClass)}>
-              {fmtChange(v, 0)}
-            </span>
-            <span className="text-[11px] text-muted-foreground">億</span>
+      <div className="bg-card border border-border rounded-lg p-4 col-span-full" data-testid={`overview-card-${card.key}`}>
+        <div className="flex gap-4 items-stretch" style={{ minHeight: 96 }}>
+          {/* Left ~1/3: label + value + signal */}
+          <div className="flex flex-col justify-between" style={{ width: "30%", minWidth: 120 }}>
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+                {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+              </div>
+              <div className="flex items-baseline gap-1 flex-wrap">
+                <span className={cn("text-base font-bold tabular-nums", colorClass)}>
+                  {fmtChange(v, 0)}
+                </span>
+                <span className="text-[11px] text-muted-foreground">億</span>
+              </div>
+            </div>
+            <SignalBadge signal={card.signal} text={card.signalText} />
           </div>
-          <SignalBadge signal={card.signal} text={card.signalText} />
-        </div>
-        {/* 3-month bar chart */}
-        {card.history && card.history.length > 2 && (
-          <div className="mt-2">
-            <BarChart history={card.history} />
-
+          {/* Right ~2/3: compact bar chart */}
+          <div className="flex-1 min-w-0 flex items-center">
+            {card.history && card.history.length > 2
+              ? <BarChartCompact history={card.history} />
+              : <div className="w-full h-20 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
+            }
           </div>
-        )}
+        </div>
       </div>
     );
   }
 
-  // ─── 融資金額 (數值+結論+3月直方圖) ───────────────────────────────
+  // ─── 融資金額 — 寬型橫向卡（左1/3文字 + 右2/3圖） ────────────────
   if (card.key === "tw_margin") {
     const chg = card.value2;
     const colorClass = isGain(chg) ? "text-gain" : isLoss(chg) ? "text-loss" : "text-muted-foreground";
     return (
-      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
-          {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-baseline gap-1 flex-wrap">
-            <span className="text-base font-bold tabular-nums">{fmt(card.value, 0)}</span>
-            <span className="text-[11px] text-muted-foreground">億</span>
-            {chg !== null && chg !== undefined && (
-              <span className={cn("text-[11px] tabular-nums ml-1", colorClass)}>
-                ({fmtChange(chg, 0)})
-              </span>
-            )}
+      <div className="bg-card border border-border rounded-lg p-4 col-span-full" data-testid={`overview-card-${card.key}`}>
+        <div className="flex gap-4 items-stretch" style={{ minHeight: 96 }}>
+          {/* Left ~1/3: label + value + signal */}
+          <div className="flex flex-col justify-between" style={{ width: "30%", minWidth: 120 }}>
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
+                {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
+              </div>
+              <div className="flex items-baseline gap-1 flex-wrap">
+                <span className="text-base font-bold tabular-nums">{fmt(card.value, 0)}</span>
+                <span className="text-[11px] text-muted-foreground">億</span>
+                {chg !== null && chg !== undefined && (
+                  <span className={cn("text-[11px] tabular-nums ml-1", colorClass)}>
+                    ({fmtChange(chg, 0)})
+                  </span>
+                )}
+              </div>
+            </div>
+            <SignalBadge signal={card.signal} text={card.signalText} />
           </div>
-          <SignalBadge signal={card.signal} text={card.signalText} />
-        </div>
-        {/* 3-month daily change bar chart */}
-        {card.history && card.history.length > 2 && (
-          <div className="mt-2">
-            <BarChart history={card.history} />
-
+          {/* Right ~2/3: compact bar chart */}
+          <div className="flex-1 min-w-0 flex items-center">
+            {card.history && card.history.length > 2
+              ? <BarChartCompact history={card.history} />
+              : <div className="w-full h-20 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
+            }
           </div>
-        )}
+        </div>
       </div>
     );
   }
@@ -707,20 +825,63 @@ function MarketOverviewSection() {
         </div>
       )}
 
-      {/* TW Section — fixed order: 加權(+成交值), 漲跌家數, 外資, 融資金額, USD/TWD */}
+      {/* TW Section — 3-row: [taiex+usdtwd], [foreign wide], [margin wide] */}
       <div>
         <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">台灣市場</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-          {isLoading
-            ? Array.from({ length: 5 }).map((_, i) => (
+        {isLoading ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {Array.from({ length: 2 }).map((_, i) => (
                 <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
-                  <Skeleton className="h-3 w-16" /><Skeleton className="h-5 w-20" /><Skeleton className="h-3 w-12" />
+                  <Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-20" /><Skeleton className="h-16 w-full" />
                 </div>
-              ))
-            : twOrdered.map((card) => (
-                <OverviewCard key={card.key} card={card} isLoading={false} />
               ))}
-        </div>
+            </div>
+            {Array.from({ length: 2 }).map((_, i) => (
+              <div key={i} className="bg-card border border-border rounded-lg p-4">
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ))}
+          </div>
+        ) : (() => {
+          // Inject _advDec data from tw_adv_dec into taiex card
+          const advDecCard = twOrdered.find(c => c.key === "tw_adv_dec");
+          let advDecData: { adv: number; dec: number; limitUp: number; limitDown: number } | undefined;
+          if (advDecCard) {
+            let limitUp = 0, limitDown = 0;
+            if (advDecCard.meta) {
+              try { const m = JSON.parse(advDecCard.meta); limitUp = m.limitUp ?? 0; limitDown = m.limitDown ?? 0; } catch { /* */ }
+            }
+            advDecData = { adv: advDecCard.value ?? 0, dec: advDecCard.value2 ?? 0, limitUp, limitDown };
+          }
+          const taiexCard = twOrdered.find(c => c.key === "taiex");
+          const usdtwdCard = twOrdered.find(c => c.key === "usdtwd");
+          const foreignCard = twOrdered.find(c => c.key === "tw_foreign_net");
+          const marginCard = twOrdered.find(c => c.key === "tw_margin");
+          const taiexWithAdv = taiexCard ? { ...taiexCard, _advDec: advDecData } : null;
+
+          return (
+            <div className="space-y-2">
+              {/* Row 1: taiex (main) + usdtwd */}
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                {taiexWithAdv && (
+                  <div className="col-span-2 sm:col-span-3">
+                    <OverviewCard card={taiexWithAdv as any} isLoading={false} />
+                  </div>
+                )}
+                {usdtwdCard && (
+                  <div className="col-span-1">
+                    <OverviewCard card={usdtwdCard} isLoading={false} />
+                  </div>
+                )}
+              </div>
+              {/* Row 2: foreign wide */}
+              {foreignCard && <OverviewCard card={foreignCard} isLoading={false} />}
+              {/* Row 3: margin wide */}
+              {marginCard && <OverviewCard card={marginCard} isLoading={false} />}
+            </div>
+          );
+        })()}
       </div>
 
       {/* US Section — Row 1: DJIA/SP500/Nasdaq/SOX (intraday), Row 2: VIX/FG/10Y/CPI */}
