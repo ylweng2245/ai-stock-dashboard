@@ -24,6 +24,26 @@ export function taiexSignal(change: number): SignalLevel {
   return "strong_bear";
 }
 
+/**
+ * Combined signal: considers both price change AND trade volume
+ * Rules:
+ *  漲 + 量大 → 強勢偏多
+ *  漲 + 量小 → 偏多（追價力道普通）
+ *  跌 + 量大 → 強勢偏空
+ *  跌 + 量小 → 偏空
+ *  平盤 + 量低 → 震盪整理(neutral)
+ */
+export function taiexCombinedSignal(changePct: number, volumeBillion: number | null): SignalLevel {
+  const volumeStrong = volumeBillion !== null && volumeBillion >= 4000;
+  const volumeWeak   = volumeBillion !== null && volumeBillion < 2000;
+
+  if (changePct >= 1.5) return volumeStrong ? "strong_bull" : "bull";
+  if (changePct >= 0.3) return volumeStrong ? "strong_bull" : volumeWeak ? "neutral" : "bull";
+  if (changePct > -0.3) return volumeWeak ? "neutral" : "neutral";
+  if (changePct > -1.5) return volumeStrong ? "strong_bear" : "bear";
+  return "strong_bear";
+}
+
 /** 成交值 (億): normal range 2000-4000 */
 export function twseVolumeSignal(billionTWD: number): SignalLevel {
   if (billionTWD >= 5000) return "strong_bull";

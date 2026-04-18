@@ -6,6 +6,7 @@ import { storage } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction } from "@shared/schema";
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
+import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -519,6 +520,43 @@ export async function registerRoutes(
 
   // Warm up cache on server start (non-blocking)
   getOverviewPayload().catch(() => {});
+
+  // ─── Intraday Chart Data (短 TTL 2-minute cache) ────────────────────────
+  // Symbol map: taiex → ^TWII, djia → ^DJI, sp500 → ^GSPC, nasdaq → ^IXIC, sox → ^SOX
+  const INTRADAY_SYMBOL_MAP: Record<string, string> = {
+    taiex: "^TWII",
+    djia:  "^DJI",
+    sp500: "^GSPC",
+    nasdaq: "^IXIC",
+    sox:   "^SOX",
+  };
+
+  interface IntraCache { result: IntradayResult; fetchedAt: number; }
+  const intradayCache = new Map<string, IntraCache>();
+  const INTRADAY_TTL = 2 * 60 * 1000; // 2 minutes
+
+  app.get("/api/intraday/:key", async (req, res) => {
+    const key = req.params.key as string;
+    const symbol = INTRADAY_SYMBOL_MAP[key];
+    if (!symbol) return res.status(404).json({ error: `Unknown intraday key: ${key}` });
+
+    const now = Date.now();
+    const cached = intradayCache.get(key);
+    if (cached && now - cached.fetchedAt < INTRADAY_TTL) {
+      return res.json(cached.result);
+    }
+
+    try {
+      const result = await fetchIntradayYahoo(symbol);
+      intradayCache.set(key, { result, fetchedAt: now });
+      res.json(result);
+    } catch (e: any) {
+      console.error(`[intraday] ${key} error:`, e.message);
+      // Return stale cache if available
+      if (cached) return res.json(cached.result);
+      res.status(503).json({ error: `Intraday data unavailable for ${key}` });
+    }
+  });
 
   return httpServer;
 }

@@ -1,8 +1,12 @@
 /**
- * marketOverviewService.ts
+ * marketOverviewService.ts  v4.2
  *
  * DB-first incremental update + data assembly for the market overview page.
- * Fetches latest data from upstream, merges into DB, then assembles the payload.
+ * v4.2 changes:
+ *  - tw_adv_dec: now stores limitUp(value3) and limitDown(value4) via metaJson
+ *  - tw_margin: renamed label to 融資金額, stores marginChange in value2
+ *  - taiexSignal: now combined with trade volume for better signal
+ *  - foreignRows & marginRows: 3-month history from fetchers stored in DB
  */
 
 import { storage } from "./storage";
@@ -23,8 +27,7 @@ import {
   fetchFearGreed,
 } from "./marketIndicatorSources";
 import {
-  taiexSignal,
-  twseVolumeSignal,
+  taiexCombinedSignal,
   foreignNetSignal,
   advDeclineSignal,
   marginSignal,
@@ -42,14 +45,10 @@ import {
 const NOW_MS = () => Date.now();
 const TODAY = () => new Date().toISOString().slice(0, 10);
 
-/** Sparkline: last N values from history rows */
 function sparkline(rows: { value: number }[], n = 30): number[] {
   return rows.slice(-n).map(r => r.value);
 }
 
-/** Safe fetch+upsert: fetches upstream, upserts new rows into DB.
- *  All fetchers take no args — they always return latest available data.
- *  We deduplicate via upsert (ON CONFLICT ... DO UPDATE). */
 async function refreshIndicator(
   key: string,
   market: "TW" | "US",
@@ -74,34 +73,38 @@ async function refreshIndicator(
   await storage.upsertIndicatorHistory(inserts);
 }
 
-/** Refresh all indicators (best-effort, non-fatal on individual failures) */
 export async function refreshAllIndicators(): Promise<void> {
   const results = await Promise.allSettled([
     // ── TW ──────────────────────────────────────────────────────────────────
     fetchTWseTaiex().then(r =>
       refreshIndicator("taiex", "TW", "daily",
         r.history.map(h => ({ date: h.date, value: h.close, value2: h.tradeValue })),
-        "TWSE MI_INDEX",
+        "TWSE FMTQIK",
       )
     ),
 
     fetchTWseAdvDecline().then(r =>
       refreshIndicator("tw_adv_dec", "TW", "daily",
-        [{ date: r.date, value: r.advancers, value2: r.decliners }],
-        "TWSE MI_INDEX data3",
+        [{
+          date: r.date,
+          value: r.advancers,
+          value2: r.decliners,
+          meta: JSON.stringify({ limitUp: r.limitUp, limitDown: r.limitDown, unchanged: r.unchanged }),
+        }],
+        "TWSE MI_INDEX tables",
       )
     ),
 
     fetchTWseForeignNet().then(r =>
       refreshIndicator("tw_foreign_net", "TW", "daily",
         r.history.map(h => ({ date: h.date, value: h.netBuySell })),
-        "TWSE T86",
+        "TWSE TWT38U",
       )
     ),
 
     fetchTWseMargin().then(r =>
       refreshIndicator("tw_margin", "TW", "daily",
-        r.history.map(h => ({ date: h.date, value: h.marginBalance })),
+        r.history.map(h => ({ date: h.date, value: h.marginBalance, value2: h.marginChange })),
         "TWSE MI_MARGN",
       )
     ),
@@ -113,7 +116,7 @@ export async function refreshAllIndicators(): Promise<void> {
       )
     ),
 
-    // ── US (DJIA first) ──────────────────────────────────────────────────────
+    // ── US ───────────────────────────────────────────────────────────────────
     fetchDJIA().then(r =>
       refreshIndicator("djia", "US", "daily",
         r.history.map(h => ({ date: h.date, value: h.close })),
@@ -149,14 +152,11 @@ export async function refreshAllIndicators(): Promise<void> {
       )
     ),
 
-    // Fear & Greed — history has value only (no label on history items)
     fetchFearGreed().then(r =>
       refreshIndicator("fear_greed", "US", "daily",
-        // Store the label in meta only for the latest point via separate upsert below
         r.history.map(h => ({ date: h.date, value: h.value })),
         "Alternative.me FNG",
       ).then(() =>
-        // Upsert latest with label in metaJson
         refreshIndicator("fear_greed", "US", "daily",
           [{ date: r.date, value: r.value, meta: r.label }],
           "Alternative.me FNG",
@@ -167,24 +167,22 @@ export async function refreshAllIndicators(): Promise<void> {
     fetchUS10Y().then(r =>
       refreshIndicator("us_10y", "US", "daily",
         r.history.map(h => ({ date: h.date, value: h.yield })),
-        "FRED DGS10",
+        "Yahoo Finance ^TNX",
       )
     ),
 
-    // CPI monthly — skip if current month already stored
     (async () => {
       const lastCpi = await storage.getLatestIndicatorDate("us_cpi");
       const curMonth = TODAY().slice(0, 7);
-      if (lastCpi && lastCpi.slice(0, 7) >= curMonth) return; // already fresh
+      if (lastCpi && lastCpi.slice(0, 7) >= curMonth) return;
       const r = await fetchUSCPI();
       await refreshIndicator("us_cpi", "US", "monthly",
         r.history.map(h => ({ date: h.date, value: h.yoy })),
-        "FRED CPIAUCSL",
+        "BLS CUUR0000SA0",
       );
     })(),
   ]);
 
-  // Log failures (non-fatal)
   results.forEach((r, i) => {
     if (r.status === "rejected") {
       console.warn(`[marketOverview] refresh task ${i} failed:`, r.reason?.message ?? r.reason);
@@ -192,21 +190,22 @@ export async function refreshAllIndicators(): Promise<void> {
   });
 }
 
-// ─── Assemble the full market overview payload ──────────────────────────────
+// ─── Payload types ──────────────────────────────────────────────────────────
 
 export interface IndicatorCard {
   key: string;
   label: string;
   value: number | null;
   value2?: number | null;
-  meta?: string | null;       // e.g. Fear&Greed label
-  change?: number | null;     // absolute change
-  changePct?: number | null;  // % change
+  meta?: string | null;
+  change?: number | null;
+  changePct?: number | null;
   date: string | null;
   signal: SignalLevel | null;
   signalText: string | null;
   sparkline: number[];
-  stale: boolean;             // true if data is > 3 trading days old
+  history?: Array<{ date: string; value: number }>;  // for bar charts
+  stale: boolean;
 }
 
 export interface MarketOverviewPayload {
@@ -219,7 +218,7 @@ export interface MarketOverviewPayload {
 function isStale(dateStr: string | null): boolean {
   if (!dateStr) return true;
   const diff = Date.now() - new Date(dateStr).getTime();
-  return diff > 3 * 24 * 60 * 60 * 1000; // 3 days
+  return diff > 3 * 24 * 60 * 60 * 1000;
 }
 
 function lastTwo(rows: { date: string; value: number; value2?: number | null; metaJson?: string | null }[]) {
@@ -229,7 +228,6 @@ function lastTwo(rows: { date: string; value: number; value2?: number | null; me
 }
 
 export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
-  // Load histories in parallel
   const [
     taiexRows, advDecRows, foreignRows, marginRows, usdtwdRows,
     djiaRows, sp500Rows, nasdaqRows, soxRows, vixRows,
@@ -250,18 +248,21 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     storage.getIndicatorHistory("us_cpi"),
   ]);
 
-  // ─── TW cards ────────────────────────────────────────────────────────────
+  // ─── TW cards ──────────────────────────────────────────────────────────────
 
-  // TAIEX
+  // TAIEX — signal uses both price change AND trade volume
   const { last: tLast, prev: tPrev } = lastTwo(taiexRows);
   const taiexChangePct = tLast && tPrev ? ((tLast.value - tPrev.value) / tPrev.value) * 100 : null;
-  const taiexSig = taiexChangePct !== null ? taiexSignal(taiexChangePct) : null;
+  const tradeValue = tLast?.value2 ?? null;  // 億元
+  const taiexSig = taiexChangePct !== null
+    ? taiexCombinedSignal(taiexChangePct, tradeValue)
+    : null;
 
   const taiexCard: IndicatorCard = {
     key: "taiex",
     label: "加權指數",
     value: tLast?.value ?? null,
-    value2: tLast?.value2 ?? null,
+    value2: tradeValue,          // 成交值 億元 (shown inside taiex card)
     date: tLast?.date ?? null,
     change: tLast && tPrev ? tLast.value - tPrev.value : null,
     changePct: taiexChangePct,
@@ -271,28 +272,24 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     stale: isStale(tLast?.date ?? null),
   };
 
-  // 成交值 (value2 of taiex = tradeValue in 億 TWD)
-  const twVolume = tLast?.value2 ?? null;
-  const twVolumeSig = twVolume !== null ? twseVolumeSignal(twVolume) : null;
-  const volumeCard: IndicatorCard = {
-    key: "tw_volume",
-    label: "成交值",
-    value: twVolume,
-    date: tLast?.date ?? null,
-    signal: twVolumeSig,
-    signalText: twVolumeSig ? signalText(twVolumeSig) : null,
-    sparkline: [],
-    stale: isStale(tLast?.date ?? null),
-  };
-
-  // 漲跌家數
+  // 漲跌家數 — value=advancers, value2=decliners, meta has limitUp/limitDown/unchanged
   const { last: adLast } = lastTwo(advDecRows);
+  let limitUp = 0, limitDown = 0, unchanged = 0;
+  if (adLast?.metaJson) {
+    try {
+      const m = JSON.parse(adLast.metaJson);
+      limitUp = m.limitUp ?? 0;
+      limitDown = m.limitDown ?? 0;
+      unchanged = m.unchanged ?? 0;
+    } catch { /* ignore */ }
+  }
   const adSig = adLast ? advDeclineSignal(adLast.value, adLast.value2 ?? 0) : null;
   const advDecCard: IndicatorCard = {
     key: "tw_adv_dec",
     label: "漲跌家數",
-    value: adLast?.value ?? null,
-    value2: adLast?.value2 ?? null,
+    value: adLast?.value ?? null,       // 上漲
+    value2: adLast?.value2 ?? null,     // 下跌
+    meta: adLast?.metaJson ?? null,     // JSON: {limitUp, limitDown, unchanged}
     date: adLast?.date ?? null,
     signal: adSig,
     signalText: adSig ? signalText(adSig) : null,
@@ -300,7 +297,7 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     stale: isStale(adLast?.date ?? null),
   };
 
-  // 外資買賣超
+  // 外資買賣超 — history for bar chart
   const { last: fLast } = lastTwo(foreignRows);
   const fSig = fLast ? foreignNetSignal(fLast.value) : null;
   const foreignCard: IndicatorCard = {
@@ -311,22 +308,26 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     signal: fSig,
     signalText: fSig ? signalText(fSig) : null,
     sparkline: sparkline(foreignRows),
+    history: foreignRows.slice(-65).map(r => ({ date: r.date, value: r.value })),
     stale: isStale(fLast?.date ?? null),
   };
 
-  // 融資餘額 — value = marginBalance, value2 = marginChange (computed from consecutive rows)
+  // 融資金額 — value=balance, value2=change
   const { last: mLast, prev: mPrev } = lastTwo(marginRows);
-  const marginChange = mLast && mPrev ? mLast.value - mPrev.value : null;
+  const marginChange = mLast?.value2 !== null && mLast?.value2 !== undefined
+    ? mLast.value2
+    : (mLast && mPrev ? mLast.value - mPrev.value : null);
   const mSig = marginChange !== null ? marginSignal(marginChange) : null;
   const marginCard: IndicatorCard = {
     key: "tw_margin",
-    label: "融資餘額",
+    label: "融資金額",        // v4.2: renamed from 融資餘額
     value: mLast?.value ?? null,
     value2: marginChange,
     date: mLast?.date ?? null,
     signal: mSig,
     signalText: mSig ? signalText(mSig) : null,
     sparkline: sparkline(marginRows),
+    history: marginRows.slice(-65).map(r => ({ date: r.date, value: r.value2 ?? 0 })), // daily change for bar chart
     stale: isStale(mLast?.date ?? null),
   };
 
@@ -345,82 +346,38 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     stale: isStale(uLast?.date ?? null),
   };
 
-  // ─── US cards (DJIA first) ────────────────────────────────────────────────
+  // ─── US cards ──────────────────────────────────────────────────────────────
 
-  // DJIA
-  const { last: djLast, prev: djPrev } = lastTwo(djiaRows);
-  const djChangePct = djLast && djPrev ? ((djLast.value - djPrev.value) / djPrev.value) * 100 : null;
-  const djSig = djChangePct !== null ? usIndexSignal(djChangePct) : null;
-  const djiaCard: IndicatorCard = {
-    key: "djia",
-    label: "道瓊工業",
-    value: djLast?.value ?? null,
-    change: djLast && djPrev ? djLast.value - djPrev.value : null,
-    changePct: djChangePct,
-    date: djLast?.date ?? null,
-    signal: djSig,
-    signalText: djSig ? signalText(djSig) : null,
-    sparkline: sparkline(djiaRows),
-    stale: isStale(djLast?.date ?? null),
+  const makeIndexCard = (
+    key: string, label: string,
+    rows: { date: string; value: number; value2?: number | null; metaJson?: string | null }[],
+  ): IndicatorCard => {
+    const { last, prev } = lastTwo(rows);
+    const changePct = last && prev ? ((last.value - prev.value) / prev.value) * 100 : null;
+    const sig = changePct !== null ? usIndexSignal(changePct) : null;
+    return {
+      key, label,
+      value: last?.value ?? null,
+      change: last && prev ? last.value - prev.value : null,
+      changePct,
+      date: last?.date ?? null,
+      signal: sig,
+      signalText: sig ? signalText(sig) : null,
+      sparkline: sparkline(rows),
+      stale: isStale(last?.date ?? null),
+    };
   };
 
-  // S&P500
-  const { last: spLast, prev: spPrev } = lastTwo(sp500Rows);
-  const spChangePct = spLast && spPrev ? ((spLast.value - spPrev.value) / spPrev.value) * 100 : null;
-  const spSig = spChangePct !== null ? usIndexSignal(spChangePct) : null;
-  const sp500Card: IndicatorCard = {
-    key: "sp500",
-    label: "S&P 500",
-    value: spLast?.value ?? null,
-    change: spLast && spPrev ? spLast.value - spPrev.value : null,
-    changePct: spChangePct,
-    date: spLast?.date ?? null,
-    signal: spSig,
-    signalText: spSig ? signalText(spSig) : null,
-    sparkline: sparkline(sp500Rows),
-    stale: isStale(spLast?.date ?? null),
-  };
-
-  // Nasdaq
-  const { last: nqLast, prev: nqPrev } = lastTwo(nasdaqRows);
-  const nqChangePct = nqLast && nqPrev ? ((nqLast.value - nqPrev.value) / nqPrev.value) * 100 : null;
-  const nqSig = nqChangePct !== null ? usIndexSignal(nqChangePct) : null;
-  const nasdaqCard: IndicatorCard = {
-    key: "nasdaq",
-    label: "Nasdaq",
-    value: nqLast?.value ?? null,
-    change: nqLast && nqPrev ? nqLast.value - nqPrev.value : null,
-    changePct: nqChangePct,
-    date: nqLast?.date ?? null,
-    signal: nqSig,
-    signalText: nqSig ? signalText(nqSig) : null,
-    sparkline: sparkline(nasdaqRows),
-    stale: isStale(nqLast?.date ?? null),
-  };
-
-  // SOX
-  const { last: soxLast, prev: soxPrev } = lastTwo(soxRows);
-  const soxChangePct = soxLast && soxPrev ? ((soxLast.value - soxPrev.value) / soxPrev.value) * 100 : null;
-  const soxSig = soxChangePct !== null ? usIndexSignal(soxChangePct) : null;
-  const soxCard: IndicatorCard = {
-    key: "sox",
-    label: "費城半導體",
-    value: soxLast?.value ?? null,
-    change: soxLast && soxPrev ? soxLast.value - soxPrev.value : null,
-    changePct: soxChangePct,
-    date: soxLast?.date ?? null,
-    signal: soxSig,
-    signalText: soxSig ? signalText(soxSig) : null,
-    sparkline: sparkline(soxRows),
-    stale: isStale(soxLast?.date ?? null),
-  };
+  const djiaCard  = makeIndexCard("djia",   "道瓊工業",   djiaRows);
+  const sp500Card = makeIndexCard("sp500",  "S&P 500",    sp500Rows);
+  const nasdaqCard = makeIndexCard("nasdaq", "Nasdaq",    nasdaqRows);
+  const soxCard   = makeIndexCard("sox",    "費城半導體", soxRows);
 
   // VIX
   const { last: vixLast, prev: vixPrev } = lastTwo(vixRows);
   const vixSig = vixLast ? vixSignal(vixLast.value) : null;
   const vixCard: IndicatorCard = {
-    key: "vix",
-    label: "VIX 恐慌指數",
+    key: "vix", label: "VIX 恐慌指數",
     value: vixLast?.value ?? null,
     change: vixLast && vixPrev ? vixLast.value - vixPrev.value : null,
     date: vixLast?.date ?? null,
@@ -434,8 +391,7 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   const { last: fgLast } = lastTwo(fgRows);
   const fgSig = fgLast ? fearGreedSignal(fgLast.value) : null;
   const fgCard: IndicatorCard = {
-    key: "fear_greed",
-    label: "恐懼貪婪指數",
+    key: "fear_greed", label: "恐懼貪婪指數",
     value: fgLast?.value ?? null,
     meta: fgLast?.metaJson ?? null,
     date: fgLast?.date ?? null,
@@ -449,8 +405,7 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   const { last: y10Last, prev: y10Prev } = lastTwo(us10yRows);
   const y10Sig = y10Last ? us10YSignal(y10Last.value) : null;
   const us10yCard: IndicatorCard = {
-    key: "us_10y",
-    label: "美10年期公債",
+    key: "us_10y", label: "美10年期公債",
     value: y10Last?.value ?? null,
     change: y10Last && y10Prev ? y10Last.value - y10Prev.value : null,
     date: y10Last?.date ?? null,
@@ -464,8 +419,7 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   const { last: cpiLast, prev: cpiPrev } = lastTwo(cpiRows);
   const cpiSig = cpiLast ? usCpiSignal(cpiLast.value) : null;
   const cpiCard: IndicatorCard = {
-    key: "us_cpi",
-    label: "美國 CPI (YoY)",
+    key: "us_cpi", label: "美國 CPI (YoY)",
     value: cpiLast?.value ?? null,
     change: cpiLast && cpiPrev ? cpiLast.value - cpiPrev.value : null,
     date: cpiLast?.date ?? null,
@@ -475,32 +429,15 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     stale: isStale(cpiLast?.date ?? null),
   };
 
-  // ─── Summary ─────────────────────────────────────────────────────────────
-  const twSignals = [
-    taiexCard.signal,
-    twVolumeSig,
-    fSig,
-    adSig,
-    mSig,
-    usdtwdSig,
-  ].filter((s): s is SignalLevel => s !== null);
-
-  const usSignals = [
-    djSig,
-    spSig,
-    nqSig,
-    soxSig,
-    vixSig,
-    fgSig,
-    y10Sig,
-    cpiSig,
-  ].filter((s): s is SignalLevel => s !== null);
-
+  // ─── Summary ───────────────────────────────────────────────────────────────
+  const twSignals = [taiexSig, fSig, adSig, mSig, usdtwdSig].filter((s): s is SignalLevel => s !== null);
+  const usSignals = [djiaCard.signal, sp500Card.signal, nasdaqCard.signal, soxCard.signal,
+                     vixSig, fgSig, y10Sig, cpiSig].filter((s): s is SignalLevel => s !== null);
   const summary = generateSummary(twSignals, usSignals);
 
   return {
-    tw: [taiexCard, volumeCard, foreignCard, advDecCard, marginCard, usdtwdCard],
-    // US order: DJIA first, then SP500, Nasdaq, SOX, VIX, F&G, 10Y, CPI
+    // TW order: taiex(含成交值), 漲跌家數, 外資買賣超, 融資金額, USD/TWD
+    tw: [taiexCard, advDecCard, foreignCard, marginCard, usdtwdCard],
     us: [djiaCard, sp500Card, nasdaqCard, soxCard, vixCard, fgCard, us10yCard, cpiCard],
     summary,
     updatedAt: new Date().toISOString(),
