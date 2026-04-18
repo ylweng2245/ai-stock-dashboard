@@ -341,8 +341,8 @@ function BarChartCompact({ history }: {
   const maxAbs = Math.max(...values.map(Math.abs), 1);
 
   const W = 400;
-  const H = 80;
-  const PAD = 4; // minimal padding on all sides
+  const H = 68;
+  const PAD = 3; // minimal padding on all sides
   const chartW = W - PAD * 2;
   const chartH = H - PAD * 2;
 
@@ -438,7 +438,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
     const hasAdvDec = adv > 0 || dec > 0;
 
     return (
-      <div className="bg-card border border-border rounded-lg p-4" data-testid={`overview-card-${card.key}`}>
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
         {/* Top row: left = main info, right = breadth */}
         <div className="flex gap-4">
           {/* Left: main data */}
@@ -482,7 +482,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
         </div>
         {/* Intraday chart */}
         <div className="mt-3">
-          <IntradayChart indicatorKey="taiex" height={64} />
+          <IntradayChart indicatorKey="taiex" height={48} />
         </div>
         <div className="flex items-center justify-between mt-1.5">
           <SignalBadge signal={card.signal} text={card.signalText} />
@@ -561,12 +561,12 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
     const v = card.value;
     const colorClass = isGain(v) ? "text-gain" : isLoss(v) ? "text-loss" : "text-muted-foreground";
     return (
-      <div className="bg-card border border-border rounded-lg p-4 col-span-full" data-testid={`overview-card-${card.key}`}>
-        <div className="flex gap-4 items-stretch" style={{ minHeight: 96 }}>
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex gap-3 items-stretch" style={{ minHeight: 72 }}>
           {/* Left ~1/3: label + value + signal */}
-          <div className="flex flex-col justify-between" style={{ width: "30%", minWidth: 120 }}>
+          <div className="flex flex-col justify-between" style={{ width: "32%", minWidth: 100 }}>
             <div>
-              <div className="flex items-center gap-1.5 mb-1">
+              <div className="flex items-center gap-1 mb-0.5">
                 <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
                 {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
               </div>
@@ -583,7 +583,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
           <div className="flex-1 min-w-0 flex items-center">
             {card.history && card.history.length > 2
               ? <BarChartCompact history={card.history} />
-              : <div className="w-full h-20 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
+              : <div className="w-full h-16 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
             }
           </div>
         </div>
@@ -596,12 +596,12 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
     const chg = card.value2;
     const colorClass = isGain(chg) ? "text-gain" : isLoss(chg) ? "text-loss" : "text-muted-foreground";
     return (
-      <div className="bg-card border border-border rounded-lg p-4 col-span-full" data-testid={`overview-card-${card.key}`}>
-        <div className="flex gap-4 items-stretch" style={{ minHeight: 96 }}>
+      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+        <div className="flex gap-3 items-stretch" style={{ minHeight: 72 }}>
           {/* Left ~1/3: label + value + signal */}
-          <div className="flex flex-col justify-between" style={{ width: "30%", minWidth: 120 }}>
+          <div className="flex flex-col justify-between" style={{ width: "32%", minWidth: 100 }}>
             <div>
-              <div className="flex items-center gap-1.5 mb-1">
+              <div className="flex items-center gap-1 mb-0.5">
                 <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
                 {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
               </div>
@@ -621,7 +621,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
           <div className="flex-1 min-w-0 flex items-center">
             {card.history && card.history.length > 2
               ? <BarChartCompact history={card.history} />
-              : <div className="w-full h-20 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
+              : <div className="w-full h-16 rounded-md bg-muted/20 flex items-center justify-center"><span className="text-[10px] text-muted-foreground">資料載入中</span></div>
             }
           </div>
         </div>
@@ -825,26 +825,19 @@ function MarketOverviewSection() {
         </div>
       )}
 
-      {/* TW Section — 3-row: [taiex+usdtwd], [foreign wide], [margin wide] */}
+      {/* TW Section — desktop single-row: [taiex 2/5] [foreign+margin 2/5] [usdtwd 1/5] */}
       <div>
         <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">台灣市場</div>
         {isLoading ? (
-          <div className="space-y-2">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {Array.from({ length: 2 }).map((_, i) => (
-                <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
-                  <Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-20" /><Skeleton className="h-16 w-full" />
-                </div>
-              ))}
-            </div>
-            {Array.from({ length: 2 }).map((_, i) => (
-              <div key={i} className="bg-card border border-border rounded-lg p-4">
-                <Skeleton className="h-24 w-full" />
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 8 }}>
+            {[1, 2, 3].map((_, i) => (
+              <div key={i} className="bg-card border border-border rounded-lg p-3 space-y-1.5">
+                <Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-20" /><Skeleton className="h-16 w-full" />
               </div>
             ))}
           </div>
         ) : (() => {
-          // Inject _advDec data from tw_adv_dec into taiex card
+          // Build card map and inject _advDec into taiex
           const advDecCard = twOrdered.find(c => c.key === "tw_adv_dec");
           let advDecData: { adv: number; dec: number; limitUp: number; limitDown: number } | undefined;
           if (advDecCard) {
@@ -861,24 +854,32 @@ function MarketOverviewSection() {
           const taiexWithAdv = taiexCard ? { ...taiexCard, _advDec: advDecData } : null;
 
           return (
-            <div className="space-y-2">
-              {/* Row 1: taiex (main) + usdtwd */}
-              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                {taiexWithAdv && (
-                  <div className="col-span-2 sm:col-span-3">
-                    <OverviewCard card={taiexWithAdv as any} isLoading={false} />
+            /* Desktop-first: 2fr 2fr 1fr single row. On small screens stacks to 1 column */
+            <div style={{ display: "grid", gap: 8 }}
+              className="tw-market-grid">
+              {/* Col 1 (2/5): taiex main card */}
+              {taiexWithAdv && (
+                <div className="flex flex-col">
+                  <OverviewCard card={taiexWithAdv as any} isLoading={false} />
+                </div>
+              )}
+
+              {/* Col 2 (2/5): foreign + margin stacked, equal height */}
+              <div className="flex flex-col gap-2" style={{ minWidth: 0 }}>
+                {foreignCard && (
+                  <div className="flex-1 flex flex-col min-h-0">
+                    <OverviewCard card={foreignCard} isLoading={false} />
                   </div>
                 )}
-                {usdtwdCard && (
-                  <div className="col-span-1">
-                    <OverviewCard card={usdtwdCard} isLoading={false} />
+                {marginCard && (
+                  <div className="flex-1 flex flex-col min-h-0">
+                    <OverviewCard card={marginCard} isLoading={false} />
                   </div>
                 )}
               </div>
-              {/* Row 2: foreign wide */}
-              {foreignCard && <OverviewCard card={foreignCard} isLoading={false} />}
-              {/* Row 3: margin wide */}
-              {marginCard && <OverviewCard card={marginCard} isLoading={false} />}
+
+              {/* Col 3 (1/5): usdtwd */}
+              {usdtwdCard && <OverviewCard card={usdtwdCard} isLoading={false} />}
             </div>
           );
         })()}

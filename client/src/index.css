@@ -238,3 +238,20 @@
     inset: -1px;
   }
 }
+
+/* ── v4.5: TW market grid — desktop-first 2fr 2fr 1fr ── */
+.tw-market-grid {
+  grid-template-columns: 1fr; /* mobile: single column */
+}
+
+@media (min-width: 1024px) {
+  .tw-market-grid {
+    grid-template-columns: 2fr 2fr 1fr; /* desktop: fixed 2/5 2/5 1/5 */
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1023px) {
+  .tw-market-grid {
+    grid-template-columns: 1fr 1fr; /* tablet: 2 columns */
+  }
+}
