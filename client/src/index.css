@@ -255,3 +255,8 @@
     grid-template-columns: 1fr 1fr; /* tablet: 2 columns */
   }
 }
+
+/* v4.6: stretch grid children to same row height */
+.tw-market-grid--stretch {
+  align-items: stretch;
+}

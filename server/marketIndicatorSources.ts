@@ -428,11 +428,18 @@ export async function fetchUSDTWD(): Promise<{
   change: number;
   changePct: number;
   history: Array<{ date: string; rate: number }>;
+  yearAvg: number;
 }> {
-  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=USDTWD%3DX&range=3mo&interval=1d`;
-  const data = await fetchWithRetry(url, YF_HEADERS);
+  // Fetch 3mo for the chart + 1y for annual average in parallel
+  const url3mo = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=USDTWD%3DX&range=3mo&interval=1d`;
+  const url1y  = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=USDTWD%3DX&range=1y&interval=1d`;
 
-  const result = data?.spark?.result?.[0]?.response?.[0];
+  const [data3mo, data1y] = await Promise.all([
+    fetchWithRetry(url3mo, YF_HEADERS),
+    fetchWithRetry(url1y,  YF_HEADERS).catch(() => null),
+  ]);
+
+  const result = data3mo?.spark?.result?.[0]?.response?.[0];
   if (!result) throw new Error("Yahoo USDTWD no data");
 
   const timestamps: number[] = result.timestamp ?? [];
@@ -454,12 +461,26 @@ export async function fetchUSDTWD(): Promise<{
     history.push({ date: today, rate: currentPrice });
   }
 
+  // Compute 1-year average from 1y history (fallback: use 3mo if 1y fails)
+  let yearAvg = 0;
+  const result1y = data1y?.spark?.result?.[0]?.response?.[0];
+  const closes1y: number[] = result1y?.indicators?.quote?.[0]?.close ?? [];
+  const valid1y = closes1y.filter((v: number) => v > 0);
+  if (valid1y.length > 0) {
+    yearAvg = valid1y.reduce((a: number, b: number) => a + b, 0) / valid1y.length;
+  } else {
+    // Fallback: use 3mo average
+    const valid3mo = history.map(h => h.rate).filter(v => v > 0);
+    yearAvg = valid3mo.length > 0 ? valid3mo.reduce((a, b) => a + b, 0) / valid3mo.length : currentPrice;
+  }
+
   return {
     date: today,
     rate: currentPrice,
     change: currentPrice - prevClose,
     changePct: prevClose > 0 ? ((currentPrice - prevClose) / prevClose) * 100 : 0,
     history,
+    yearAvg: Math.round(yearAvg * 1000) / 1000,
   };
 }
 
@@ -568,7 +589,7 @@ export async function fetchSP500(): Promise<IndexResult>   { return fetchYahooIn
 export async function fetchNasdaq(): Promise<IndexResult>  { return fetchYahooIndex("^IXIC"); }
 export async function fetchSOX(): Promise<IndexResult>     { return fetchYahooIndex("^SOX"); }
 export async function fetchDJIA(): Promise<IndexResult>    { return fetchYahooIndex("^DJI"); }
-export async function fetchVIX(): Promise<IndexResult>     { return fetchYahooIndex("^VIX", "1mo"); }
+export async function fetchVIX(): Promise<IndexResult>     { return fetchYahooIndex("^VIX", "3mo"); }
 
 // ─── US 10Y Treasury ──────────────────────────────────────────────────────────
 
@@ -576,6 +597,7 @@ export async function fetchUS10Y(): Promise<{
   date: string;
   yield: number;
   change: number;
+  referenceValue: number;  // 3-month average yield
   history: Array<{ date: string; yield: number }>;
 }> {
   const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=%5ETNX&range=3mo&interval=1d`;
@@ -603,7 +625,13 @@ export async function fetchUS10Y(): Promise<{
     history.push({ date: today, yield: currentYield });
   }
 
-  return { date: today, yield: currentYield, change: currentYield - prevYield, history };
+  // 3-month average as reference line
+  const validYields = history.map(h => h.yield).filter(y => y > 0);
+  const referenceValue = validYields.length > 0
+    ? Math.round((validYields.reduce((a, b) => a + b, 0) / validYields.length) * 1000) / 1000
+    : 0;
+
+  return { date: today, yield: currentYield, change: currentYield - prevYield, referenceValue, history };
 }
 
 // ─── US CPI ────────────────────────────────────────────────────────────────────
@@ -615,32 +643,42 @@ export async function fetchUSCPI(): Promise<{
   mom: number;
   history: Array<{ date: string; value: number; yoy: number }>;
 }> {
-  const url = "https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0";
+  // Alpha Vantage CPI (CPIAUCSL equivalent) — 無需付費 API key，穩定可靠
+  // 提供月度 CPI 指數值（CPI-U All Urban Consumers）
+  const url = "https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey=demo";
   try {
-    const data = await safeFetch(url, { "Content-Type": "application/json" }, 15000);
-    const series = data?.Results?.series?.[0]?.data ?? [];
-    const monthly: Array<{ date: string; value: number }> = series
-      .filter((d: any) => d.period !== "M13")
-      .map((d: any) => ({
-        date: `${d.year}-${d.period.replace("M", "").padStart(2, "0")}-01`,
-        value: parseFloat(d.value),
-      }))
-      .reverse();
+    const raw = await safeFetch(url, { "User-Agent": "Mozilla/5.0" }, 20000);
+    if (!raw?.data) throw new Error("Alpha Vantage CPI no data");
+    const monthly: Array<{ date: string; value: number }> = (raw.data as Array<{ date: string; value: string }>)
+      .map(entry => ({ date: entry.date, value: parseFloat(entry.value) }))
+      .filter(h => h.date && !isNaN(h.value) && h.value > 0)
+      .sort((a, b) => a.date.localeCompare(b.date));
 
-    if (monthly.length < 13) throw new Error("BLS CPI insufficient data");
-    const last = monthly[monthly.length - 1];
-    const prev = monthly[monthly.length - 2];
-    const yoyRef = monthly[monthly.length - 13];
-    const yoy = yoyRef.value > 0 ? ((last.value - yoyRef.value) / yoyRef.value) * 100 : 0;
-    const mom = prev.value > 0 ? ((last.value - prev.value) / prev.value) * 100 : 0;
+    if (monthly.length < 13) throw new Error("CPI insufficient data");
 
-    const histWithYoy = monthly.map((h, i) => {
-      const yoyR = i >= 12 ? monthly[i - 12] : null;
-      const y = yoyR && yoyR.value > 0 ? ((h.value - yoyR.value) / yoyR.value) * 100 : 0;
-      return { date: h.date, value: h.value, yoy: y };
-    });
+    // Build date→value lookup for YoY calculation by date string
+    // (avoids array-index off-by-one when months are missing due to appropriations gaps)
+    const lookup: Record<string, number> = {};
+    for (const h of monthly) lookup[h.date] = h.value;
 
-    return { date: last.date, value: last.value, yoy, mom, history: histWithYoy };
+    // Calculate YoY: for each month, find the same month one year prior by date string
+    const histWithYoy = monthly
+      .map(h => {
+        const [y, m, d] = h.date.split("-");
+        const yearAgoDate = `${parseInt(y, 10) - 1}-${m}-${d}`;
+        const ref = lookup[yearAgoDate];
+        const yoy = ref && ref > 0 ? ((h.value - ref) / ref) * 100 : null;
+        return yoy !== null ? { date: h.date, value: yoy, yoy } : null;
+      })
+      .filter((x): x is { date: string; value: number; yoy: number } => x !== null);
+
+    const history = histWithYoy.slice(-24);
+    const last = histWithYoy[histWithYoy.length - 1];
+    const prev = histWithYoy[histWithYoy.length - 2];
+    const yoy = last.yoy;
+    const mom = prev ? last.yoy - prev.yoy : 0;
+
+    return { date: last.date, value: last.yoy, yoy, mom, history };
   } catch (e: any) {
     throw new Error(`CPI fetch failed: ${e.message}`);
   }
@@ -654,17 +692,96 @@ export async function fetchFearGreed(): Promise<{
   label: string;
   history: Array<{ date: string; value: number; label?: string }>;
 }> {
-  const url = "https://api.alternative.me/fng/?limit=60&format=json";
-  const data = await fetchWithRetry(url, {});
-  const entries: Array<{ value: string; value_classification: string; timestamp: string }> = data?.data ?? [];
-  if (entries.length === 0) throw new Error("Fear&Greed no data");
-  const history = entries.reverse().map(e => ({
-    date: new Date(parseInt(e.timestamp) * 1000).toISOString().slice(0, 10),
-    value: parseInt(e.value, 10),
-    label: e.value_classification,
-  }));
-  const last = history[history.length - 1];
-  return { date: last.date, value: last.value, label: last.label ?? "", history };
+  // CNN Fear & Greed (美股版) — 取代 Alternative.me 加密貨幣版
+  const url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata";
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://edition.cnn.com/markets/fear-and-greed",
+    "Origin": "https://edition.cnn.com",
+  };
+  const data = await safeFetch(url, headers, 15000);
+  if (!data?.fear_and_greed) throw new Error("CNN Fear&Greed no data");
+
+  const fg = data.fear_and_greed;
+  const score: number = fg.score ?? 0;
+  const rating: string = fg.rating ?? "unknown";
+  const date = (fg.timestamp ?? new Date().toISOString()).slice(0, 10);
+
+  // Historical: array of { x: ms_timestamp, y: score, rating }
+  // CNN only publishes on trading days — never fill in weekend/holiday gaps
+  const rawHist: Array<{ x: number; y: number; rating: string }> =
+    data.fear_and_greed_historical?.data ?? [];
+
+  // Build a Set of dates that CNN actually returned (source of truth)
+  const cnnDates = new Set<string>();
+  const history = rawHist
+    .map(e => ({
+      date: new Date(e.x).toISOString().slice(0, 10),
+      value: Math.round(e.y * 100) / 100,
+      label: e.rating,
+    }))
+    .filter(h => {
+      // Deduplicate by date (keep last occurrence)
+      cnnDates.add(h.date);
+      return true;
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // Only append today if CNN historical actually includes it
+  // (do NOT push weekend/holiday values from fg.score — they are not real daily data)
+  // The latest row in history already contains the most recent CNN data point.
+
+  // Determine effective date & value from the last CNN historical entry
+  // (more reliable than fg.timestamp on weekends)
+  const lastHistEntry = history[history.length - 1];
+  const effectiveDate = lastHistEntry?.date ?? date;
+  const effectiveValue = lastHistEntry?.value ?? Math.round(score * 100) / 100;
+  const effectiveLabel = lastHistEntry?.label ?? rating;
+
+  return { date: effectiveDate, value: effectiveValue, label: effectiveLabel, history };
+}
+
+// ─── Finmind API ─────────────────────────────────────────────────────────────
+
+const FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data";
+
+/**
+ * 外資買賣超歷史 via Finmind TaiwanStockTotalInstitutionalInvestors
+ * name='Foreign_Investor', net = buy - sell (元) → 億元
+ * 一次請求取得近 3 個月日資料，不受 TWSE IP 封鎖影響
+ */
+export async function fetchFinmindForeignNet(startDate: string): Promise<
+  Array<{ date: string; netBuySell: number }>
+> {
+  const url = `${FINMIND_BASE}?dataset=TaiwanStockTotalInstitutionalInvestors&start_date=${startDate}`;
+  const data = await safeFetch(url, { "User-Agent": "Mozilla/5.0" }, 20000);
+  if (data?.status !== 200) throw new Error(`Finmind foreign status: ${data?.status}`);
+  const rows: Array<{ date: string; name: string; buy: number; sell: number }> = data?.data ?? [];
+  const foreign = rows.filter(r => r.name === "Foreign_Investor");
+  return foreign.map(r => ({
+    date: r.date,
+    netBuySell: Math.round((r.buy - r.sell) / 1e8 * 10) / 10,  // 億元，1位小數
+  })).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * 融資餘額/增減歷史 via Finmind TaiwanStockTotalMarginPurchaseShortSale
+ * name='MarginPurchaseMoney', balance=TodayBalance(元)→億元, change=TodayBalance-YesBalance
+ */
+export async function fetchFinmindMargin(startDate: string): Promise<
+  Array<{ date: string; marginBalance: number; marginChange: number }>
+> {
+  const url = `${FINMIND_BASE}?dataset=TaiwanStockTotalMarginPurchaseShortSale&start_date=${startDate}`;
+  const data = await safeFetch(url, { "User-Agent": "Mozilla/5.0" }, 20000);
+  if (data?.status !== 200) throw new Error(`Finmind margin status: ${data?.status}`);
+  const rows: Array<{ date: string; name: string; TodayBalance: number; YesBalance: number }> = data?.data ?? [];
+  const margin = rows.filter(r => r.name === "MarginPurchaseMoney");
+  return margin.map(r => ({
+    date: r.date,
+    marginBalance: Math.round(r.TodayBalance / 1e8 * 10) / 10,
+    marginChange:  Math.round((r.TodayBalance - r.YesBalance) / 1e8 * 10) / 10,
+  })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ─── Helper ───────────────────────────────────────────────────────────────────

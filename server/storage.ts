@@ -13,6 +13,40 @@ import { eq, asc, and, gte, lte, max, desc } from "drizzle-orm";
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
 
+// Ensure core tables exist (fresh DB on first run)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS holdings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT NOT NULL,
+    shares REAL NOT NULL,
+    avg_cost REAL NOT NULL,
+    market TEXT NOT NULL
+  )`);
+} catch { /* ignore */ }
+
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT NOT NULL,
+    target_price REAL NOT NULL,
+    direction TEXT NOT NULL,
+    triggered INTEGER NOT NULL DEFAULT 0,
+    market TEXT NOT NULL
+  )`);
+} catch { /* ignore */ }
+
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT NOT NULL,
+    market TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  )`);
+} catch { /* ignore */ }
+
 // Ensure sort_order column exists (migration for existing DBs)
 try {
   sqlite.exec("ALTER TABLE watchlist ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");

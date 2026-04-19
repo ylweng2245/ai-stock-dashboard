@@ -25,6 +25,8 @@ import {
   fetchUS10Y,
   fetchUSCPI,
   fetchFearGreed,
+  fetchFinmindForeignNet,
+  fetchFinmindMargin,
 } from "./marketIndicatorSources";
 import {
   taiexCombinedSignal,
@@ -95,19 +97,31 @@ export async function refreshAllIndicators(): Promise<void> {
       )
     ),
 
-    fetchTWseForeignNet().then(r =>
-      refreshIndicator("tw_foreign_net", "TW", "daily",
-        r.history.map(h => ({ date: h.date, value: h.netBuySell })),
-        "TWSE TWT38U",
-      )
-    ),
+    // 外資買賣超 — 改用 Finmind（不受 TWSE IP 封鎖）
+    // 主力來源：Finmind TaiwanStockTotalInstitutionalInvestors
+    // Fallback：TWSE TWT38U（本機環境可用時）
+    fetchFinmindForeignNet(dateNMonthsAgo(3))
+      .catch(() => fetchTWseForeignNet().then(r =>
+        r.history.map(h => ({ date: h.date, netBuySell: h.netBuySell }))
+      ))
+      .then(rows =>
+        refreshIndicator("tw_foreign_net", "TW", "daily",
+          rows.map(h => ({ date: h.date, value: h.netBuySell })),
+          "Finmind TaiwanStockTotalInstitutionalInvestors",
+        )
+      ),
 
-    fetchTWseMargin().then(r =>
-      refreshIndicator("tw_margin", "TW", "daily",
-        r.history.map(h => ({ date: h.date, value: h.marginBalance, value2: h.marginChange })),
-        "TWSE MI_MARGN",
-      )
-    ),
+    // 融資餘額/增減 — 改用 Finmind（不受 TWSE IP 封鎖）
+    fetchFinmindMargin(dateNMonthsAgo(3))
+      .catch(() => fetchTWseMargin().then(r =>
+        r.history.map(h => ({ date: h.date, marginBalance: h.marginBalance, marginChange: h.marginChange }))
+      ))
+      .then(rows =>
+        refreshIndicator("tw_margin", "TW", "daily",
+          rows.map(h => ({ date: h.date, value: h.marginBalance, value2: h.marginChange })),
+          "Finmind TaiwanStockTotalMarginPurchaseShortSale",
+        )
+      ),
 
     fetchUSDTWD().then(r =>
       refreshIndicator("usdtwd", "TW", "daily",
@@ -153,14 +167,11 @@ export async function refreshAllIndicators(): Promise<void> {
     ),
 
     fetchFearGreed().then(r =>
+      // Only write CNN historical data (trading days only — no weekend gap-fill)
+      // r.history already contains the most recent trading day as last entry
       refreshIndicator("fear_greed", "US", "daily",
-        r.history.map(h => ({ date: h.date, value: h.value })),
-        "Alternative.me FNG",
-      ).then(() =>
-        refreshIndicator("fear_greed", "US", "daily",
-          [{ date: r.date, value: r.value, meta: r.label }],
-          "Alternative.me FNG",
-        )
+        r.history.map(h => ({ date: h.date, value: h.value, meta: h.label })),
+        "CNN Fear&Greed",
       )
     ),
 
@@ -169,6 +180,14 @@ export async function refreshAllIndicators(): Promise<void> {
         r.history.map(h => ({ date: h.date, value: h.yield })),
         "Yahoo Finance ^TNX",
       )
+    ).then(() =>
+      fetchUS10Y().then(r =>
+        // store referenceValue (3M avg) in value2 of the latest row
+        refreshIndicator("us_10y", "US", "daily",
+          [{ date: r.date, value: r.yield, value2: r.referenceValue }],
+          "Yahoo Finance ^TNX",
+        )
+      ).catch(() => {})
     ),
 
     (async () => {
@@ -178,7 +197,7 @@ export async function refreshAllIndicators(): Promise<void> {
       const r = await fetchUSCPI();
       await refreshIndicator("us_cpi", "US", "monthly",
         r.history.map(h => ({ date: h.date, value: h.yoy })),
-        "BLS CUUR0000SA0",
+        "Alpha Vantage CPI",
       );
     })(),
   ]);
@@ -205,6 +224,7 @@ export interface IndicatorCard {
   signalText: string | null;
   sparkline: number[];
   history?: Array<{ date: string; value: number }>;  // for bar charts
+  referenceValue?: number | null;  // e.g. 1-year average for USD/TWD baseline
   stale: boolean;
 }
 
@@ -225,6 +245,22 @@ function lastTwo(rows: { date: string; value: number; value2?: number | null; me
   const last = rows[rows.length - 1] ?? null;
   const prev = rows[rows.length - 2] ?? null;
   return { last, prev };
+}
+// Returns ISO date string for N months ago
+function dateNMonthsAgo(n: number): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Filter, sort, deduplicate rows to daily within last 3 months
+function dailyLast3Mo<T extends { date: string }>(rows: T[]): T[] {
+  const cutoff = dateNMonthsAgo(3);
+  const seen = new Set<string>();
+  return rows
+    .filter(r => r.date >= cutoff)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .filter(r => { if (seen.has(r.date)) return false; seen.add(r.date); return true; });
 }
 
 export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
@@ -308,7 +344,7 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     signal: fSig,
     signalText: fSig ? signalText(fSig) : null,
     sparkline: sparkline(foreignRows),
-    history: foreignRows.slice(-65).map(r => ({ date: r.date, value: r.value })),
+    history: dailyLast3Mo(foreignRows).map(r => ({ date: r.date, value: r.value })),
     stale: isStale(fLast?.date ?? null),
   };
 
@@ -320,20 +356,26 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   const mSig = marginChange !== null ? marginSignal(marginChange) : null;
   const marginCard: IndicatorCard = {
     key: "tw_margin",
-    label: "融資金額",        // v4.2: renamed from 融資餘額
-    value: mLast?.value ?? null,
-    value2: marginChange,
+    label: "融資增減",        // v4.6: primary = daily change, secondary = balance
+    value: marginChange,       // primary: 每日融資增減 (value2 from DB)
+    value2: mLast?.value ?? null, // secondary: 融資餘額
     date: mLast?.date ?? null,
     signal: mSig,
     signalText: mSig ? signalText(mSig) : null,
     sparkline: sparkline(marginRows),
-    history: marginRows.slice(-65).map(r => ({ date: r.date, value: r.value2 ?? 0 })), // daily change for bar chart
+    history: dailyLast3Mo(marginRows).map(r => ({ date: r.date, value: r.value2 ?? 0 })), // daily change
     stale: isStale(mLast?.date ?? null),
   };
 
   // USD/TWD
   const { last: uLast, prev: uPrev } = lastTwo(usdtwdRows);
   const usdtwdSig = uLast && uPrev ? usdtwdSignal(uLast.value, uPrev.value) : null;
+  // Compute 1y average from DB history for baseline
+  const usdtwd1yAgo = dateNMonthsAgo(12);
+  const usdtwd1yRows = usdtwdRows.filter(r => r.date >= usdtwd1yAgo);
+  const usdtwdYearAvg = usdtwd1yRows.length > 0
+    ? Math.round((usdtwd1yRows.reduce((s, r) => s + r.value, 0) / usdtwd1yRows.length) * 1000) / 1000
+    : null;
   const usdtwdCard: IndicatorCard = {
     key: "usdtwd",
     label: "美元/台幣",
@@ -343,6 +385,8 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     signal: usdtwdSig,
     signalText: usdtwdSig ? signalText(usdtwdSig) : null,
     sparkline: sparkline(usdtwdRows),
+    history: dailyLast3Mo(usdtwdRows).map(r => ({ date: r.date, value: r.value })),
+    referenceValue: usdtwdYearAvg,  // 1-year average for baseline
     stale: isStale(uLast?.date ?? null),
   };
 
@@ -384,26 +428,35 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     signal: vixSig,
     signalText: vixSig ? signalText(vixSig) : null,
     sparkline: sparkline(vixRows),
+    history: dailyLast3Mo(vixRows).map(r => ({ date: r.date, value: r.value })),
     stale: isStale(vixLast?.date ?? null),
   };
 
-  // Fear & Greed
+  // Fear & Greed (CNN)  — history sliced to last 60 days for RegimeChart
   const { last: fgLast } = lastTwo(fgRows);
   const fgSig = fgLast ? fearGreedSignal(fgLast.value) : null;
   const fgCard: IndicatorCard = {
-    key: "fear_greed", label: "恐懼貪婪指數",
+    key: "fear_greed", label: "CNN 恐懼貪婪指數",
     value: fgLast?.value ?? null,
     meta: fgLast?.metaJson ?? null,
     date: fgLast?.date ?? null,
     signal: fgSig,
     signalText: fgSig ? signalText(fgSig) : null,
     sparkline: [],
+    history: dailyLast3Mo(fgRows).slice(-60).map(r => ({ date: r.date, value: r.value })),
     stale: isStale(fgLast?.date ?? null),
   };
 
-  // US 10Y
+  // US 10Y — with 3M history + referenceValue (3M average stored in value2 of latest row)
   const { last: y10Last, prev: y10Prev } = lastTwo(us10yRows);
   const y10Sig = y10Last ? us10YSignal(y10Last.value) : null;
+  // Compute 3M average from DB history as fallback if value2 not stored
+  const y10HistoryRows = dailyLast3Mo(us10yRows);
+  const y10ValidYields = y10HistoryRows.map(r => r.value).filter(v => v > 0);
+  const y10RefFromDB = y10ValidYields.length > 0
+    ? Math.round((y10ValidYields.reduce((a, b) => a + b, 0) / y10ValidYields.length) * 1000) / 1000
+    : null;
+  const y10Ref = y10Last?.value2 ?? y10RefFromDB;
   const us10yCard: IndicatorCard = {
     key: "us_10y", label: "美10年期公債",
     value: y10Last?.value ?? null,
@@ -412,20 +465,32 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
     signal: y10Sig,
     signalText: y10Sig ? signalText(y10Sig) : null,
     sparkline: sparkline(us10yRows),
+    history: y10HistoryRows.map(r => ({ date: r.date, value: r.value })),
+    referenceValue: y10Ref,
     stale: isStale(y10Last?.date ?? null),
   };
 
-  // US CPI
-  const { last: cpiLast, prev: cpiPrev } = lastTwo(cpiRows);
+  // US CPI — with 24-month monthly history (values are YoY%)
+  const cpiSorted = [...cpiRows].sort((a, b) => a.date.localeCompare(b.date));
+  const { last: cpiLast, prev: cpiPrev } = lastTwo(cpiSorted);
   const cpiSig = cpiLast ? usCpiSignal(cpiLast.value) : null;
+  // Format date as "Mar 2026" for CPI (monthly)
+  const cpiDateFormatted = cpiLast?.date
+    ? (() => {
+        const [y, m] = cpiLast.date.split("-");
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        return `${months[parseInt(m, 10) - 1]} ${y}`;
+      })()
+    : null;
   const cpiCard: IndicatorCard = {
     key: "us_cpi", label: "美國 CPI (YoY)",
     value: cpiLast?.value ?? null,
     change: cpiLast && cpiPrev ? cpiLast.value - cpiPrev.value : null,
-    date: cpiLast?.date ?? null,
+    date: cpiDateFormatted ?? cpiLast?.date ?? null,
     signal: cpiSig,
     signalText: cpiSig ? signalText(cpiSig) : null,
-    sparkline: sparkline(cpiRows, 24),
+    sparkline: sparkline(cpiSorted, 24),
+    history: cpiSorted.slice(-24).map(r => ({ date: r.date, value: r.value })),
     stale: isStale(cpiLast?.date ?? null),
   };
 

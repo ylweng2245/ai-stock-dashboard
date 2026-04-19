@@ -297,9 +297,71 @@ export async function registerRoutes(
 
   /**
    * POST /api/transactions/import
-   * Accepts a multipart/form-data Excel file, parses both sheets,
-   * replaces all existing transactions with the new import.
+   * Accepts a multipart/form-data Excel file, parses both sheets
+   * using a unified column spec (row 1 = header, row 2+ = data):
+   *   A=交易日期  B=股票代號  C=股票名稱  D=交易類別  E=成交價格  F=成交股數  G=總成本
    */
+
+  // ── Unified helpers ────────────────────────────────────────────────────────
+  function normalizeTradeSide(val: any): "buy" | "sell" | null {
+    const s = String(val ?? "").trim().toLowerCase();
+    if (!s) return null;
+    if (s === "買" || s === "买" || s === "買進" || s === "买进" || s === "buy" || s === "b") return "buy";
+    if (s === "賣" || s === "卖" || s === "賣出" || s === "卖出" || s === "sell" || s === "s") return "sell";
+    return null;
+  }
+
+  function inferSideFromTotalCost(totalCost: number): "buy" | "sell" | null {
+    if (totalCost < 0) return "buy";
+    if (totalCost > 0) return "sell";
+    return null;
+  }
+
+  function parseUnifiedTransactionSheet(
+    sheet: XLSX.WorkSheet,
+    market: "TW" | "US"
+  ): InsertTransaction[] {
+    const rows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: null });
+    const result: InsertTransaction[] = [];
+    // Row 0 = header, data starts at row 1
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || !row[0] || !row[1]) continue;
+      const dateStr = parseExcelDate(row[0]);
+      if (!dateStr) continue;
+      const rawSymbol = String(row[1]).trim();
+      const symbol = market === "US" ? rawSymbol.toUpperCase() : rawSymbol;
+      const name = row[2] ? String(row[2]).trim() : symbol;
+      const sideFromCol  = normalizeTradeSide(row[3]);  // col D: 交易類別 (primary)
+      const price        = parseNum(row[4]);              // col E: 成交價格
+      const shares       = Math.abs(parseNum(row[5]));   // col F: 成交股數
+      const totalCost    = parseNum(row[6]);              // col G: 總成本
+      const sideFromCost = inferSideFromTotalCost(totalCost); // fallback
+      // Warn if col D and totalCost disagree
+      if (sideFromCol && sideFromCost && sideFromCol !== sideFromCost) {
+        console.warn(
+          `[import] side mismatch ${market} ${symbol} ${dateStr}: ` +
+          `tradeType=${sideFromCol}, totalCost=${totalCost} (inferred=${sideFromCost})`
+        );
+      }
+      const side = sideFromCol ?? sideFromCost;
+      if (!symbol || !price || !shares || !side) continue;
+      result.push({
+        tradeDate: dateStr,
+        symbol,
+        name,
+        market,
+        side,
+        shares,
+        price,
+        totalCost,
+        currency: market === "TW" ? "TWD" : "USD",
+      });
+    }
+    return result;
+  }
+  // ── End helpers ─────────────────────────────────────────────────────────────
+
   app.post("/api/transactions/import", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -307,64 +369,18 @@ export async function registerRoutes(
       const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
       const imported: InsertTransaction[] = [];
 
-      // --- Sheet 1: 台股交易明細 ---
-      const twSheet = wb.Sheets["台股交易明細"];
-      if (twSheet) {
-        // Rows: header row 0 is col labels row 1 (0-indexed), data starts row 2
-        // cols: A=成交日期 B=代號 C=名稱 D=買賣 E=股數 F=價格 G=應收付款
-        const rows = XLSX.utils.sheet_to_json<any[]>(twSheet, { header: 1, defval: null });
-        for (let i = 2; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || !row[0] || !row[1]) continue;
-          const dateStr = parseExcelDate(row[0]);
-          if (!dateStr) continue;
-          const symbol = String(row[1]).trim();
-          const name = row[2] ? String(row[2]).trim() : symbol;
-          const sideRaw = row[3] ? String(row[3]).trim() : "";
-          const side = sideRaw === "買" ? "buy" : sideRaw === "賣" ? "sell" : null;
-          if (!side) continue;
-          const shares = Math.abs(parseNum(row[4]));
-          const price = parseNum(row[5]);
-          const totalCost = parseNum(row[6]); // negative = paid, positive = received
-          if (!shares || !price) continue;
-          imported.push({ tradeDate: dateStr, symbol, name, market: "TW", side, shares, price, totalCost, currency: "TWD" });
-        }
-      }
+      // Sheet 1 → TW, Sheet 2 → US (by index; also try by name as fallback)
+      const twSheet = wb.Sheets[wb.SheetNames[0]];
+      if (twSheet) imported.push(...parseUnifiedTransactionSheet(twSheet, "TW"));
 
-      // --- Sheet 2: 美股交易明細 ---
-      const usSheet = wb.Sheets["美股交易明細"];
-      if (usSheet) {
-        /**
-         * Two possible formats (auto-detected by header row):
-         * Old: A=交易日期 B=代號 C=交易類別 D=成交價格 E=股數 F=應收付款  (6 cols, no name)
-         * New: A=交易日期 B=代號 C=名稱 D=交易類別 E=成交價格 F=股數 G=應收付款 (7 cols, with name)
-         */
-        const rows = XLSX.utils.sheet_to_json<any[]>(usSheet, { header: 1, defval: null });
-        // Detect format by checking header row (row 0)
-        const header = rows[0] || [];
-        // If col C (index 2) looks like a trade-type keyword → old format; otherwise new format with name
-        const hasNameCol = header.length >= 7 || (header[2] && !String(header[2]).includes("類別") && !String(header[2]).includes("買") && !String(header[2]).includes("賣"));
-        const nameColIdx  = hasNameCol ? 2 : -1;
-        const typeColIdx  = hasNameCol ? 3 : 2;
-        const priceColIdx = hasNameCol ? 4 : 3;
-        const sharesColIdx = hasNameCol ? 5 : 4;
-        const costColIdx  = hasNameCol ? 6 : 5;
+      const usSheet = wb.Sheets[wb.SheetNames[1]];
+      if (usSheet) imported.push(...parseUnifiedTransactionSheet(usSheet, "US"));
 
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || !row[0] || !row[1]) continue;
-          const dateStr = parseExcelDate(row[0]);
-          if (!dateStr) continue;
-          const symbol = String(row[1]).trim().toUpperCase();
-          const name = nameColIdx >= 0 && row[nameColIdx] ? String(row[nameColIdx]).trim() : symbol;
-          const typeRaw = row[typeColIdx] ? String(row[typeColIdx]).trim() : "";
-          const side = typeRaw.includes("賣出") ? "sell" : "buy";
-          const price = parseNum(row[priceColIdx]);
-          const shares = Math.abs(parseNum(row[sharesColIdx]));
-          const totalCost = parseNum(row[costColIdx]);
-          if (!shares || !price) continue;
-          imported.push({ tradeDate: dateStr, symbol, name, market: "US", side, shares, price, totalCost, currency: "USD" });
-        }
+      if (imported.length === 0) {
+        return res.status(400).json({
+          error: "Failed to import Excel",
+          detail: "No valid transaction rows found. Please check column order: A=日期 B=代號 C=名稱 D=交易類別 E=價格 F=股數 G=總成本",
+        });
       }
 
       // Replace all existing transactions

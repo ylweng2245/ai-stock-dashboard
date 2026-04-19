@@ -394,16 +394,11 @@ function parseSparkResponse(body: string, nameMap: Map<string, string>): StockQu
     if (!resp) continue;
     const meta = resp.meta ?? {};
 
-    // 讀取 Yahoo 市場狀態，選擇對應的正確價格欄位
-    const marketState = normalizeMarketState(meta.marketState);
-    let price: number;
-    if (marketState === "PRE") {
-      price = +(meta.preMarketPrice ?? meta.regularMarketPrice ?? 0).toFixed(2);
-    } else if (marketState === "POST") {
-      price = +(meta.postMarketPrice ?? meta.regularMarketPrice ?? 0).toFixed(2);
-    } else {
-      price = +(meta.regularMarketPrice ?? 0).toFixed(2);
-    }
+    // Yahoo Spark v7 不提供 preMarketPrice / postMarketPrice
+    // 一律使用 regularMarketPrice：盤中=即時，盤後=收盤價，符合需求
+    const price = +(meta.regularMarketPrice ?? 0).toFixed(2);
+    const marketState: StockQuote["marketState"] =
+      meta.marketState ? normalizeMarketState(meta.marketState) : "CLOSED";
     const prevClose = +(meta.previousClose ?? meta.chartPreviousClose ?? price).toFixed(2);
     const change    = +(price - prevClose).toFixed(2);
     const changePct = prevClose !== 0 ? +((change / prevClose) * 100).toFixed(2) : 0;
@@ -459,10 +454,18 @@ async function fetchTWSEQuotes(
     try {
       const body = await fetchWithRetry(url);
       const batchQuotes = parseSparkResponse(body, nameMap);
+      // Update cache with fresh results
+      batchQuotes.forEach((q) => quoteCache.set(`${q.symbol}_TW`, { data: q, fetchedAt: Date.now() }));
       allQuotes.push(...batchQuotes);
     } catch (e: any) {
       console.error(`[fetchTWSEQuotes] batch ${i}-${i + SPARK_BATCH_SIZE} failed: ${e.message}`);
-      // Continue with next batch — partial results are better than total failure
+      // Fallback: serve stale cache for each symbol in this batch
+      for (const s of batch) {
+        const cached = quoteCache.get(`${s.symbol}_TW`);
+        if (cached) {
+          allQuotes.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
+        }
+      }
     }
 
     // Brief pause between batches (only needed when > 50 symbols)
@@ -508,16 +511,11 @@ async function fetchUSQuotesSpark(
         if (!resp) continue;
         const meta = resp.meta ?? {};
 
-        const marketState = normalizeMarketState(meta.marketState);
-
-        let price: number;
-        if (marketState === "PRE") {
-          price = +(meta.preMarketPrice ?? meta.regularMarketPrice ?? 0).toFixed(2);
-        } else if (marketState === "POST") {
-          price = +(meta.postMarketPrice ?? meta.regularMarketPrice ?? 0).toFixed(2);
-        } else {
-          price = +(meta.regularMarketPrice ?? 0).toFixed(2);
-        }
+        // Yahoo Spark v7 不提供 preMarketPrice / postMarketPrice
+        // 一律使用 regularMarketPrice：盤中=即時，盤後=收盤價，符合需求
+        const price = +(meta.regularMarketPrice ?? 0).toFixed(2);
+        const marketState: StockQuote["marketState"] =
+          meta.marketState ? normalizeMarketState(meta.marketState) : "CLOSED";
 
         const prevClose = +(meta.previousClose ?? meta.chartPreviousClose ?? price).toFixed(2);
         const change    = +(price - prevClose).toFixed(2);
@@ -1119,32 +1117,43 @@ export async function getAllQuotes(
     }
   }
 
-  // --- Indices: Perplexity Finance（指數仍用 Finance API，更穩定）---
-  const indexTickers = Object.values(INDEX_SYMBOLS).map((v) => v.finance);
+  // --- Indices: Yahoo Finance Spark API（純 HTTP，Windows/Linux 皆可用）---
   let indexQuotes: StockQuote[] = [];
 
   try {
-    const rows = await fetchFinanceQuotes(indexTickers);
-    const rowMap = new Map<string, FinanceQuoteRow>();
-    rows.forEach((r) => rowMap.set(r.symbol, r));
+    // Build input list: use yahoo ticker (finance field) as symbol, store key for remapping
+    const indexInputs = Object.entries(INDEX_SYMBOLS).map(([key, def]) => ({
+      symbol: def.finance,  // Yahoo ticker e.g. "^TWII", "USDTWD=X", "^GSPC"
+      name: def.name,
+      _key: key,
+    }));
 
-    for (const [key, def] of Object.entries(INDEX_SYMBOLS)) {
-      const row = rowMap.get(def.finance);
-      if (row) {
-        const q = financeRowToQuote(row, def.market, def.name);
-        q.symbol = key;
-        // 指數沒有 marketState 來源，補預設値
-        (q as any).marketState = "REGULAR";
-        (q as any).priceLabel = "即時";
-        indexQuotes.push(q);
-        quoteCache.set(`idx_${key}`, { data: q, fetchedAt: Date.now() });
+    // USDTWD: Yahoo uses "USDTWD=X" ticker
+    const sparkInputs = indexInputs.map((d) => ({
+      symbol: d.symbol === "USDTWD" ? "USDTWD=X" : d.symbol,
+      name: d.name,
+    }));
+
+    const fetched = await fetchUSQuotesSpark(sparkInputs);
+    // fetchUSQuotesSpark preserves the input symbol in the returned quote
+    const fetchedMap = new Map(fetched.map((q) => [q.symbol, q]));
+
+    for (const { _key, symbol, name } of indexInputs) {
+      const yahooSymbol = symbol === "USDTWD" ? "USDTWD=X" : symbol;
+      const q = fetchedMap.get(yahooSymbol);
+      if (q) {
+        // Remap symbol back to our key (e.g. "^TWII" -> "TWII")
+        const mapped: StockQuote = { ...q, symbol: _key, name, market: INDEX_SYMBOLS[_key].market };
+        indexQuotes.push(mapped);
+        quoteCache.set(`idx_${_key}`, { data: mapped, fetchedAt: Date.now() });
       } else {
-        const c = quoteCache.get(`idx_${key}`);
+        const c = quoteCache.get(`idx_${_key}`);
         if (c) indexQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
+        else errors.push(`${name} (${yahooSymbol}): no data`);
       }
     }
   } catch (e: any) {
-    errors.push(`Finance API (indices): ${e.message}`);
+    errors.push(`Indices (Yahoo Spark): ${e.message}`);
     for (const [key] of Object.entries(INDEX_SYMBOLS)) {
       const c = quoteCache.get(`idx_${key}`);
       if (c) indexQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
@@ -1180,12 +1189,28 @@ export async function getPortfolioQuotes(
 
   const results: StockQuote[] = [];
 
-  // TW: batch TWSE
+  // TW: batch TWSE — with cache fallback on failure
   if (twSymbols.length > 0) {
     try {
       const twQuotes = await fetchTWSEQuotes(twSymbols);
+      // Update cache with fresh data
+      twQuotes.forEach((q) => quoteCache.set(`${q.symbol}_TW`, { data: q, fetchedAt: Date.now() }));
       results.push(...twQuotes);
-    } catch {}
+      // Fallback for symbols not returned by TWSE
+      for (const s of twSymbols) {
+        if (!results.find((r) => r.symbol === s.symbol)) {
+          const cached = quoteCache.get(`${s.symbol}_TW`);
+          if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
+        }
+      }
+    } catch (e: any) {
+      console.error("getPortfolioQuotes TW error:", e.message);
+      // Serve stale cache for all TW symbols
+      for (const s of twSymbols) {
+        const cached = quoteCache.get(`${s.symbol}_TW`);
+        if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
+      }
+    }
   }
 
   // US: Yahoo Finance Spark API（個股即時，與 getAllQuotes 一致）
