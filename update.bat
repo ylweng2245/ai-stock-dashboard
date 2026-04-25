@@ -23,6 +23,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Update complete! Please restart start.bat.
+echo [3/3] Restarting server...
+taskkill /F /IM node.exe /T >nul 2>&1
+timeout /t 2 /nobreak >nul
+start "" /B cmd /c "node dist\index.cjs > server.log 2>&1"
+
 echo.
-pause
+echo ========================================
+echo  Done. Dashboard running at:
+echo  http://192.168.0.114:5000
+echo ========================================
+echo.
+timeout /t 3 /nobreak >nul
