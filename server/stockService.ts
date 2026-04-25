@@ -770,7 +770,15 @@ async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = "")
   const body = await historySemaphore.run(() => fetchWithRetry(url));
   const json = JSON.parse(body);
 
-  if (!json.chart?.result?.[0]) throw new Error(`No history for ${symbol}`);
+  if (!json.chart?.result?.[0]) {
+    // Retry once after a short delay — Yahoo occasionally returns empty on first call
+    await new Promise(r => setTimeout(r, 1500));
+    const body2 = await historySemaphore.run(() => fetchWithRetry(url));
+    const json2 = JSON.parse(body2);
+    if (!json2.chart?.result?.[0]) throw new Error(`No history for ${symbol}`);
+    // Reassign json to json2 so the rest of the function uses the retry result
+    Object.assign(json, json2);
+  }
 
   const result = json.chart.result[0];
   const timestamps: number[] = result.timestamp ?? [];
@@ -814,6 +822,146 @@ async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = "")
     dataFrom: deduped[0]?.time ?? "",
     dataTo: deduped[deduped.length - 1]?.time ?? "",
   };
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Trading calendar utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * US market fixed holidays (month is 1-based).
+ * Variable holidays (MLK Day, Presidents Day, etc.) use "Nth weekday" rules.
+ */
+function isUSHoliday(d: Date): boolean {
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1; // 1-12
+  const day = d.getUTCDate();
+  const dow = d.getUTCDay(); // 0=Sun
+
+  // Helper: Nth weekday of a month (n=1 first, n=-1 last)
+  const nthWeekday = (year: number, month: number, weekday: number, n: number): number => {
+    if (n > 0) {
+      const first = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+      const offset = (weekday - first + 7) % 7;
+      return 1 + offset + (n - 1) * 7;
+    } else { // n=-1: last weekday
+      const last = new Date(Date.UTC(year, month, 0));
+      const diff = (last.getUTCDay() - weekday + 7) % 7;
+      return last.getUTCDate() - diff;
+    }
+  };
+
+  // Good Friday (2 days before Easter) — approximate via Anonymous Gregorian algorithm
+  const easterDay = (year: number): Date => {
+    const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+    const d2 = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d2 - g + 15) % 30;
+    const i = Math.floor(c / 4), k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const mm = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month2 = Math.floor((h + l - 7 * mm + 114) / 31);
+    const day2 = ((h + l - 7 * mm + 114) % 31) + 1;
+    return new Date(Date.UTC(year, month2 - 1, day2));
+  };
+  const easter = easterDay(y);
+  const goodFriday = new Date(easter.getTime() - 2 * 86400_000);
+  if (m === goodFriday.getUTCMonth() + 1 && day === goodFriday.getUTCDate()) return true;
+
+  // Fixed-date holidays (observed Mon if Sun, observed Fri if Sat)
+  const observed = (hm: number, hd: number): boolean => {
+    if (m !== hm) return false;
+    if (day === hd) return true;
+    if (dow === 1 && day === hd + 1) return true; // Sun holiday → Mon observed
+    if (dow === 5 && day === hd - 1) return true; // Sat holiday → Fri observed
+    return false;
+  };
+  if (observed(1, 1))  return true; // New Year's Day
+  if (observed(7, 4))  return true; // Independence Day
+  if (observed(11, 11)) return true; // Veterans Day (not NYSE, skip) — actually NYSE does NOT close; skip
+  if (observed(12, 25)) return true; // Christmas
+
+  // Variable weekday holidays
+  if (m === 1  && day === nthWeekday(y, 1, 1, 3))  return true; // MLK Day (3rd Mon Jan)
+  if (m === 2  && day === nthWeekday(y, 2, 1, 3))  return true; // Presidents Day (3rd Mon Feb)
+  if (m === 5  && day === nthWeekday(y, 5, 1, -1)) return true; // Memorial Day (last Mon May)
+  if (m === 6  && day === nthWeekday(y, 6, 1, 3))  return true; // Juneteenth observed Mon if needed
+  if (observed(6, 19)) return true;                              // Juneteenth fixed
+  if (m === 9  && day === nthWeekday(y, 9, 1, 1))  return true; // Labor Day (1st Mon Sep)
+  if (m === 11 && day === nthWeekday(y, 11, 4, 4)) return true; // Thanksgiving (4th Thu Nov)
+
+  return false;
+}
+
+/**
+ * Taiwan market fixed holidays.
+ * Lunar-based holidays (CNY) use an approximate fixed-window approach:
+ * CNY closure is treated as Jan 20 – Feb 10 window check against known years.
+ * For gap-detection purposes (2-day tolerance), a ±3 day error is acceptable.
+ */
+function isTWHoliday(d: Date): boolean {
+  const m = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const dow = d.getUTCDay();
+
+  // Weekend (TWSE closed Sat/Sun)
+  if (dow === 0 || dow === 6) return true;
+
+  // Fixed national holidays
+  const fixed: [number, number][] = [
+    [1, 1],   // 元旦
+    [2, 28],  // 228 和平紀念日
+    [4, 4],   // 兒童節
+    [4, 5],   // 清明節 (approximate)
+    [5, 1],   // 勞動節
+    [10, 10], // 國慶日
+    [12, 25], // 行憲紀念日 (TWSE open — skip)
+  ];
+  for (const [hm, hd] of fixed) {
+    if (m === hm && Math.abs(day - hd) <= 1) return true; // ±1 day buffer for observed
+  }
+
+  // Chinese New Year: approximate window (Jan 21 – Feb 10)
+  // Covers the typical 7~10 day closure period across years
+  if ((m === 1 && day >= 21) || (m === 2 && day <= 10)) return true;
+
+  // Dragon Boat (around Jun 7±3), Mid-Autumn (around Sep 29±3)
+  if (m === 6 && day >= 4  && day <= 10) return true; // 端午節 window
+  if (m === 9 && day >= 26 && day <= 30) return true; // 中秋節 window
+  if (m === 10 && day === 1)             return true; // 中秋節 window overflow
+
+  return false;
+}
+
+/**
+ * Returns true if the given date is a trading day for the market.
+ */
+function isTradingDay(dateStr: string, market: "TW" | "US"): boolean {
+  const d = new Date(dateStr + "T00:00:00Z");
+  const dow = d.getUTCDay();
+  if (dow === 0 || dow === 6) return false; // weekend always closed
+  return market === "TW" ? !isTWHoliday(d) : !isUSHoliday(d);
+}
+
+/**
+ * Count trading days from fromDate (exclusive) to today (inclusive).
+ * Returns 0 if fromDate is today or in the future.
+ */
+function countTradingDaysSince(fromDateStr: string, market: "TW" | "US"): number {
+  const from = new Date(fromDateStr + "T00:00:00Z");
+  const todayUTC = new Date(
+    market === "TW"
+      ? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) + "T00:00:00Z"
+      : new Date().toISOString().slice(0, 10) + "T00:00:00Z"
+  );
+  let count = 0;
+  const cursor = new Date(from.getTime() + 86400_000); // start day after fromDate
+  while (cursor <= todayUTC) {
+    const dateStr = cursor.toISOString().slice(0, 10);
+    if (isTradingDay(dateStr, market)) count++;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -954,14 +1102,13 @@ export async function getOrSyncHistoricalData(
     }
   } else {
     // We have DB data — check if we need to fill a gap
-    // Gap = from (lastStoredDate + 1 day) to yesterday (don't store today's bar)
-    const yesterday = new Date(Date.now() - 24 * 3600_000 + 8 * 3600_000)
-      .toISOString().slice(0, 10);
-    if (lastStoredDate < yesterday) {
+    // Gap = from (lastStoredDate + 1 day) to today, but only trigger if ≥ 2 trading days
+    // have passed since lastStoredDate (avoids false positives on weekends/holidays)
+    if (countTradingDaysSince(lastStoredDate, market) > 2) {
       // There's a gap — fetch from Yahoo to fill it (still fetch 2y to get full range,
       // then upsert only bars newer than lastStoredDate and older than today)
       refreshAttempted = true;
-      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate} → ${yesterday}), refreshing...`);
+      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${countTradingDaysSince(lastStoredDate, market)} trading days ago), refreshing...`);
       try {
         const fetched = await fetchYahooHistory(symbol, "2y", suffix);
         const barsForDB = fetched.bars.filter(
