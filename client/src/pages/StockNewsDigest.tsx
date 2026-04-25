@@ -52,6 +52,16 @@ interface PageData {
   lastUpdated: number | null;
 }
 
+interface LiveQuote {
+  symbol: string;
+  price: number;
+  changePercent: number;
+}
+
+interface QuotesData {
+  quotes: LiveQuote[];
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(dateStr: string): string {
@@ -337,22 +347,25 @@ function StockDigestCard({
 function DigestWatchlistSidebar({
   stocks,
   activeSymbol,
+  liveQuotes,
   onSelect,
 }: {
   stocks: StockDigestData[];
   activeSymbol: string | null;
+  liveQuotes: Map<string, LiveQuote>;
   onSelect: (symbol: string) => void;
 }) {
   return (
     <aside className="w-[220px] shrink-0 border-l border-border bg-sidebar flex flex-col">
       <div className="px-4 py-3 border-b border-border">
         <h3 className="text-[14px] font-semibold">分析標的</h3>
-        <p className="text-[11px] text-muted-foreground mt-0.5">美股自選</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">美股自選 · 即時行情</p>
       </div>
       <div className="flex-1 overflow-y-auto py-2 px-2 space-y-1">
         {stocks.map((s) => {
-          const latest = s.digests[0];
-          const pct = latest?.priceChangePct;
+          const live = liveQuotes.get(s.symbol);
+          const pct = live?.changePercent ?? null;
+          const price = live?.price ?? null;
           const isUp = pct != null && pct > 0;
           const isDown = pct != null && pct < 0;
           const isActive = s.symbol === activeSymbol;
@@ -361,21 +374,34 @@ function DigestWatchlistSidebar({
               key={s.symbol}
               onClick={() => onSelect(s.symbol)}
               className={cn(
-                "w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-colors",
+                "w-full flex items-start justify-between px-3 py-2.5 rounded-xl text-left transition-colors",
                 isActive
                   ? "bg-[#66c6df]/12 border border-[#66c6df]/15"
                   : "border border-transparent hover:bg-muted/30"
               )}
             >
-              <div>
+              <div className="min-w-0">
                 <div className="text-[13px] font-semibold">{s.symbol}</div>
                 <div className="text-[11px] text-muted-foreground truncate max-w-[110px]">{s.name}</div>
               </div>
-              {pct != null && (
-                <span className={cn("text-[12px] font-semibold shrink-0", isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground")}>
-                  {isUp ? "+" : ""}{pct.toFixed(2)}%
-                </span>
-              )}
+              <div className="flex flex-col items-end shrink-0 ml-1">
+                {price != null && (
+                  <span className="text-[13px] font-bold tabular-nums">
+                    ${price.toFixed(2)}
+                  </span>
+                )}
+                {pct != null && (
+                  <span className={cn(
+                    "text-[11px] font-semibold tabular-nums",
+                    isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground"
+                  )}>
+                    {isUp ? "+" : ""}{pct.toFixed(2)}%
+                  </span>
+                )}
+                {price == null && pct == null && (
+                  <span className="text-[11px] text-muted-foreground/40">—</span>
+                )}
+              </div>
             </button>
           );
         })}
@@ -400,6 +426,19 @@ export default function StockNewsDigest() {
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
+
+  // Live quotes from /api/quotes — refresh every 30s
+  const { data: quotesData } = useQuery<QuotesData>({
+    queryKey: ["/api/quotes"],
+    queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
+    staleTime: 30 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchOnWindowFocus: true,
+  });
+
+  const liveQuotes = new Map<string, LiveQuote>(
+    (quotesData?.quotes ?? []).map((q) => [q.symbol, q])
+  );
 
   const updateMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/news-digest/update").then((r) => r.json()),
@@ -530,6 +569,7 @@ export default function StockNewsDigest() {
       <DigestWatchlistSidebar
         stocks={stocks}
         activeSymbol={activeSymbol}
+        liveQuotes={liveQuotes}
         onSelect={handleScrollTo}
       />
     </div>
