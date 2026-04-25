@@ -221,15 +221,15 @@ export class DatabaseStorage implements IStorage {
     defaults: Array<{ symbol: string; name: string; market: string }>
   ): Promise<void> {
     const existing = db.select().from(watchlist).all();
-    const existingKeys = new Set(existing.map((w) => `${w.symbol}_${w.market}`));
-    let nextOrder = existing.reduce((m, w) => Math.max(m, w.sortOrder), -1) + 1;
 
+    // Only seed when the watchlist table is completely empty (first-time install).
+    // If the user has already added/removed stocks, we must NOT re-insert anything —
+    // otherwise deleted stocks would reappear every time the server restarts.
+    if (existing.length > 0) return;
+
+    let nextOrder = 0;
     for (const d of defaults) {
-      const key = `${d.symbol}_${d.market}`;
-      if (!existingKeys.has(key)) {
-        db.insert(watchlist).values({ symbol: d.symbol, name: d.name, market: d.market, sortOrder: nextOrder++ }).run();
-        existingKeys.add(key);
-      }
+      db.insert(watchlist).values({ symbol: d.symbol, name: d.name, market: d.market, sortOrder: nextOrder++ }).run();
     }
   }
 
