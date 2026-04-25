@@ -200,7 +200,7 @@ export async function generateAllDigests(): Promise<{
   results: DigestResult[];
   updatedAt: number;
 }> {
-  const watchlistItems = storage.getWatchlist();
+  const watchlistItems = await storage.getWatchlist();
   const usItems = watchlistItems.filter((w) => w.market === "US");
 
   const results: DigestResult[] = [];
