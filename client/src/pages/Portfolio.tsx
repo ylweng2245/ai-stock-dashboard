@@ -44,6 +44,14 @@ function fmtNum(val: number, currency: "TWD" | "USD" | string): string {
   });
 }
 
+/** 均成本、現價用：一律 2 位小數（台股也顯示小數，市傀型 ETF 小數點正確） */
+function fmtPrice(val: number): string {
+  return val.toLocaleString("zh-TW", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 /** Colored P&L span — no arrow icon, color only */
 function PnLCell({ value, currency }: { value: number; currency: string }) {
   const isPos = value >= 0;
@@ -509,8 +517,8 @@ function HoldingRow({ row }: { row: any }) {
         </div>
       </td>
       <td className="px-4 py-3 text-right tabular-nums">{sharesStr}</td>
-      <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{fmtNum(row.avgCost, cur)}</td>
-      <td className="px-4 py-3 text-right tabular-nums font-medium">{fmtNum(row.currentPrice, cur)}</td>
+      <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{fmtPrice(row.avgCost)}</td>
+      <td className="px-4 py-3 text-right tabular-nums font-medium">{fmtPrice(row.currentPrice)}</td>
       <td className="px-4 py-3 text-right tabular-nums">{fmtNum(row.marketValue, cur)}</td>
       <td className="px-4 py-3 text-right"><PnLCell value={row.unrealizedGain} currency={cur} /></td>
       <td className="px-4 py-3 text-right">

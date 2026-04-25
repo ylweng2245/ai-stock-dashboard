@@ -172,6 +172,8 @@ export default function TechnicalAnalysis() {
     const map = new Map<string, TradeDot>();
     if (!symbolTxns?.length) return map;
     for (const tx of symbolTxns) {
+      // Skip dividend entries (price=0, shares=0) — they have no chart position
+      if (tx.side === "dividend" || tx.price <= 0) continue;
       map.set(tx.tradeDate, {
         date: tx.tradeDate.slice(5),
         fullDate: tx.tradeDate,
