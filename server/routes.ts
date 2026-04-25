@@ -304,11 +304,12 @@ export async function registerRoutes(
    */
 
   // ── Unified helpers ────────────────────────────────────────────────────────
-  function normalizeTradeSide(val: any): "buy" | "sell" | null {
+  function normalizeTradeSide(val: any): "buy" | "sell" | "dividend" | null {
     const s = String(val ?? "").trim().toLowerCase();
     if (!s) return null;
     if (s === "買" || s === "买" || s === "買進" || s === "买进" || s === "buy" || s === "b") return "buy";
     if (s === "賣" || s === "卖" || s === "賣出" || s === "卖出" || s === "sell" || s === "s") return "sell";
+    if (s === "股息" || s === "dividend" || s === "div") return "dividend";
     return null;
   }
 
@@ -346,7 +347,26 @@ export async function registerRoutes(
         );
       }
       const side = sideFromCol ?? sideFromCost;
-      if (!symbol || !price || !shares || !side) continue;
+      if (!symbol || !side) continue;
+
+      // Dividend row: price/shares are "NA" — only totalCost matters
+      if (side === "dividend") {
+        if (!totalCost || totalCost <= 0) continue; // must be a positive amount
+        result.push({
+          tradeDate: dateStr,
+          symbol,
+          name,
+          market,
+          side,
+          shares: 0,
+          price: 0,
+          totalCost,
+          currency: market === "TW" ? "TWD" : "USD",
+        });
+        continue;
+      }
+
+      if (!price || !shares) continue;
       result.push({
         tradeDate: dateStr,
         symbol,
@@ -433,6 +453,9 @@ export async function registerRoutes(
           pos.lots.push({ shares: tx.shares, price: tx.price, cost: Math.abs(tx.totalCost) });
           pos.totalBuyCost += Math.abs(tx.totalCost);
           pos.totalBuyShares += tx.shares;
+        } else if (tx.side === "dividend") {
+          // Dividend: directly add to realized gain (no lot consumption)
+          pos.realizedGain += tx.totalCost;
         } else {
           // FIFO sell: consume oldest lots first
           let toSell = tx.shares;

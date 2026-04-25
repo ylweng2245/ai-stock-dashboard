@@ -83,6 +83,9 @@ function MarketHeader({ label, marketValue, pct }: { label: string; marketValue:
   );
 }
 
+// 視為現金部位、排除在台股市值統計與占比排行外的 symbol
+const EXCLUDE_FROM_TW_STATS = new Set(["00719B"]);
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Portfolio() {
@@ -159,6 +162,7 @@ export default function Portfolio() {
   }, [computedHoldings, priceMap]);
 
   const twRows = useMemo(() => enriched.filter(r => r.market === "TW").sort((a, b) => b.marketValue - a.marketValue), [enriched]);
+  const twRowsForStats = useMemo(() => twRows.filter(r => !EXCLUDE_FROM_TW_STATS.has(r.symbol)), [twRows]);
   const usRows = useMemo(() => enriched.filter(r => r.market === "US").sort((a, b) => b.marketValue - a.marketValue), [enriched]);
 
   // Realized (fully closed)
@@ -172,7 +176,8 @@ export default function Portfolio() {
   const usRealized = useMemo(() => realizedRows.filter(r => r.market === "US"), [realizedRows]);
 
   // Summary stats
-  const twMarketValue = twRows.reduce((s, r) => s + r.marketValue, 0);
+  // 台股市值統計排除現金部位 00719B
+  const twMarketValue = twRowsForStats.reduce((s, r) => s + r.marketValue, 0);
   const usMarketValue = usRows.reduce((s, r) => s + r.marketValue, 0);
   const twMarketValueTWD = twMarketValue;
   const usMarketValueTWD = usMarketValue * TWD_USD;
@@ -192,16 +197,18 @@ export default function Portfolio() {
     .reduce((s, h) => s + h.realizedGain * TWD_USD, 0);
   const totalRealizedTWD = twRealizedTWD + usRealizedTWD;
 
-  // Bar chart data (TWD-converted values, sorted descending)
-  const barData = enriched.map((r, i) => ({
-    symbol: r.symbol,
-    name: r.name,
-    value: r.market === "US" ? r.marketValue * TWD_USD : r.marketValue,
-    origValue: r.marketValue,
-    color: COLORS[i % COLORS.length],
-    market: r.market,
-    currency: r.currency,
-  })).sort((a, b) => b.value - a.value);
+  // Bar chart data（持倉占比排行）：排除現金部位 00719B
+  const barData = enriched
+    .filter(r => !EXCLUDE_FROM_TW_STATS.has(r.symbol))
+    .map((r, i) => ({
+      symbol: r.symbol,
+      name: r.name,
+      value: r.market === "US" ? r.marketValue * TWD_USD : r.marketValue,
+      origValue: r.marketValue,
+      color: COLORS[i % COLORS.length],
+      market: r.market,
+      currency: r.currency,
+    })).sort((a, b) => b.value - a.value);
 
   const isLoading = holdingsLoading || pricesLoading;
   const hasData = enriched.length > 0 || realizedRows.length > 0;
