@@ -427,12 +427,12 @@ export default function StockNewsDigest() {
     refetchOnWindowFocus: false,
   });
 
-  // Live quotes from /api/quotes — refresh every 30s
+  // Live quotes from /api/quotes — shared with Dashboard, backend cache TTL is 60s
   const { data: quotesData } = useQuery<QuotesData>({
     queryKey: ["/api/quotes"],
     queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
-    staleTime: 30 * 1000,
-    refetchInterval: 30 * 1000,
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
     refetchOnWindowFocus: true,
   });
 
