@@ -285,13 +285,15 @@ function StockDigestCard({
       {/* Card Header */}
       <div className="flex items-start justify-between gap-3 p-5 pb-3">
         <div className="flex items-start gap-3">
-          <div className="w-11 h-11 shrink-0 rounded-[14px] bg-[#66c6df]/12 flex items-center justify-center text-[#9fe7f8] font-bold text-[15px]">
-            {tickerInitials(stock.symbol)}
+          <div className={cn(
+            "w-11 h-11 shrink-0 rounded-[14px] bg-[#66c6df]/12 flex items-center justify-center text-[#9fe7f8] font-bold tracking-wide",
+            stock.symbol.length <= 4 ? "text-[13px]" : "text-[11px]"
+          )}>
+            {stock.symbol}
           </div>
           <div>
             <h4 className="text-[20px] font-bold leading-tight">
-              {stock.name}{" "}
-              <span className="text-muted-foreground text-[14px] font-normal ml-1">{stock.symbol}</span>
+              {stock.name}
             </h4>
             {stock.sectorTag && (
               <p className="text-[12px] text-muted-foreground mt-0.5">{stock.sectorTag}</p>

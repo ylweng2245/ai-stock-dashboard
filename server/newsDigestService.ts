@@ -154,6 +154,33 @@ async function fetchMarketauxNews(ticker: string): Promise<FinnhubArticle[]> {
   }
 }
 
+// ─── Relevance filter ──────────────────────────────────────────────────────
+
+/**
+ * Keep only articles where headline or summary directly mentions
+ * the ticker symbol or company name (case-insensitive).
+ * If fewer than 2 articles pass the strict filter, fall back to the full list
+ * so Claude can still produce a "no direct news" message.
+ */
+function filterByRelevance(
+  articles: FinnhubArticle[],
+  ticker: string,
+  companyName: string
+): FinnhubArticle[] {
+  const tickerLower  = ticker.toLowerCase();
+  // Use first word of company name as the key term (e.g. "Intel" from "Intel Corp")
+  const companyKey   = companyName.split(/[\s,.(]/)[0].toLowerCase();
+
+  const isRelevant = (a: FinnhubArticle): boolean => {
+    const text = `${a.headline} ${a.summary ?? ""}`.toLowerCase();
+    return text.includes(tickerLower) || (companyKey.length > 2 && text.includes(companyKey));
+  };
+
+  const filtered = articles.filter(isRelevant);
+  // Fall back to original list if too few pass (let Claude handle the "no news" case)
+  return filtered.length >= 1 ? filtered : articles;
+}
+
 // ─── Dedup + limit ──────────────────────────────────────────────────────────
 
 /**
@@ -213,6 +240,11 @@ async function summarizeWithClaude(
   const prompt = `你是專業的財經新聞分析師。以下是 ${ticker}（${companyName}）截至 ${dateStr} 的最新新聞${priceInfo ? `，當前股價 ${priceInfo}` : ""}。
 
 ${articles.length > 0 ? articleContext : noNewsContext}
+
+重要規則：
+1. 只能根據以上提供的新聞內容進行摘要，不得引用或補充任何外部知識。
+2. 若提供的新聞中，直接報導 ${ticker}（${companyName}）的文章少於 2 篇，請在 summaryText 中明確說明「近期缺乏直接相關新聞」，並簡短說明現有內容，不可用間接相關的產業新聞湊數。
+3. sources 只列出你實際引用的文章，不得捏造來源。
 
 請以繁體中文輸出 JSON，格式如下（不要包含其他文字）：
 {
@@ -281,11 +313,13 @@ export async function generateDigestForTicker(
     const rawFinnhub   = finnhubResult.status   === "fulfilled" ? finnhubResult.value   : [];
     const rawMarketaux = marketauxResult.status === "fulfilled" ? marketauxResult.value : [];
 
-    // Step 1b: merge, deduplicate, limit to 5
-    const articles = deduplicateAndLimit([...rawFinnhub, ...rawMarketaux], 5);
+    // Step 1b: merge, filter by relevance, deduplicate, limit to 5
+    const merged   = [...rawFinnhub, ...rawMarketaux];
+    const relevant = filterByRelevance(merged, ticker, companyName);
+    const articles = deduplicateAndLimit(relevant, 5);
     console.log(
       `[newsDigest] ${ticker}: Finnhub ${rawFinnhub.length}, Marketaux ${rawMarketaux.length}, ` +
-      `after dedup: ${articles.length} articles`
+      `relevant: ${relevant.length}, after dedup: ${articles.length} articles`
     );
 
     // Step 2: summarize with Claude

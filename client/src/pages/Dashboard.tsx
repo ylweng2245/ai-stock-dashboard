@@ -802,6 +802,25 @@ function fmtChange(v: number | null | undefined, decimals = 2, pct = false): str
   return `${v < 0 ? "-" : ""}${str}${pct ? "%" : ""}`;
 }
 
+/** Map indicator key / stock symbol → Perplexity Finance URL */
+const FINANCE_URL_MAP: Record<string, string> = {
+  djia:      "https://www.perplexity.ai/finance/%5EDJI",
+  sp500:     "https://www.perplexity.ai/finance/%5EGSPC",
+  nasdaq:    "https://www.perplexity.ai/finance/%5EIXIC",
+  sox:       "https://www.perplexity.ai/finance/%5ESOX",
+  vix:       "https://www.perplexity.ai/finance/%5EVIX",
+  us_10y:    "https://www.perplexity.ai/finance/%5ETNX",
+  taiex:     "https://www.perplexity.ai/finance/%5ETWII",
+  usdtwd:    "https://www.perplexity.ai/finance/USDTWD%3DX",
+  fear_greed: "", // no Finance page
+};
+
+function getFinanceUrl(keyOrSymbol: string, market?: string): string {
+  if (FINANCE_URL_MAP[keyOrSymbol] !== undefined) return FINANCE_URL_MAP[keyOrSymbol];
+  // Individual stock
+  return `https://www.perplexity.ai/finance/${encodeURIComponent(keyOrSymbol)}`;
+}
+
 function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boolean }) {
   if (isLoading) {
     return (
@@ -1070,8 +1089,15 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
   if (["djia", "sp500", "nasdaq", "sox"].includes(card.key)) {
     const chgPct = card.changePct;
     const colorClass = isGain(chgPct) ? "text-gain" : isLoss(chgPct) ? "text-loss" : "text-muted-foreground";
+    const financeUrl = getFinanceUrl(card.key);
     return (
-      <div className="bg-card border border-border rounded-lg p-3" data-testid={`overview-card-${card.key}`}>
+      <a
+        href={financeUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block bg-card border border-border rounded-lg p-3 hover:border-[#66c6df]/40 transition-colors"
+        data-testid={`overview-card-${card.key}`}
+      >
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] text-muted-foreground font-medium">{card.label}</span>
           {card.stale && <AlertCircle className="w-3 h-3 text-muted-foreground/50" />}
@@ -1091,7 +1117,7 @@ function OverviewCard({ card, isLoading }: { card: IndicatorCard; isLoading: boo
         <div className="mt-1.5">
           <SignalBadge signal={card.signal} text={card.signalText} />
         </div>
-      </div>
+      </a>
     );
   }
 
@@ -1515,6 +1541,7 @@ function KPICard({
 
 function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => void }) {
   const isPositive = stock.changePercent >= 0;
+  const financeUrl = getFinanceUrl(stock.symbol, stock.market);
   return (
     <div
       className="flex items-center justify-between py-2.5 px-3 rounded-md hover:bg-muted/30 transition-colors group"
@@ -1526,7 +1553,7 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1">
-            <span className="text-sm font-medium truncate">{stock.symbol}</span>
+            <a href={financeUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-medium truncate hover:text-[#66c6df] hover:underline transition-colors" onClick={(e) => e.stopPropagation()}>{stock.symbol}</a>
             {stock.quoteStatus === "error" && (
               <AlertCircle
                 className="w-3 h-3 text-amber-400 shrink-0"
