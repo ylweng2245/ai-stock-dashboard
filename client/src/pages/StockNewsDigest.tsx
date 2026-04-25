@@ -19,7 +19,7 @@ interface DigestEntry {
   priceClose: number | null;
   priceChangePct: number | null;
   summaryText: string;
-  aiTakeaway: string;
+  aiTakeaway?: string; // removed in v5.2, kept for DB compatibility
   sentimentLabel: string;
   sourceCount: number;
   status: string;
@@ -226,14 +226,6 @@ function DigestTimelineItem({
         <p className="text-[14px] text-foreground/80 leading-relaxed mb-2">
           {entry.summaryText}
         </p>
-      )}
-
-      {/* AI Takeaway */}
-      {entry.aiTakeaway && (
-        <div className="mb-3 p-3 rounded-xl bg-[#66c6df]/6 border border-[#66c6df]/14">
-          <span className="block text-[12px] font-semibold text-[#b6ebf7] mb-1">AI 判讀重點</span>
-          <p className="text-[13px] text-foreground/80 leading-relaxed">{entry.aiTakeaway}</p>
-        </div>
       )}
 
       {/* Sources */}

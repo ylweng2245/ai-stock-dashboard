@@ -1,7 +1,7 @@
 /**
- * newsDigestService.ts
- * Step 1: Fetch real news articles from Finnhub (free API, no credit card).
- * Step 2: Feed article content to Claude for Chinese summarization + sentiment.
+ * newsDigestService.ts  v5.2
+ * Step 1: Fetch real news from Finnhub + Marketaux (parallel, deduplicated, max 5).
+ * Step 2: Feed articles to Claude for zh-TW summary + sentiment (no aiTakeaway).
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -9,8 +9,8 @@ import { storage } from "./storage";
 
 const anthropic = new Anthropic();
 
-// Finnhub API key from env
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY ?? "";
+const FINNHUB_API_KEY   = process.env.FINNHUB_API_KEY   ?? "";
+const MARKETAUX_API_KEY = process.env.MARKETAUX_API_KEY ?? "";
 
 // Today's date in ET (US Eastern Time)
 function todayET(): string {
@@ -38,6 +38,14 @@ interface FinnhubArticle {
   url: string;
   source: string;
   datetime: number; // unix timestamp
+}
+
+interface MarketauxArticle {
+  title: string;
+  description: string;
+  url: string;
+  source: string;
+  published_at: string; // ISO 8601
 }
 
 interface DigestResult {
@@ -83,15 +91,12 @@ function domainToSourceName(domain: string): string {
   for (const [key, val] of Object.entries(map)) {
     if (domain.includes(key)) return val;
   }
-  // Capitalize first segment
   const seg = domain.split(".")[0] ?? domain;
   return seg.charAt(0).toUpperCase() + seg.slice(1);
 }
 
-/**
- * Fetch company news from Finnhub.
- * Tries last 24h first; if fewer than 2 articles, expands to 3 days.
- */
+// ─── Finnhub ────────────────────────────────────────────────────────────────
+
 async function fetchFinnhubNews(ticker: string): Promise<FinnhubArticle[]> {
   if (!FINNHUB_API_KEY) {
     throw new Error("FINNHUB_API_KEY 環境變數未設定");
@@ -100,29 +105,88 @@ async function fetchFinnhubNews(ticker: string): Promise<FinnhubArticle[]> {
   async function query(daysBack: number): Promise<FinnhubArticle[]> {
     const { from, to } = unixRange(daysBack);
     const fromDate = new Date(from * 1000).toISOString().slice(0, 10);
-    const toDate = new Date(to * 1000).toISOString().slice(0, 10);
+    const toDate   = new Date(to   * 1000).toISOString().slice(0, 10);
     const url = `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`;
-
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw new Error(`Finnhub HTTP ${res.status}`);
     const data = await res.json() as FinnhubArticle[];
-    // Sort newest first, keep top 10
     return data
       .filter((a) => a.headline && a.url)
       .sort((a, b) => b.datetime - a.datetime)
       .slice(0, 10);
   }
 
-  let articles = await query(1); // last 24h
-  if (articles.length < 2) {
-    articles = await query(3); // expand to 3 days
-  }
+  let articles = await query(1);
+  if (articles.length < 2) articles = await query(3);
   return articles;
 }
 
+// ─── Marketaux ──────────────────────────────────────────────────────────────
+
+async function fetchMarketauxNews(ticker: string): Promise<FinnhubArticle[]> {
+  if (!MARKETAUX_API_KEY) return [];
+  try {
+    const url =
+      `https://api.marketaux.com/v1/news/all` +
+      `?symbols=${encodeURIComponent(ticker)}` +
+      `&filter_entities=true` +
+      `&language=en` +
+      `&api_token=${MARKETAUX_API_KEY}` +
+      `&limit=5`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) {
+      console.warn(`fetchMarketauxNews ${ticker}: HTTP ${res.status}`);
+      return [];
+    }
+    const data = await res.json() as { data?: MarketauxArticle[] };
+    return (data.data ?? [])
+      .filter((a) => a.title && a.url)
+      .map((a) => ({
+        headline: a.title,
+        summary:  a.description ?? "",
+        url:      a.url,
+        source:   a.source ?? "Marketaux",
+        datetime: Math.floor(new Date(a.published_at).getTime() / 1000),
+      }));
+  } catch (e: any) {
+    console.warn(`fetchMarketauxNews ${ticker}: ${e.message}`);
+    return [];
+  }
+}
+
+// ─── Dedup + limit ──────────────────────────────────────────────────────────
+
 /**
- * Build a context string from Finnhub articles and send to Claude for summarization.
+ * Merge articles from multiple sources, remove duplicates
+ * (identical URL or first-40-char headline match), sort newest first,
+ * keep at most maxCount.
  */
+function deduplicateAndLimit(articles: FinnhubArticle[], maxCount: number): FinnhubArticle[] {
+  const seen   = new Set<string>();
+  const result: FinnhubArticle[] = [];
+  const sorted = [...articles].sort((a, b) => b.datetime - a.datetime);
+
+  for (const article of sorted) {
+    if (result.length >= maxCount) break;
+
+    if (seen.has(article.url)) continue;
+    seen.add(article.url);
+
+    const headlineKey = article.headline
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, "")
+      .slice(0, 40)
+      .trim();
+    if (headlineKey && seen.has(headlineKey)) continue;
+    if (headlineKey) seen.add(headlineKey);
+
+    result.push(article);
+  }
+  return result;
+}
+
+// ─── Claude summarization ───────────────────────────────────────────────────
+
 async function summarizeWithClaude(
   ticker: string,
   companyName: string,
@@ -131,55 +195,36 @@ async function summarizeWithClaude(
   priceChangePct?: number
 ): Promise<{
   summaryText: string;
-  aiTakeaway: string;
   sentimentLabel: string;
   sources: RawSource[];
 }> {
-  const dateStr = todayET();
+  const dateStr   = todayET();
   const priceInfo = priceClose != null
-    ? `今日收盤價: $${priceClose.toFixed(2)}，漲跌幅: ${priceChangePct != null ? (priceChangePct >= 0 ? "" : "") + priceChangePct.toFixed(2) + "%" : "N/A"}`
+    ? `$${priceClose.toFixed(2)}，漲跌幅: ${priceChangePct != null ? priceChangePct.toFixed(2) + "%" : "N/A"}`
     : "";
 
-  // Build article context
   const articleContext = articles.map((a, i) => {
     const dt = new Date(a.datetime * 1000).toISOString().replace("T", " ").slice(0, 16);
     return `[${i + 1}] 來源: ${a.source} | 時間: ${dt}\n標題: ${a.headline}\n摘要: ${a.summary ?? "（無摘要）"}\n網址: ${a.url}`;
   }).join("\n\n");
 
-  const noNewsContext = `目前 Finnhub 在近期查無 ${ticker} 的新聞文章。`;
+  const noNewsContext = `目前在近期查無 ${ticker} 的新聞文章。`;
 
-  const prompt = `你是一位專業的美股財經分析師，請根據以下提供的新聞資料，為 ${ticker}（${companyName}）產生 ${dateStr} 的每日新聞彙總。
-${priceInfo ? `\n股價資訊：${priceInfo}\n` : ""}
-=== 新聞資料 ===
+  const prompt = `你是專業的財經新聞分析師。以下是 ${ticker}（${companyName}）截至 ${dateStr} 的最新新聞${priceInfo ? `，當前股價 ${priceInfo}` : ""}。
+
 ${articles.length > 0 ? articleContext : noNewsContext}
-=== 結束 ===
 
-請完成以下任務：
-1. 整合以上新聞重點，產生 150-250 字的繁體中文摘要（著重於影響股價或公司基本面的關鍵訊息）
-2. 產生一段 50-80 字的「AI 判讀重點」，說明新聞背後的市場意涵與投資參考
-3. 根據新聞整體傾向判斷情緒：positive、negative 或 neutral
-4. 列出你實際引用的新聞來源（從上方資料中選取，不要捏造）
-
-若近期無新聞，summaryText 請說明「近期無重大新聞，市場平靜」，sources 回傳空陣列。
-
-請以下列 JSON 格式回覆（不要加其他文字）：
+請以繁體中文輸出 JSON，格式如下（不要包含其他文字）：
 {
-  "summaryText": "...",
-  "aiTakeaway": "...",
-  "sentimentLabel": "positive|negative|neutral",
-  "sources": [
-    {
-      "articleTitle": "...",
-      "articleUrl": "...",
-      "publishedAt": "YYYY-MM-DD HH:mm"
-    }
-  ]
+  "summaryText": "150-250字的專業新聞摘要，涵蓋主要事件、業務影響與市場意義",
+  "sentimentLabel": "positive 或 negative 或 neutral 三選一",
+  "sources": [{"articleTitle": "...", "articleUrl": "...", "publishedAt": "YYYY-MM-DD HH:mm"}]
 }`;
 
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 2048,
-    messages: [{ role: "user", content: prompt }],
+    model:      "claude-sonnet-4-5",
+    max_tokens: 1024,
+    messages:   [{ role: "user", content: prompt }],
   });
 
   const textContent = message.content.find((c: any) => c.type === "text");
@@ -190,29 +235,26 @@ ${articles.length > 0 ? articleContext : noNewsContext}
 
   const parsed = JSON.parse(jsonMatch[0]);
 
-  // Build sources from Finnhub article data (don't trust Claude-invented URLs)
   const sources: RawSource[] = (parsed.sources ?? []).map((s: any) => {
-    // Try to match back to a real Finnhub article by URL or title
     const matched = articles.find(
       (a) => a.url === s.articleUrl || a.headline === s.articleTitle
     );
-    const url = matched?.url ?? s.articleUrl ?? "";
+    const url    = matched?.url ?? s.articleUrl ?? "";
     const domain = extractDomain(url);
-    const dt = matched
+    const dt     = matched
       ? new Date(matched.datetime * 1000).toISOString().replace("T", " ").slice(0, 16)
       : (s.publishedAt ?? "");
     return {
-      sourceName: matched ? domainToSourceName(extractDomain(matched.url)) : domainToSourceName(domain),
+      sourceName:   matched ? domainToSourceName(extractDomain(matched.url)) : domainToSourceName(domain),
       articleTitle: matched?.headline ?? s.articleTitle ?? "",
-      articleUrl: url,
-      publishedAt: dt,
+      articleUrl:   url,
+      publishedAt:  dt,
       sourceDomain: domain,
     };
-  }).filter((s: RawSource) => s.articleUrl); // drop entries with no URL
+  }).filter((s: RawSource) => s.articleUrl);
 
   return {
     summaryText: parsed.summaryText ?? "",
-    aiTakeaway: parsed.aiTakeaway ?? "",
     sentimentLabel: ["positive", "negative", "neutral"].includes(parsed.sentimentLabel)
       ? parsed.sentimentLabel
       : "neutral",
@@ -220,7 +262,9 @@ ${articles.length > 0 ? articleContext : noNewsContext}
   };
 }
 
-/** Process a single ticker: Finnhub → Claude → DB */
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+/** Process a single ticker: Finnhub + Marketaux → dedup → Claude → DB */
 export async function generateDigestForTicker(
   ticker: string,
   companyName: string,
@@ -229,26 +273,37 @@ export async function generateDigestForTicker(
 ): Promise<DigestResult> {
   const digestDate = todayET();
   try {
-    // Step 1: fetch real news
-    const articles = await fetchFinnhubNews(ticker);
-    console.log(`[newsDigest] ${ticker} — Finnhub: ${articles.length} articles`);
+    // Step 1: fetch from both sources in parallel
+    const [finnhubResult, marketauxResult] = await Promise.allSettled([
+      fetchFinnhubNews(ticker),
+      fetchMarketauxNews(ticker),
+    ]);
+    const rawFinnhub   = finnhubResult.status   === "fulfilled" ? finnhubResult.value   : [];
+    const rawMarketaux = marketauxResult.status === "fulfilled" ? marketauxResult.value : [];
+
+    // Step 1b: merge, deduplicate, limit to 5
+    const articles = deduplicateAndLimit([...rawFinnhub, ...rawMarketaux], 5);
+    console.log(
+      `[newsDigest] ${ticker}: Finnhub ${rawFinnhub.length}, Marketaux ${rawMarketaux.length}, ` +
+      `after dedup: ${articles.length} articles`
+    );
 
     // Step 2: summarize with Claude
-    const { summaryText, aiTakeaway, sentimentLabel, sources } =
+    const { summaryText, sentimentLabel, sources } =
       await summarizeWithClaude(ticker, companyName, articles, priceClose, priceChangePct);
 
-    // Step 3: persist to DB
+    // Step 3: persist to DB (aiTakeaway fixed to "" for schema compatibility)
     const digest = storage.upsertDigest({
       ticker,
       digestDate,
-      generatedAt: Date.now(),
-      priceClose: priceClose ?? null,
+      generatedAt:    Date.now(),
+      priceClose:     priceClose     ?? null,
       priceChangePct: priceChangePct ?? null,
       summaryText,
-      aiTakeaway,
+      aiTakeaway:     "",   // removed in v5.2, kept for DB compatibility
       sentimentLabel,
-      sourceCount: sources.length,
-      status: "ok",
+      sourceCount:    sources.length,
+      status:         "ok",
     });
 
     storage.replaceSourcesForDigest(digest.id, sources);
@@ -261,14 +316,14 @@ export async function generateDigestForTicker(
       storage.upsertDigest({
         ticker,
         digestDate,
-        generatedAt: Date.now(),
-        priceClose: priceClose ?? null,
+        generatedAt:    Date.now(),
+        priceClose:     priceClose     ?? null,
         priceChangePct: priceChangePct ?? null,
-        summaryText: "",
-        aiTakeaway: "",
+        summaryText:    "",
+        aiTakeaway:     "",
         sentimentLabel: "neutral",
-        sourceCount: 0,
-        status: "error",
+        sourceCount:    0,
+        status:         "error",
       });
     } catch {}
     return { ticker, success: false, error: e.message };
@@ -287,7 +342,7 @@ export async function generateAllDigests(): Promise<{
   for (const item of usItems) {
     const result = await generateDigestForTicker(item.symbol, item.name);
     results.push(result);
-    // Avoid Finnhub rate limit (60 req/min free plan)
+    // Respect Finnhub free-plan rate limit (60 req/min)
     await new Promise((r) => setTimeout(r, 1200));
   }
 

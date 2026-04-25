@@ -267,7 +267,7 @@ export async function registerRoutes(
 
       const message = await client.messages.create({
         model: "claude-sonnet-4-5",
-        max_tokens: 1024,
+        max_tokens: 768,
         messages: [{ role: "user", content: question }],
         system: systemPrompt,
       });
