@@ -14,6 +14,7 @@ import MLPrediction from "@/pages/MLPrediction";
 import AIInsights from "@/pages/AIInsights";
 import Portfolio from "@/pages/Portfolio";
 import Alerts from "@/pages/Alerts";
+import StockNewsDigest from "@/pages/StockNewsDigest";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -38,6 +39,7 @@ function AppRouter() {
         </Route>
         <Route path="/portfolio" component={Portfolio} />
         <Route path="/alerts" component={Alerts} />
+        <Route path="/news-digest" component={StockNewsDigest} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

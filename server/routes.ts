@@ -7,6 +7,7 @@ import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type Ins
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
+import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -571,6 +572,116 @@ export async function registerRoutes(
       // Return stale cache if available
       if (cached) return res.json(cached.result);
       res.status(503).json({ error: `Intraday data unavailable for ${key}` });
+    }
+  });
+
+  // ---- News Digest ----
+
+  /** GET /api/news-digest/stocks
+   * Returns US watchlist stocks with their recent digest history.
+   * ?days=N (default 30)
+   */
+  app.get("/api/news-digest/stocks", async (req, res) => {
+    try {
+      const days = Math.min(180, Math.max(1, parseInt((req.query.days as string) ?? "30") || 30));
+      const watchlistItems = await storage.getWatchlist();
+      const usItems = watchlistItems.filter((w) => w.market === "US");
+      const tickers = usItems.map((w) => w.symbol);
+      const allDigests = storage.getDigestsForTickers(tickers, days);
+
+      const digestsByTicker = new Map<string, typeof allDigests>();
+      for (const d of allDigests) {
+        const arr = digestsByTicker.get(d.ticker) ?? [];
+        arr.push(d);
+        digestsByTicker.set(d.ticker, arr);
+      }
+
+      const stocks = usItems.map((w) => ({
+        symbol: w.symbol,
+        name: w.name,
+        sectorTag: storage.getSectorTag(w.symbol),
+        digests: digestsByTicker.get(w.symbol) ?? [],
+      }));
+
+      // Stats
+      const todayDate = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      const updatedToday = stocks.filter((s) =>
+        s.digests.some((d) => d.digestDate === todayDate && d.status === "ok")
+      ).length;
+
+      res.json({
+        stocks,
+        stats: {
+          totalStocks: usItems.length,
+          updatedToday,
+          historyDays: days,
+          maxSourceCount: Math.max(0, ...allDigests.map((d) => d.sourceCount)),
+        },
+        lastUpdated: allDigests.length > 0
+          ? Math.max(...allDigests.map((d) => d.generatedAt))
+          : null,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /** POST /api/news-digest/update — trigger full update for all US watchlist stocks */
+  let digestUpdateRunning = false;
+  app.post("/api/news-digest/update", async (_req, res) => {
+    if (digestUpdateRunning) {
+      return res.status(409).json({ error: "Update already in progress" });
+    }
+    digestUpdateRunning = true;
+    try {
+      const { results, updatedAt } = await generateAllDigests();
+      res.json({
+        success: true,
+        updatedAt,
+        results,
+        successCount: results.filter((r) => r.success).length,
+        errorCount: results.filter((r) => !r.success).length,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    } finally {
+      digestUpdateRunning = false;
+    }
+  });
+
+  /** GET /api/news-digest/:digestId/sources — sources for a single digest */
+  app.get("/api/news-digest/:digestId/sources", (req, res) => {
+    try {
+      const digestId = parseInt(req.params.digestId);
+      if (isNaN(digestId)) return res.status(400).json({ error: "Invalid digestId" });
+      const sources = storage.getSourcesForDigest(digestId);
+      res.json(sources);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /** GET /api/news-digest/:ticker/history — full history for one ticker */
+  app.get("/api/news-digest/:ticker/history", (req, res) => {
+    try {
+      const ticker = req.params.ticker.toUpperCase();
+      const days = Math.min(180, parseInt((req.query.days as string) ?? "90") || 90);
+      const digests = storage.getDigestsForTicker(ticker, days);
+      res.json(digests);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /** PATCH /api/news-digest/sector-tag — set sector tag for a symbol */
+  app.patch("/api/news-digest/sector-tag", (req, res) => {
+    try {
+      const { symbol, sectorTag } = req.body;
+      if (!symbol || sectorTag === undefined) return res.status(400).json({ error: "symbol and sectorTag required" });
+      storage.upsertSectorTag(symbol.toUpperCase(), sectorTag);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 

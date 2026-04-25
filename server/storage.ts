@@ -5,6 +5,9 @@ import {
   type Transaction, type InsertTransaction, transactions,
   type HistoricalPrice, type InsertHistoricalPrice, historicalPrices,
   type MarketIndicator, type InsertMarketIndicator, marketIndicators,
+  type DailyNewsDigest, type InsertDailyNewsDigest, dailyNewsDigest,
+  type DailyNewsSource, type InsertDailyNewsSource, dailyNewsSources,
+  type WatchlistSectorTag, watchlistSectorTags,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -359,7 +362,112 @@ export class DatabaseStorage implements IStorage {
     });
     upsertMany(rows);
   }
+
+  // ── News Digest CRUD ────────────────────────────────────────────────────
+
+  getSectorTag(symbol: string): string {
+    const row = db.select().from(watchlistSectorTags).where(eq(watchlistSectorTags.symbol, symbol)).get();
+    return row?.sectorTag ?? "";
+  }
+
+  upsertSectorTag(symbol: string, sectorTag: string): void {
+    const existing = db.select().from(watchlistSectorTags).where(eq(watchlistSectorTags.symbol, symbol)).get();
+    if (existing) {
+      db.update(watchlistSectorTags).set({ sectorTag }).where(eq(watchlistSectorTags.symbol, symbol)).run();
+    } else {
+      db.insert(watchlistSectorTags).values({ symbol, sectorTag }).run();
+    }
+  }
+
+  getDigestsForTickers(tickers: string[], days = 30): DailyNewsDigest[] {
+    if (tickers.length === 0) return [];
+    const rows = db.select().from(dailyNewsDigest)
+      .orderBy(desc(dailyNewsDigest.digestDate))
+      .all();
+    const byTicker = new Map<string, DailyNewsDigest[]>();
+    for (const r of rows) {
+      if (!tickers.includes(r.ticker)) continue;
+      const arr = byTicker.get(r.ticker) ?? [];
+      if (arr.length < days) arr.push(r);
+      byTicker.set(r.ticker, arr);
+    }
+    return tickers.flatMap(t => byTicker.get(t) ?? []);
+  }
+
+  getDigestsForTicker(ticker: string, days = 30): DailyNewsDigest[] {
+    return db.select().from(dailyNewsDigest)
+      .where(eq(dailyNewsDigest.ticker, ticker))
+      .orderBy(desc(dailyNewsDigest.digestDate))
+      .limit(days)
+      .all();
+  }
+
+  upsertDigest(data: InsertDailyNewsDigest): DailyNewsDigest {
+    const existing = db.select().from(dailyNewsDigest)
+      .where(and(
+        eq(dailyNewsDigest.ticker, data.ticker),
+        eq(dailyNewsDigest.digestDate, data.digestDate)
+      )).get();
+    if (existing) {
+      db.update(dailyNewsDigest).set(data).where(eq(dailyNewsDigest.id, existing.id)).run();
+      return db.select().from(dailyNewsDigest).where(eq(dailyNewsDigest.id, existing.id)).get()!;
+    }
+    return db.insert(dailyNewsDigest).values(data).returning().get();
+  }
+
+  getSourcesForDigest(digestId: number): DailyNewsSource[] {
+    return db.select().from(dailyNewsSources)
+      .where(eq(dailyNewsSources.digestId, digestId))
+      .orderBy(asc(dailyNewsSources.sortOrder))
+      .all();
+  }
+
+  replaceSourcesForDigest(digestId: number, sources: Omit<InsertDailyNewsSource, "digestId">[]): void {
+    db.delete(dailyNewsSources).where(eq(dailyNewsSources.digestId, digestId)).run();
+    sources.forEach((s, i) => {
+      db.insert(dailyNewsSources).values({ ...s, digestId, sortOrder: i }).run();
+    });
+  }
 }
+
+// Ensure news digest tables exist (fresh DB or migration)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS watchlist_sector_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL UNIQUE,
+    sector_tag TEXT NOT NULL DEFAULT ''
+  )`);
+} catch { /* ignore */ }
+
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS daily_news_digest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    digest_date TEXT NOT NULL,
+    generated_at INTEGER NOT NULL,
+    price_close REAL,
+    price_change_pct REAL,
+    summary_text TEXT NOT NULL DEFAULT '',
+    ai_takeaway TEXT NOT NULL DEFAULT '',
+    sentiment_label TEXT NOT NULL DEFAULT 'neutral',
+    source_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok'
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS digest_ticker_date ON daily_news_digest (ticker, digest_date)`);
+} catch { /* ignore */ }
+
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS daily_news_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    digest_id INTEGER NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
+    article_title TEXT NOT NULL DEFAULT '',
+    article_url TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT '',
+    source_domain TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0
+  )`);
+} catch { /* ignore */ }
 
 // Ensure market_indicators table + index exist (migration-safe)
 try {

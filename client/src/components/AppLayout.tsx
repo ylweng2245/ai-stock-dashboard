@@ -10,12 +10,14 @@ import {
   Sun,
   Moon,
   Activity,
+  Newspaper,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { path: "/", label: "市場總覽", icon: LayoutDashboard },
+  { path: "/news-digest", label: "個股每日新聞", icon: Newspaper },
   { path: "/analysis", label: "技術分析", icon: TrendingUp },
   { path: "/prediction", label: "ML 預測", icon: Brain },
   { path: "/insights", label: "AI 洞察", icon: Sparkles },

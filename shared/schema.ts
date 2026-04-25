@@ -102,3 +102,50 @@ export const marketIndicators = sqliteTable("market_indicators", {
 export const insertMarketIndicatorSchema = createInsertSchema(marketIndicators).omit({ id: true });
 export type InsertMarketIndicator = z.infer<typeof insertMarketIndicatorSchema>;
 export type MarketIndicator = typeof marketIndicators.$inferSelect;
+
+// ── News Digest ─────────────────────────────────────────────────────────────
+
+// Sector tag extension for watchlist (stored separately to avoid breaking existing schema)
+export const watchlistSectorTags = sqliteTable("watchlist_sector_tags", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  symbol: text("symbol").notNull().unique(),
+  sectorTag: text("sector_tag").notNull().default(""),
+});
+export type WatchlistSectorTag = typeof watchlistSectorTags.$inferSelect;
+
+// One digest snapshot per ticker per day
+export const dailyNewsDigest = sqliteTable("daily_news_digest", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  ticker: text("ticker").notNull(),
+  digestDate: text("digest_date").notNull(),      // "YYYY-MM-DD"
+  generatedAt: integer("generated_at").notNull(), // Unix ms
+  priceClose: real("price_close"),
+  priceChangePct: real("price_change_pct"),
+  summaryText: text("summary_text").notNull().default(""),
+  aiTakeaway: text("ai_takeaway").notNull().default(""),
+  sentimentLabel: text("sentiment_label").notNull().default("neutral"), // positive | negative | neutral
+  sourceCount: integer("source_count").notNull().default(0),
+  status: text("status").notNull().default("ok"), // ok | error | pending
+}, (t) => ({
+  tickerDateIdx: uniqueIndex("digest_ticker_date").on(t.ticker, t.digestDate),
+}));
+
+export const insertDailyNewsDigestSchema = createInsertSchema(dailyNewsDigest).omit({ id: true });
+export type InsertDailyNewsDigest = z.infer<typeof insertDailyNewsDigestSchema>;
+export type DailyNewsDigest = typeof dailyNewsDigest.$inferSelect;
+
+// Source articles linked to each digest
+export const dailyNewsSources = sqliteTable("daily_news_sources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  digestId: integer("digest_id").notNull(),
+  sourceName: text("source_name").notNull().default(""),
+  articleTitle: text("article_title").notNull().default(""),
+  articleUrl: text("article_url").notNull().default(""),
+  publishedAt: text("published_at").notNull().default(""),
+  sourceDomain: text("source_domain").notNull().default(""),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const insertDailyNewsSourceSchema = createInsertSchema(dailyNewsSources).omit({ id: true });
+export type InsertDailyNewsSource = z.infer<typeof insertDailyNewsSourceSchema>;
+export type DailyNewsSource = typeof dailyNewsSources.$inferSelect;
