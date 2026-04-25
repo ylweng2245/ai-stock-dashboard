@@ -50,13 +50,6 @@ try {
   )`);
 } catch { /* ignore */ }
 
-// Ensure sort_order column exists (migration for existing DBs)
-try {
-  sqlite.exec("ALTER TABLE watchlist ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
-} catch {
-  // Column already exists — ignore
-}
-
 // Ensure transactions table exists (migration for existing DBs)
 try {
   sqlite.exec(`CREATE TABLE IF NOT EXISTS transactions (
@@ -429,6 +422,25 @@ export class DatabaseStorage implements IStorage {
     });
   }
 }
+
+// ─── ALTER TABLE safety guards ─────────────────────────────────────────────
+// Each try/catch adds a column only if it doesn't exist yet.
+// Add new entries here whenever a future version adds columns to existing tables.
+// Format: ALTER TABLE <table> ADD COLUMN <col> <type> <default>
+
+const safeAlter = (sql: string) => { try { sqlite.exec(sql); } catch { /* column exists */ } };
+
+// watchlist
+safeAlter("ALTER TABLE watchlist ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+
+// daily_news_digest
+safeAlter("ALTER TABLE daily_news_digest ADD COLUMN ai_takeaway TEXT NOT NULL DEFAULT ''");
+safeAlter("ALTER TABLE daily_news_digest ADD COLUMN price_close REAL");
+safeAlter("ALTER TABLE daily_news_digest ADD COLUMN price_change_pct REAL");
+safeAlter("ALTER TABLE daily_news_digest ADD COLUMN source_count INTEGER NOT NULL DEFAULT 0");
+safeAlter("ALTER TABLE daily_news_digest ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'");
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Ensure news digest tables exist (fresh DB or migration)
 try {

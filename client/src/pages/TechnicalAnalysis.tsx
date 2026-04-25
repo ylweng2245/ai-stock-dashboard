@@ -203,7 +203,7 @@ export default function TechnicalAnalysis() {
           bbUpper: bollingerData.upper[i] ?? null,
           bbMiddle: bollingerData.middle[i] ?? null,
           bbLower: bollingerData.lower[i] ?? null,
-          tradeDot: tradeInfo ? d.close : null,
+          tradeDot: tradeInfo ? tradeInfo.price : null,
           tradeInfo,
         };
       }),
