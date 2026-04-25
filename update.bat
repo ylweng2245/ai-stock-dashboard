@@ -26,7 +26,7 @@ echo.
 echo [3/3] Restarting server...
 taskkill /F /IM node.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
-start "" /B cmd /c "node dist\index.cjs > server.log 2>&1"
+start "AI Stock Dashboard" /D "C:\ai-stock-dashboard" cmd /c "node dist\index.cjs > server.log 2>&1"
 
 echo.
 echo ========================================
