@@ -6,9 +6,9 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Pulling latest code from GitHub...
+git rm --cached data.db >nul 2>&1
 git fetch origin
-git checkout -- . 2>nul
-git pull origin main
+git reset --hard origin/main
 if errorlevel 1 (
     echo ERROR: git pull failed
     pause
