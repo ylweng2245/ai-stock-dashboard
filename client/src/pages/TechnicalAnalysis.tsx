@@ -259,7 +259,7 @@ function AnalystWideCard({
               {/* Consensus result */}
               <div>
                 <div className="text-[12px] text-muted-foreground mb-1">共識</div>
-                <div className={cn("text-[20px] font-semibold leading-tight", consensusColor(summary.consensusLabel))}>
+                <div className={cn("text-[16px] font-semibold leading-tight whitespace-nowrap", consensusColor(summary.consensusLabel))}>
                   {summary.consensusLabel}
                 </div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">
@@ -439,7 +439,12 @@ function AnalystTargetTable({
               return (
                 <tr key={row.id ?? i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                   <td className="px-3 py-1.5 font-medium">{row.institution}</td>
-                  <td className="px-3 py-1.5 text-muted-foreground">{row.rating}</td>
+                  <td className={cn(
+                    "px-3 py-1.5 font-bold",
+                    row.ratingCategory === "bullish" ? "text-[#ef4444]" :
+                    row.ratingCategory === "bearish" ? "text-[#22c55e]" :
+                    "text-foreground"
+                  )}>{row.rating}</td>
                   <td className="px-3 py-1.5 tabular-nums font-medium">
                     {currencySymbol}{row.targetPrice.toLocaleString()}
                   </td>
@@ -611,6 +616,8 @@ export default function TechnicalAnalysis() {
           tradeDot: tradeInfo ? tradeInfo.price : null,
           tradeInfo,
           analystEvent,
+          // analystDot: targetPrice when there's an event, so T-marker sits at correct price level
+          analystDot: analystEvent?.targetPrice ?? null,
         };
       }),
     [candleData, rsi, macdData, bollingerData, tradeDotMap, analystEventMap]
@@ -817,25 +824,54 @@ export default function TechnicalAnalysis() {
                 />
                 <Bar dataKey="volume" fill="hsl(var(--muted))" opacity={0.3} yAxisId="volume" name="成交量" />
                 <YAxis yAxisId="volume" orientation="right" tick={false} width={0} domain={[0, (max: number) => max * 5]} />
-                {/* Analyst T-marker overlay — one ReferenceLine per event at Y=targetPrice */}
-                {visibleOverlayEvents.map((ev, i) => {
-                  // Guard: skip if targetPrice is missing/invalid
-                  if (!ev.targetPrice || !isFinite(ev.targetPrice)) return null;
-                  // Find the chart "date" key (MM-DD) matching this event's fullDate
-                  const chartPt = chartData.find(d => d.fullDate === ev.date);
-                  if (!chartPt) return null;
+                {/* Average target price horizontal dashed line */}
+                {hasAnalyst && isFinite(analystData.summary.averageTargetPrice) && (() => {
+                  const avg = analystData.summary.averageTargetPrice;
+                  const currentPrice = data?.currentPrice ?? 0;
+                  const avgLineColor = currentPrice > 0
+                    ? avg > currentPrice ? "#ef4444" : avg < currentPrice ? "#22c55e" : "#ffffff"
+                    : "#ffffff";
                   return (
                     <ReferenceLine
-                      key={`analyst-${i}-${ev.date}-${ev.institution}`}
-                      y={ev.targetPrice}
-                      x={chartPt.date}
-                      stroke="none"
-                      label={(labelProps: any) => (
-                        <AnalystRefLabel {...labelProps} event={ev} />
-                      )}
+                      y={avg}
+                      stroke={avgLineColor}
+                      strokeWidth={1}
+                      strokeDasharray="5 4"
+                      opacity={0.6}
+                      label={false}
                     />
                   );
-                })}
+                })()}
+                {/* Analyst T-marker: rendered as custom dots on a dedicated Line at close price */}
+                {visibleOverlayEvents.length > 0 && (
+                  <Line
+                    type="monotone"
+                    dataKey="analystDot"
+                    stroke="none"
+                    dot={(props: any) => {
+                      const ev: AnalystOverlayEvent | null = props.payload?.analystEvent ?? null;
+                      if (!ev) return <g key={props.key} />;
+                      const { cx, cy } = props;
+                      const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#22c55e" : "#94a3b8";
+                      const hLen = 10;
+                      const vLen = ev.direction === "flat" ? 0 : 14;
+                      const vDir = ev.direction === "up" ? -1 : 1;
+                      return (
+                        <g key={props.key}>
+                          {/* horizontal bar */}
+                          <line x1={cx - hLen} y1={cy} x2={cx + hLen} y2={cy} stroke={color} strokeWidth={1} opacity={0.9} />
+                          {/* vertical stem */}
+                          {ev.direction !== "flat" && (
+                            <line x1={cx} y1={cy} x2={cx} y2={cy + vDir * vLen} stroke={color} strokeWidth={1} opacity={0.9} />
+                          )}
+                        </g>
+                      );
+                    }}
+                    activeDot={false}
+                    legendType="none"
+                    isAnimationActive={false}
+                  />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
           )}
