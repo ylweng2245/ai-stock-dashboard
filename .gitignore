@@ -4,7 +4,8 @@ node_modules/
 # Build output
 dist/
 
-# SQLite WAL files (keep data.db but not temp files)
+# SQLite database (data.db is local, never commit)
+data.db
 data.db-shm
 data.db-wal
 

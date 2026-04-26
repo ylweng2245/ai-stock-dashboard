@@ -6,7 +6,9 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Pulling latest code from GitHub...
-git pull
+git fetch origin
+git checkout -- . 2>nul
+git pull origin main
 if errorlevel 1 (
     echo ERROR: git pull failed
     pause
