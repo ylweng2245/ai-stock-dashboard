@@ -105,15 +105,17 @@ export default function Portfolio() {
   const { data: computedHoldings = [], isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<ComputedHolding[]>({
     queryKey: ["/api/portfolio/computed"],
     queryFn: () => apiRequest("GET", "/api/portfolio/computed").then(r => r.json()),
-    staleTime: 10_000,
+    staleTime: 5 * 60_000,          // 5 min — pure DB calc, changes only on import
+    placeholderData: (prev: ComputedHolding[] | undefined) => prev,  // show stale data while refreshing
   });
 
   // Fetch live prices
   const { data: priceData, isLoading: pricesLoading, isFetching, dataUpdatedAt, isError: pricesError } = useQuery<PortfolioQuotesResponse>({
     queryKey: ["/api/portfolio-quotes"],
     queryFn: () => apiRequest("GET", "/api/portfolio-quotes").then(r => r.json()),
-    refetchInterval: 30_000,   // auto-refresh every 30s to keep P&L current
-    staleTime: 25_000,
+    refetchInterval: 30_000,          // auto-refresh every 30s — keeps P&L current during market hours
+    staleTime: 5 * 60_000,           // 5 min — prevents blank flash on re-enter; refetchInterval still runs
+    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // show previous data while background update runs
   });
 
   // Build price map
