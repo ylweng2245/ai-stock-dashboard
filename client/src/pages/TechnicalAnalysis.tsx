@@ -255,9 +255,9 @@ function AnalystWideCard({
           {/* ── Left: Consensus ── */}
           <div className="px-6 py-4">
             <div className="text-[13px] font-medium text-foreground mb-3">分析師共識</div>
-            <div className="grid grid-cols-4 gap-4 items-start">
-              {/* Consensus result */}
-              <div>
+            <div className="grid grid-cols-5 gap-3 items-start">
+              {/* Consensus result — spans 2 cols so the three count cols sit to the right */}
+              <div className="col-span-2">
                 <div className="text-[12px] text-muted-foreground mb-1">共識</div>
                 <div className={cn("text-[16px] font-semibold leading-tight whitespace-nowrap", consensusColor(summary.consensusLabel))}>
                   {summary.consensusLabel}
