@@ -441,8 +441,8 @@ function AnalystTargetTable({
                   <td className="px-3 py-1.5 font-medium">{row.institution}</td>
                   <td className={cn(
                     "px-3 py-1.5 font-bold",
-                    row.ratingCategory === "bullish" ? "text-[#ef4444]" :
-                    row.ratingCategory === "bearish" ? "text-[#22c55e]" :
+                    row.ratingCategory === "bullish" ? "text-[#fca5a5]" :
+                    row.ratingCategory === "bearish" ? "text-[#4ade80]" :
                     "text-foreground"
                   )}>{row.rating}</td>
                   <td className="px-3 py-1.5 tabular-nums font-medium">
@@ -854,16 +854,9 @@ export default function TechnicalAnalysis() {
                       const { cx, cy } = props;
                       const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#22c55e" : "#94a3b8";
                       const hLen = 10;
-                      const vLen = ev.direction === "flat" ? 0 : 14;
-                      const vDir = ev.direction === "up" ? -1 : 1;
                       return (
                         <g key={props.key}>
-                          {/* horizontal bar */}
                           <line x1={cx - hLen} y1={cy} x2={cx + hLen} y2={cy} stroke={color} strokeWidth={1} opacity={0.9} />
-                          {/* vertical stem */}
-                          {ev.direction !== "flat" && (
-                            <line x1={cx} y1={cy} x2={cx} y2={cy + vDir * vLen} stroke={color} strokeWidth={1} opacity={0.9} />
-                          )}
                         </g>
                       );
                     }}
