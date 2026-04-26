@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ComposedChart, Area, Customized,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ComposedChart, Area,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
@@ -188,106 +188,31 @@ function BollingerTooltip({ active, payload, label }: any) {
   );
 }
 
-// ─── Analyst T-marker renderer ────────────────────────────────────────────────
-// Renders a T-shaped marker on the price chart at (cx, cy = new target price Y position)
-// vertical line connects prevTargetPrice → newTargetPrice
-interface AnalystMarkerProps {
-  cx: number;
-  cy: number;          // Y pixel for new target price
-  prevCy?: number;     // Y pixel for previous target price (if available)
-  direction: "up" | "down" | "flat";
-}
-
-function AnalystMarker({ cx, cy, prevCy, direction }: AnalystMarkerProps) {
-  const color = direction === "up" ? "#ef4444" : direction === "down" ? "#22c55e" : "#94a3b8";
-  const hLen = 20; // half-width of horizontal bar
-  const hasPrev = prevCy !== undefined && prevCy !== null && prevCy !== cy;
-
+// ─── Analyst ReferenceLine label: T-shaped SVG label ────────────────────────
+// Uses Recharts built-in ReferenceLine (Y = targetPrice) with a custom SVG label.
+// This is the most stable approach — no xAxisMap/yAxisMap access needed.
+function AnalystRefLabel(props: any) {
+  const { viewBox, event }: { viewBox?: { x: number; y: number }; event: AnalystOverlayEvent } = props;
+  if (!viewBox) return null;
+  const { x, y } = viewBox;
+  const color = event.direction === "up" ? "#ef4444" : event.direction === "down" ? "#22c55e" : "#94a3b8";
+  const hLen = 14;
   return (
     <g>
-      {/* Vertical line: from prevTarget to newTarget (or just a short tick) */}
-      {hasPrev ? (
+      {/* Horizontal bar at new target price */}
+      <line x1={x - hLen} y1={y} x2={x + hLen} y2={y} stroke={color} strokeWidth={2.5} opacity={0.88} />
+      {/* Centre dot */}
+      <circle cx={x} cy={y} r={3} fill={color} opacity={0.92} />
+      {/* Direction tick */}
+      {event.direction !== "flat" && (
         <line
-          x1={cx} y1={cy}
-          x2={cx} y2={prevCy}
-          stroke={color} strokeWidth={1.5} opacity={0.85}
-        />
-      ) : (
-        /* No prev: draw a short tick downward (flat) */
-        <line
-          x1={cx} y1={cy}
-          x2={cx} y2={cy + (direction === "up" ? -8 : 8)}
-          stroke={color} strokeWidth={1.5} opacity={0.85}
+          x1={x} y1={y}
+          x2={x} y2={y + (event.direction === "up" ? -16 : 16)}
+          stroke={color} strokeWidth={1.5} opacity={0.75}
         />
       )}
-      {/* Horizontal bar at new target price */}
-      <line
-        x1={cx - hLen} y1={cy}
-        x2={cx + hLen} y2={cy}
-        stroke={color} strokeWidth={2.5} opacity={0.9}
-      />
-      {/* Centre dot */}
-      <circle cx={cx} cy={cy} r={3} fill={color} opacity={0.9} />
     </g>
   );
-}
-
-// ─── Custom chart layer: renders all analyst markers ─────────────────────────
-function AnalystOverlayLayer(props: any) {
-  const { xAxisMap, yAxisMap, data, overlayEvents } = props;
-  if (!overlayEvents?.length || !data?.length || !xAxisMap || !yAxisMap) return null;
-
-  const xScale = Object.values(xAxisMap as Record<string, any>)[0]?.scale;
-  const yScale = Object.values(yAxisMap as Record<string, any>)[0]?.scale;
-  if (!xScale || !yScale) return null;
-
-  // Build date→index map
-  const dateIndexMap = new Map<string, number>();
-  (data as any[]).forEach((d: any, i: number) => {
-    if (d.fullDate) dateIndexMap.set(d.fullDate, i);
-  });
-
-  // Group events by date (show all, not just latest)
-  const byDate = new Map<string, AnalystOverlayEvent[]>();
-  (overlayEvents as AnalystOverlayEvent[]).forEach(ev => {
-    const arr = byDate.get(ev.date) ?? [];
-    arr.push(ev);
-    byDate.set(ev.date, arr);
-  });
-
-  const markers: React.ReactElement[] = [];
-
-  byDate.forEach((evArr, date) => {
-    const idx = dateIndexMap.get(date);
-    if (idx === undefined) return;
-
-    const xVal = (data as any[])[idx].date; // the date key used in chart ("MM-DD")
-    const cx = xScale(xVal);
-    if (cx === undefined) return;
-
-    // For multiple events on same date, spread them a bit
-    evArr.forEach((ev, offset) => {
-      const offsetX = (offset - (evArr.length - 1) / 2) * 10;
-      const cy = yScale(ev.targetPrice);
-      if (cy === undefined) return;
-
-      const prevCy = ev.previousTargetPrice !== null && ev.previousTargetPrice !== undefined
-        ? yScale(ev.previousTargetPrice)
-        : undefined;
-
-      markers.push(
-        <AnalystMarker
-          key={`${date}-${ev.institution}-${offset}`}
-          cx={cx + offsetX}
-          cy={cy}
-          prevCy={prevCy}
-          direction={ev.direction}
-        />
-      );
-    });
-  });
-
-  return <g className="analyst-overlay">{markers}</g>;
 }
 
 // ─── Analyst Consensus Mini Card (header right side) ─────────────────────────
@@ -873,19 +798,24 @@ export default function TechnicalAnalysis() {
                 />
                 <Bar dataKey="volume" fill="hsl(var(--muted))" opacity={0.3} yAxisId="volume" name="成交量" />
                 <YAxis yAxisId="volume" orientation="right" tick={false} width={0} domain={[0, (max: number) => max * 5]} />
-                {/* Analyst T-marker overlay (custom layer) */}
-                {visibleOverlayEvents.length > 0 && (
-                  // @ts-ignore – Recharts passes chart internals as props to Customized
-                  <Customized
-                    component={(props: any) => (
-                      <AnalystOverlayLayer
-                        {...props}
-                        data={chartData}
-                        overlayEvents={visibleOverlayEvents}
-                      />
-                    )}
-                  />
-                )}
+                {/* Analyst T-marker overlay — one ReferenceLine per event at Y=targetPrice */}
+                {visibleOverlayEvents.map((ev, i) => {
+                  // Find the chart "date" key (MM-DD) matching this event's fullDate
+                  const chartPt = chartData.find(d => d.fullDate === ev.date);
+                  if (!chartPt) return null;
+                  const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#22c55e" : "#94a3b8";
+                  return (
+                    <ReferenceLine
+                      key={`analyst-${i}-${ev.date}-${ev.institution}`}
+                      y={ev.targetPrice}
+                      x={chartPt.date}
+                      stroke="none"
+                      label={(labelProps: any) => (
+                        <AnalystRefLabel {...labelProps} event={ev} />
+                      )}
+                    />
+                  );
+                })}
               </ComposedChart>
             </ResponsiveContainer>
           )}
