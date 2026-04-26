@@ -611,7 +611,11 @@ export default function TechnicalAnalysis() {
   const xInterval  = Math.max(1, Math.floor(chartData.length / 12));
 
   const currencySymbol = meta.market === "US" ? "$" : "NT";
-  const hasAnalyst = !!analystData?.hasData && !!analystData.summary;
+  const hasAnalyst = !!analystData?.hasData &&
+    !!analystData.summary &&
+    isFinite(analystData.summary.averageTargetPrice) &&
+    isFinite(analystData.summary.highTargetPrice) &&
+    isFinite(analystData.summary.lowTargetPrice);
   // Filter overlay events to only those within the current sliced date range
   const visibleOverlayEvents = useMemo(() => {
     if (!analystData?.overlayEvents?.length || !candleData.length) return [];
@@ -800,10 +804,11 @@ export default function TechnicalAnalysis() {
                 <YAxis yAxisId="volume" orientation="right" tick={false} width={0} domain={[0, (max: number) => max * 5]} />
                 {/* Analyst T-marker overlay — one ReferenceLine per event at Y=targetPrice */}
                 {visibleOverlayEvents.map((ev, i) => {
+                  // Guard: skip if targetPrice is missing/invalid
+                  if (!ev.targetPrice || !isFinite(ev.targetPrice)) return null;
                   // Find the chart "date" key (MM-DD) matching this event's fullDate
                   const chartPt = chartData.find(d => d.fullDate === ev.date);
                   if (!chartPt) return null;
-                  const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#22c55e" : "#94a3b8";
                   return (
                     <ReferenceLine
                       key={`analyst-${i}-${ev.date}-${ev.institution}`}

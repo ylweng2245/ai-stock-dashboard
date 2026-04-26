@@ -500,7 +500,8 @@ export class DatabaseStorage implements IStorage {
     const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
 
     // Raw SQL: within 6 months, pick latest row per institution
-    const rows = sqlite.prepare(`
+    // better-sqlite3 returns snake_case column names; map to camelCase to match AnalystTarget type.
+    const raw = sqlite.prepare(`
       SELECT *
       FROM analyst_targets
       WHERE symbol = ? AND market = ? AND analyst_date >= ?
@@ -513,7 +514,23 @@ export class DatabaseStorage implements IStorage {
             AND a2.analyst_date >= ?
         )
       ORDER BY analyst_date DESC
-    `).all(symbol, market, cutoff, cutoff) as AnalystTarget[];
+    `).all(symbol, market, cutoff, cutoff) as any[];
+
+    const rows: AnalystTarget[] = raw.map(r => ({
+      id:                   r.id,
+      symbol:               r.symbol,
+      market:               r.market,
+      institution:          r.institution,
+      rating:               r.rating,
+      ratingCategory:       r.rating_category,
+      score:                r.score,
+      targetPrice:          r.target_price,
+      previousTargetPrice:  r.previous_target_price ?? null,
+      analystDate:          r.analyst_date,
+      sourceSheet:          r.source_sheet,
+      createdAt:            r.created_at,
+      updatedAt:            r.updated_at,
+    }));
 
     return rows;
   }
