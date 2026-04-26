@@ -215,36 +215,11 @@ function AnalystRefLabel(props: any) {
   );
 }
 
-// ─── Analyst Consensus Mini Card (header right side) ─────────────────────────
-function AnalystConsensusMiniCard({ summary }: { summary: AnalystSummary }) {
-  return (
-    <div className="min-w-[320px] bg-card border border-border rounded-2xl px-5 py-4">
-      <div className="text-sm font-semibold text-foreground mb-3">分析師共識</div>
-      <div className="grid grid-cols-4 gap-3 items-center">
-        <div>
-          <div className={cn("text-xl font-bold leading-tight", consensusColor(summary.consensusLabel))}>
-            {summary.consensusLabel}
-          </div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">平均分數 {summary.averageScore}</div>
-        </div>
-        <div>
-          <div className="text-xl font-bold text-[#ef4444]">{summary.bullishCount}</div>
-          <div className="text-[11px] text-muted-foreground">看漲 {summary.bullishPct}%</div>
-        </div>
-        <div>
-          <div className="text-xl font-bold text-foreground">{summary.neutralCount}</div>
-          <div className="text-[11px] text-muted-foreground">中性 {summary.neutralPct}%</div>
-        </div>
-        <div>
-          <div className="text-xl font-bold text-[#22c55e]">{summary.bearishCount}</div>
-          <div className="text-[11px] text-muted-foreground">看跌 {summary.bearishPct}%</div>
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 // ─── Wide consensus + target price card ──────────────────────────────────────
+// Redesigned to match reference: compact single-row layout, thin typography,
+// custom track bar with labelled dots above the bar.
 function AnalystWideCard({
   summary,
   currentPrice,
@@ -256,16 +231,17 @@ function AnalystWideCard({
 }) {
   const { lowTargetPrice, highTargetPrice, averageTargetPrice } = summary;
 
-  // Compute track dot positions (%)
   const range = highTargetPrice - lowTargetPrice;
   const safeRange = range <= 0 ? 1 : range;
-  const currentPriceClamped = Math.max(lowTargetPrice, Math.min(highTargetPrice, currentPrice));
 
-  const pctOf = (v: number) => Math.round(((v - lowTargetPrice) / safeRange) * 100);
-  const lowPct  = 8;
-  const highPct = 92;
-  const currPct = Math.max(lowPct + 2, Math.min(highPct - 2, pctOf(currentPriceClamped)));
-  const avgPct  = Math.max(lowPct + 2, Math.min(highPct - 2, pctOf(averageTargetPrice)));
+  // Position of each point on 0-100 scale, clamped to [4, 96] to keep dots visible
+  const pctOf = (v: number) =>
+    Math.max(4, Math.min(96, Math.round(((v - lowTargetPrice) / safeRange) * 100)));
+
+  const lowPct  = 4;
+  const highPct = 96;
+  const currPct = Math.max(6, Math.min(94, pctOf(Math.max(lowTargetPrice, Math.min(highTargetPrice, currentPrice)))));
+  const avgPct  = Math.max(6, Math.min(94, pctOf(averageTargetPrice)));
 
   const upsidePct = currentPrice > 0
     ? ((averageTargetPrice - currentPrice) / currentPrice * 100).toFixed(1)
@@ -275,82 +251,137 @@ function AnalystWideCard({
     <Card className="border-border mb-4">
       <CardContent className="p-0">
         <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border">
-          {/* Left: Consensus */}
-          <div className="p-5">
-            <div className="text-sm font-semibold text-foreground mb-4">分析師共識</div>
-            <div className="grid grid-cols-4 gap-3">
+
+          {/* ── Left: Consensus ── */}
+          <div className="px-6 py-4">
+            <div className="text-[13px] font-medium text-foreground mb-3">分析師共識</div>
+            <div className="grid grid-cols-4 gap-4 items-start">
               {/* Consensus result */}
-              <div className="col-span-1 bg-card border border-border/50 rounded-xl p-3">
-                <div className="text-[12px] text-muted-foreground mb-2">共識結果</div>
-                <div className={cn("text-2xl font-bold leading-tight", consensusColor(summary.consensusLabel))}>
+              <div>
+                <div className="text-[12px] text-muted-foreground mb-1">共識</div>
+                <div className={cn("text-[20px] font-semibold leading-tight", consensusColor(summary.consensusLabel))}>
                   {summary.consensusLabel}
                 </div>
-                <div className="text-[11px] text-muted-foreground mt-1.5">
-                  依各機構最新評級換算
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  平均分數 {summary.averageScore}
                 </div>
               </div>
               {/* Bullish */}
-              <div className="bg-card border border-border/50 rounded-xl p-3">
-                <div className="text-[12px] text-muted-foreground mb-2">看漲</div>
-                <div className="text-2xl font-bold text-[#ef4444]">{summary.bullishCount}</div>
-                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.bullishPct}%</div>
+              <div>
+                <div className="text-[12px] text-muted-foreground mb-1">看漲</div>
+                <div className="text-[22px] font-semibold text-[#ef4444] leading-tight">{summary.bullishCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">{summary.bullishPct}%</div>
               </div>
               {/* Neutral */}
-              <div className="bg-card border border-border/50 rounded-xl p-3">
-                <div className="text-[12px] text-muted-foreground mb-2">中性</div>
-                <div className="text-2xl font-bold text-foreground">{summary.neutralCount}</div>
-                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.neutralPct}%</div>
+              <div>
+                <div className="text-[12px] text-muted-foreground mb-1">中性</div>
+                <div className="text-[22px] font-semibold text-foreground leading-tight">{summary.neutralCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">{summary.neutralPct}%</div>
               </div>
               {/* Bearish */}
-              <div className="bg-card border border-border/50 rounded-xl p-3">
-                <div className="text-[12px] text-muted-foreground mb-2">看跌</div>
-                <div className="text-2xl font-bold text-[#22c55e]">{summary.bearishCount}</div>
-                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.bearishPct}%</div>
+              <div>
+                <div className="text-[12px] text-muted-foreground mb-1">看跌</div>
+                <div className="text-[22px] font-semibold text-[#22c55e] leading-tight">{summary.bearishCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">{summary.bearishPct}%</div>
               </div>
             </div>
           </div>
 
-          {/* Right: 52-week target price band */}
-          <div className="p-5">
-            <div className="text-sm font-semibold text-foreground mb-4">
-              分析師 52 週目標價
+          {/* ── Right: 52W target price band ── */}
+          <div className="px-6 py-4">
+            <div className="text-[13px] font-medium text-foreground mb-3">
+              分析師 52W 目標價
               <span className="ml-2 text-[11px] text-muted-foreground font-normal">
                 近 6 個月樣本：{summary.sampleCount} 筆
               </span>
             </div>
-            <div className="grid grid-cols-4 gap-3 mb-4">
+
+            {/* Price labels row */}
+            <div className="grid grid-cols-4 gap-2 mb-2">
               <div>
-                <div className="text-lg font-bold text-[#22c55e] tabular-nums">{currencySymbol}{lowTargetPrice.toLocaleString()}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">低</div>
+                <div className="text-[13px] font-semibold text-[#22c55e] tabular-nums">
+                  {currencySymbol}{lowTargetPrice.toLocaleString()}
+                </div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", display: "inline-block", flexShrink: 0 }} />
+                  <span className="text-[11px] text-muted-foreground">低</span>
+                </div>
               </div>
               <div>
-                <div className="text-lg font-bold text-foreground tabular-nums">{currencySymbol}{currentPrice > 0 ? currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">目前</div>
+                <div className="text-[13px] font-semibold text-foreground tabular-nums">
+                  {currencySymbol}{currentPrice > 0 ? currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                </div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", border: "2px solid #fff", background: "transparent", display: "inline-block", flexShrink: 0 }} />
+                  <span className="text-[11px] text-muted-foreground">目前</span>
+                </div>
               </div>
               <div>
-                <div className="text-lg font-bold text-[#fda4af] tabular-nums">{currencySymbol}{averageTargetPrice.toLocaleString()}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">平均 (+{upsidePct}%)</div>
+                <div className="text-[13px] font-semibold text-[#fda4af] tabular-nums">
+                  {currencySymbol}{averageTargetPrice.toLocaleString()}
+                </div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", border: "2px solid #fda4af", background: "transparent", display: "inline-block", flexShrink: 0 }} />
+                  <span className="text-[11px] text-muted-foreground">平均 ({Number(upsidePct) >= 0 ? "+" : ""}{upsidePct}%)</span>
+                </div>
               </div>
               <div>
-                <div className="text-lg font-bold text-[#ef4444] tabular-nums">{currencySymbol}{highTargetPrice.toLocaleString()}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">高</div>
+                <div className="text-[13px] font-semibold text-[#ef4444] tabular-nums">
+                  {currencySymbol}{highTargetPrice.toLocaleString()}
+                </div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444", display: "inline-block", flexShrink: 0 }} />
+                  <span className="text-[11px] text-muted-foreground">高</span>
+                </div>
               </div>
             </div>
+
             {/* Track bar */}
-            <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "linear-gradient(90deg, rgba(34,197,94,.25), rgba(255,255,255,.1), rgba(239,68,68,.3))" }}>
-              {/* Low dot */}
-              <span style={{ position: "absolute", top: "50%", left: `${lowPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #22c55e", background: "hsl(var(--card))", display: "block" }} />
-              {/* Curr dot */}
-              <span style={{ position: "absolute", top: "50%", left: `${currPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #fff", background: "hsl(var(--card))", display: "block" }} />
-              {/* Avg dot */}
-              <span style={{ position: "absolute", top: "50%", left: `${avgPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #fda4af", background: "hsl(var(--card))", display: "block" }} />
-              {/* High dot */}
-              <span style={{ position: "absolute", top: "50%", left: `${highPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #ef4444", background: "hsl(var(--card))", display: "block" }} />
-            </div>
-            <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
-              僅納入最近 6 個月內、且每家機構「最新一筆」目標價資料；若資料庫沒有分析師目標價則此區塊不顯示。
+            <div className="relative mt-3" style={{ height: 20 }}>
+              {/* Bar */}
+              <div style={{
+                position: "absolute",
+                top: "50%",
+                left: 0,
+                right: 0,
+                height: 4,
+                borderRadius: 999,
+                transform: "translateY(-50%)",
+                background: "linear-gradient(90deg, rgba(34,197,94,.3) 0%, rgba(255,255,255,.12) 50%, rgba(239,68,68,.35) 100%)",
+              }} />
+              {/* Low dot — small solid green */}
+              <span style={{
+                position: "absolute", top: "50%", left: `${lowPct}%`,
+                transform: "translate(-50%,-50%)",
+                width: 8, height: 8, borderRadius: "50%",
+                background: "#22c55e", display: "block",
+              }} />
+              {/* Current dot — larger open circle white */}
+              <span style={{
+                position: "absolute", top: "50%", left: `${currPct}%`,
+                transform: "translate(-50%,-50%)",
+                width: 14, height: 14, borderRadius: "50%",
+                border: "2.5px solid #ffffff",
+                background: "hsl(var(--card))", display: "block",
+              }} />
+              {/* Average dot — open circle pink */}
+              <span style={{
+                position: "absolute", top: "50%", left: `${avgPct}%`,
+                transform: "translate(-50%,-50%)",
+                width: 12, height: 12, borderRadius: "50%",
+                border: "2px solid #fda4af",
+                background: "hsl(var(--card))", display: "block",
+              }} />
+              {/* High dot — small solid red */}
+              <span style={{
+                position: "absolute", top: "50%", left: `${highPct}%`,
+                transform: "translate(-50%,-50%)",
+                width: 8, height: 8, borderRadius: "50%",
+                background: "#ef4444", display: "block",
+              }} />
             </div>
           </div>
+
         </div>
       </CardContent>
     </Card>
@@ -377,32 +408,28 @@ function AnalystTargetTable({
 
   return (
     <Card className="border-border mt-4">
-      <CardHeader className="pb-2 pt-4 px-4 flex-row items-center justify-between">
-        <CardTitle className="text-sm font-semibold">分析師目標價資料表</CardTitle>
-        <span className="text-[11px] text-muted-foreground">依日期新到舊，近 6 個月資料</span>
+      <CardHeader className="pb-1.5 pt-3 px-4 flex-row items-center justify-between">
+        <CardTitle className="text-xs font-semibold">分析師目標價資料表</CardTitle>
+        <span className="text-[10px] text-muted-foreground">依日期新到舊，近 6 個月資料</span>
       </CardHeader>
       <CardContent className="p-0 overflow-auto">
-        <table className="w-full text-sm border-collapse">
+        <table className="w-full text-xs border-collapse">
           <thead>
             <tr className="bg-card/80">
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">機構</th>
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">評級</th>
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">52 週目標價</th>
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">變動</th>
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">上行空間</th>
-              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">日期</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">機構</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">評級</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">新目標價</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">原目標價</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">上行空間</th>
+              <th className="text-left text-muted-foreground font-medium px-3 py-1.5 border-b border-border">日期</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row, i) => {
-              const change = row.previousTargetPrice !== null && row.previousTargetPrice !== undefined
-                ? row.targetPrice - row.previousTargetPrice
-                : null;
               const upsidePct = currentPrice > 0
                 ? ((row.targetPrice - currentPrice) / currentPrice * 100)
                 : null;
 
-              const changeColor = change === null ? "" : change > 0 ? "text-[#fca5a5]" : change < 0 ? "text-[#86efac]" : "text-muted-foreground";
               const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#f87171]" : upsidePct < 0 ? "text-[#4ade80]" : "text-muted-foreground";
 
               const dateFormatted = row.analystDate
@@ -411,29 +438,20 @@ function AnalystTargetTable({
 
               return (
                 <tr key={row.id ?? i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                  <td className="px-4 py-3 font-medium">{row.institution}</td>
-                  <td className="px-4 py-3">
-                    <span className={cn("inline-flex px-2.5 py-1 rounded-lg text-[12px] font-semibold", ratingPillClass(row.ratingCategory))}>
-                      {row.rating}
-                    </span>
+                  <td className="px-3 py-1.5 font-medium">{row.institution}</td>
+                  <td className="px-3 py-1.5 text-muted-foreground">{row.rating}</td>
+                  <td className="px-3 py-1.5 tabular-nums font-medium">
+                    {currencySymbol}{row.targetPrice.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 tabular-nums">
-                    <span className={changeColor !== "" ? changeColor.replace("text-[#fca5a5]", "text-[#fca5a5]").replace("text-[#86efac]", "text-[#86efac]") : ""}>
-                      {currencySymbol}{row.targetPrice.toLocaleString()}
-                    </span>
-                    {row.previousTargetPrice !== null && row.previousTargetPrice !== undefined && (
-                      <span className="ml-1.5 text-[11px] text-muted-foreground">
-                        原為 {currencySymbol}{row.previousTargetPrice.toLocaleString()}
-                      </span>
-                    )}
+                  <td className="px-3 py-1.5 tabular-nums text-muted-foreground">
+                    {row.previousTargetPrice !== null && row.previousTargetPrice !== undefined
+                      ? `${currencySymbol}${row.previousTargetPrice.toLocaleString()}`
+                      : "—"}
                   </td>
-                  <td className={cn("px-4 py-3 tabular-nums font-medium", changeColor)}>
-                    {change === null ? "—" : change > 0 ? `+${change.toFixed(0)}` : change.toFixed(0)}
-                  </td>
-                  <td className={cn("px-4 py-3 tabular-nums font-medium", upsideColor)}>
+                  <td className={cn("px-3 py-1.5 tabular-nums font-medium", upsideColor)}>
                     {upsidePct === null ? "—" : `${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}%`}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground tabular-nums">{dateFormatted}</td>
+                  <td className="px-3 py-1.5 text-muted-foreground tabular-nums">{dateFormatted}</td>
                 </tr>
               );
             })}
@@ -643,9 +661,6 @@ export default function TechnicalAnalysis() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {hasAnalyst && (
-            <AnalystConsensusMiniCard summary={analystData!.summary!} />
-          )}
           <div className="flex items-center gap-2">
             <AnalysisSymbolSidebarMobile />
             <Select value={range} onValueChange={setRange}>

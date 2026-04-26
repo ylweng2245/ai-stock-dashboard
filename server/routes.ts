@@ -407,10 +407,29 @@ export async function registerRoutes(
   function parseTargetPrice(raw: any): number | null {
     if (raw === null || raw === undefined || raw === "") return null;
     if (typeof raw === "number") return isNaN(raw) ? null : raw;
-    const s = String(raw).trim()
+    // If cell contains "原為" (e.g. "US$1,183 原為 US$1,163"), take only the FIRST number
+    const str = String(raw).trim();
+    const firstPart = str.split(/原為/)[0].trim();
+    const s = firstPart
       .replace(/^US\$?/i, "")  // remove US$ or US prefix
       .replace(/^\$/,    "")  // remove leading $
       .replace(/,/g,    "")  // remove thousands separators
+      .trim();
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  }
+
+  /** Extract the previous target price from combined cell "US$1,183 原為 US$1,163" */
+  function parsePrevTargetPrice(raw: any): number | null {
+    if (raw === null || raw === undefined || raw === "") return null;
+    if (typeof raw === "number") return null; // pure number → no "原為" part
+    const str = String(raw).trim();
+    const parts = str.split(/原為/);
+    if (parts.length < 2) return null;
+    const s = parts[1].trim()
+      .replace(/^US\$?/i, "")
+      .replace(/^\$/,    "")
+      .replace(/,/g,    "")
       .trim();
     const n = parseFloat(s);
     return isNaN(n) ? null : n;
@@ -464,31 +483,28 @@ export async function registerRoutes(
     const rows   = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: null });
     if (rows.length < 2) return [];
 
-    // Detect header row (row 0) column positions by keyword matching
+    // Detect header row (row 0) column positions by keyword matching (English + Chinese)
     const headerRow = (rows[0] as any[]).map((c: any) => String(c ?? "").toLowerCase().trim());
 
     const colIdx = {
       institution: -1,
       rating:      -1,
       newTarget:   -1,
-      prevTarget:  -1,
       date:        -1,
     };
 
     headerRow.forEach((h, i) => {
-      if (colIdx.institution < 0 && (h.includes("institution") || h.includes("firm") || h.includes("broker")))  colIdx.institution = i;
-      if (colIdx.rating      < 0 && (h.includes("rating") || h.includes("action")))                            colIdx.rating      = i;
-      if (colIdx.newTarget   < 0 && (h.includes("new") && h.includes("target")) || h === "target price" || h === "new target") colIdx.newTarget = i;
-      if (colIdx.prevTarget  < 0 && (h.includes("prev") || h.includes("old") || h.includes("previous")))       colIdx.prevTarget  = i;
-      if (colIdx.date        < 0 && (h.includes("date")))                                                       colIdx.date        = i;
+      if (colIdx.institution < 0 && (h.includes("institution") || h.includes("firm") || h.includes("broker") || h.includes("機構")))  colIdx.institution = i;
+      if (colIdx.rating      < 0 && (h.includes("rating") || h.includes("action") || h.includes("評級")))                            colIdx.rating      = i;
+      if (colIdx.newTarget   < 0 && (h.includes("target") || h.includes("目標價")))                                               colIdx.newTarget   = i;
+      if (colIdx.date        < 0 && (h.includes("date") || h.includes("日期")))                                                      colIdx.date        = i;
     });
 
-    // Fallback positional mapping (A=0 Institution B=1 Rating C=2 NewTarget D=3 PrevTarget E=4 Date)
+    // Fallback positional mapping: A=0 Institution  B=1 Rating  C=2 Target(+prev combined)  D=3 Date
     if (colIdx.institution < 0) colIdx.institution = 0;
     if (colIdx.rating      < 0) colIdx.rating      = 1;
     if (colIdx.newTarget   < 0) colIdx.newTarget   = 2;
-    if (colIdx.prevTarget  < 0) colIdx.prevTarget  = 3;
-    if (colIdx.date        < 0) colIdx.date        = 4;
+    if (colIdx.date        < 0) colIdx.date        = 3;
 
     const now = Date.now();
     const result: InsertAnalystTarget[] = [];
@@ -502,13 +518,13 @@ export async function registerRoutes(
 
       const rawRating   = row[colIdx.rating];
       const rawNew      = row[colIdx.newTarget];
-      const rawPrev     = row[colIdx.prevTarget];
       const rawDate     = row[colIdx.date];
 
       const newTarget   = parseTargetPrice(rawNew);
       if (newTarget === null || newTarget <= 0) continue;  // must have a valid new target
 
-      const prevTarget  = parseTargetPrice(rawPrev);
+      // prevTarget extracted from the same cell as newTarget ("US$1,183 原為 US$1,163")
+      const prevTarget  = parsePrevTargetPrice(rawNew);
       const analystDate = parseExcelDate(rawDate) || new Date().toISOString().slice(0, 10);
 
       const { rating, category, score } = normalizeAnalystRating(rawRating);
