@@ -433,9 +433,10 @@ export default function StockNewsDigest() {
   const { data: quotesData } = useQuery<QuotesData>({
     queryKey: ["/api/quotes"],
     queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
-    staleTime: 60 * 1000,
+    staleTime: 5 * 60_000,
     refetchInterval: 60 * 1000,
     refetchOnWindowFocus: true,
+    placeholderData: (prev: QuotesData | undefined) => prev,
   });
 
   const liveQuotes = new Map<string, LiveQuote>(

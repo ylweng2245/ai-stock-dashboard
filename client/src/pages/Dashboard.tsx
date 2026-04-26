@@ -1348,7 +1348,8 @@ function MarketOverviewSection() {
     queryKey: ["/api/market-overview"],
     queryFn: () => apiRequest("GET", "/api/market-overview").then((r) => r.json()),
     refetchInterval: 5 * 60 * 1000,
-    staleTime: 4 * 60 * 1000,
+    staleTime: 5 * 60 * 1000,
+    placeholderData: (prev: MarketOverviewPayload | undefined) => prev,
   });
 
   // TW order (fixed): taiex, tw_adv_dec, tw_foreign_net, tw_margin, usdtwd
@@ -1797,7 +1798,8 @@ export default function Dashboard() {
     queryKey: ["/api/quotes"],
     queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
     refetchInterval: 60_000,
-    staleTime: 55_000,
+    staleTime: 5 * 60_000,
+    placeholderData: (prev: QuotesResponse | undefined) => prev,
   });
 
   const { data: watchlistItems = [] } = useQuery<WatchlistItem[]>({
