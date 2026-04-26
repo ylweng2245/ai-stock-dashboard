@@ -144,7 +144,8 @@ export default function TechnicalAnalysis() {
   const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
   });
 
   const meta = useMemo(() => {
@@ -172,7 +173,8 @@ export default function TechnicalAnalysis() {
     queryFn: () =>
       apiRequest("GET", `/api/transactions/${activeSymbol}?market=${meta.market}`)
         .then(r => r.json()),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
   });
 
   // Client-side range slice — no additional backend query on range change
