@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ComposedChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ComposedChart, Area, Customized,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
@@ -44,11 +44,68 @@ interface Transaction {
   name: string;
 }
 
-// Custom dot renderer for buy/sell marks on the Bollinger chart
+// ─── Analyst target types ────────────────────────────────────────────────────
+interface AnalystOverlayEvent {
+  date: string;
+  institution: string;
+  rating: string;
+  ratingCategory: "bullish" | "neutral" | "bearish";
+  targetPrice: number;
+  previousTargetPrice: number | null;
+  direction: "up" | "down" | "flat";
+}
+
+interface AnalystRow {
+  id: number;
+  symbol: string;
+  market: string;
+  institution: string;
+  rating: string;
+  ratingCategory: "bullish" | "neutral" | "bearish";
+  score: number;
+  targetPrice: number;
+  previousTargetPrice: number | null;
+  analystDate: string;
+}
+
+interface AnalystSummary {
+  consensusLabel: string;
+  averageScore: number;
+  bullishCount: number;
+  neutralCount: number;
+  bearishCount: number;
+  bullishPct: number;
+  neutralPct: number;
+  bearishPct: number;
+  averageTargetPrice: number;
+  highTargetPrice: number;
+  lowTargetPrice: number;
+  sampleCount: number;
+}
+
+interface AnalystData {
+  symbol: string;
+  market: string;
+  hasData: boolean;
+  summary?: AnalystSummary;
+  overlayEvents?: AnalystOverlayEvent[];
+  rows?: AnalystRow[];
+}
+
+// ─── Consensus colour helpers ─────────────────────────────────────────────────
+function consensusColor(label: string): string {
+  if (label === "強烈買入") return "text-[#ef4444]";
+  if (label === "買入")     return "text-[#f87171]";
+  if (label === "持有")     return "text-muted-foreground";
+  if (label === "賣出")     return "text-[#4ade80]";
+  return "text-[#22c55e]"; // 強烈賣出
+}
+
+// ─── Custom dot renderer for buy/sell marks ───────────────────────────────────
 function TradeDotRenderer(props: any) {
   const { cx, cy, payload } = props;
   if (!payload?.tradeInfo) return null;
-  const { side, price, shares, currency, fullDate } = payload.tradeInfo as TradeDot;
+  const { side } = payload.tradeInfo as TradeDot;
   const color = side === "buy" ? "#ef4444" : "#22c55e";
   return (
     <g>
@@ -58,19 +115,22 @@ function TradeDotRenderer(props: any) {
   );
 }
 
-// Custom tooltip that shows trade info when hovering on a data point with tradeInfo
+// ─── Custom tooltip ───────────────────────────────────────────────────────────
 function BollingerTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const p = payload[0]?.payload;
   const hasTrade = !!p?.tradeInfo;
   const curr = p?.tradeInfo?.currency ?? "TWD";
   const sym = curr === "USD" ? "$" : "NT";
+  // analyst overlay event for this date
+  const hasAnalyst = !!p?.analystEvent;
+  const ae: AnalystOverlayEvent | null = p?.analystEvent ?? null;
   return (
-    <div style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, padding: "8px 12px", fontSize: 12, minWidth: 160 }}>
+    <div style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, padding: "8px 12px", fontSize: 12, minWidth: 180 }}>
       <p className="text-muted-foreground mb-1">{p?.fullDate ?? label}</p>
       {payload.map((item: any, i: number) => {
         if (!item.value && item.value !== 0) return null;
-        if (["buyDot", "sellDot"].includes(item.dataKey)) return null;
+        if (["buyDot", "sellDot", "analystDot"].includes(item.dataKey)) return null;
         return (
           <div key={i} className="flex justify-between gap-4">
             <span style={{ color: item.color }}>{item.name}</span>
@@ -96,10 +156,370 @@ function BollingerTooltip({ active, payload, label }: any) {
           </div>
         </div>
       )}
+      {hasAnalyst && ae && (
+        <div style={{ borderTop: "1px solid hsl(var(--border))", marginTop: 6, paddingTop: 6 }}>
+          <div className="flex items-center gap-1.5 mb-1">
+            <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block", background: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#22c55e" : "#94a3b8" }} />
+            <span className="font-semibold text-muted-foreground">{ae.institution}</span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span className="text-muted-foreground">評級</span>
+            <span className="font-medium" style={{ color: ae.ratingCategory === "bullish" ? "#f87171" : ae.ratingCategory === "bearish" ? "#4ade80" : "#cbd5e1" }}>{ae.rating}</span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span className="text-muted-foreground">目標價</span>
+            <span className="tabular-nums font-medium">${ae.targetPrice.toLocaleString()}</span>
+          </div>
+          {ae.previousTargetPrice !== null && (
+            <div className="flex justify-between gap-4">
+              <span className="text-muted-foreground">原目標價</span>
+              <span className="tabular-nums font-medium text-muted-foreground">${ae.previousTargetPrice.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="flex justify-between gap-4">
+            <span className="text-muted-foreground">調整</span>
+            <span style={{ color: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#22c55e" : "#94a3b8" }}>
+              {ae.direction === "up" ? "上調" : ae.direction === "down" ? "下修" : "維持"}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+// ─── Analyst T-marker renderer ────────────────────────────────────────────────
+// Renders a T-shaped marker on the price chart at (cx, cy = new target price Y position)
+// vertical line connects prevTargetPrice → newTargetPrice
+interface AnalystMarkerProps {
+  cx: number;
+  cy: number;          // Y pixel for new target price
+  prevCy?: number;     // Y pixel for previous target price (if available)
+  direction: "up" | "down" | "flat";
+}
+
+function AnalystMarker({ cx, cy, prevCy, direction }: AnalystMarkerProps) {
+  const color = direction === "up" ? "#ef4444" : direction === "down" ? "#22c55e" : "#94a3b8";
+  const hLen = 20; // half-width of horizontal bar
+  const hasPrev = prevCy !== undefined && prevCy !== null && prevCy !== cy;
+
+  return (
+    <g>
+      {/* Vertical line: from prevTarget to newTarget (or just a short tick) */}
+      {hasPrev ? (
+        <line
+          x1={cx} y1={cy}
+          x2={cx} y2={prevCy}
+          stroke={color} strokeWidth={1.5} opacity={0.85}
+        />
+      ) : (
+        /* No prev: draw a short tick downward (flat) */
+        <line
+          x1={cx} y1={cy}
+          x2={cx} y2={cy + (direction === "up" ? -8 : 8)}
+          stroke={color} strokeWidth={1.5} opacity={0.85}
+        />
+      )}
+      {/* Horizontal bar at new target price */}
+      <line
+        x1={cx - hLen} y1={cy}
+        x2={cx + hLen} y2={cy}
+        stroke={color} strokeWidth={2.5} opacity={0.9}
+      />
+      {/* Centre dot */}
+      <circle cx={cx} cy={cy} r={3} fill={color} opacity={0.9} />
+    </g>
+  );
+}
+
+// ─── Custom chart layer: renders all analyst markers ─────────────────────────
+function AnalystOverlayLayer(props: any) {
+  const { xAxisMap, yAxisMap, data, overlayEvents } = props;
+  if (!overlayEvents?.length || !data?.length || !xAxisMap || !yAxisMap) return null;
+
+  const xScale = Object.values(xAxisMap as Record<string, any>)[0]?.scale;
+  const yScale = Object.values(yAxisMap as Record<string, any>)[0]?.scale;
+  if (!xScale || !yScale) return null;
+
+  // Build date→index map
+  const dateIndexMap = new Map<string, number>();
+  (data as any[]).forEach((d: any, i: number) => {
+    if (d.fullDate) dateIndexMap.set(d.fullDate, i);
+  });
+
+  // Group events by date (show all, not just latest)
+  const byDate = new Map<string, AnalystOverlayEvent[]>();
+  (overlayEvents as AnalystOverlayEvent[]).forEach(ev => {
+    const arr = byDate.get(ev.date) ?? [];
+    arr.push(ev);
+    byDate.set(ev.date, arr);
+  });
+
+  const markers: React.ReactElement[] = [];
+
+  byDate.forEach((evArr, date) => {
+    const idx = dateIndexMap.get(date);
+    if (idx === undefined) return;
+
+    const xVal = (data as any[])[idx].date; // the date key used in chart ("MM-DD")
+    const cx = xScale(xVal);
+    if (cx === undefined) return;
+
+    // For multiple events on same date, spread them a bit
+    evArr.forEach((ev, offset) => {
+      const offsetX = (offset - (evArr.length - 1) / 2) * 10;
+      const cy = yScale(ev.targetPrice);
+      if (cy === undefined) return;
+
+      const prevCy = ev.previousTargetPrice !== null && ev.previousTargetPrice !== undefined
+        ? yScale(ev.previousTargetPrice)
+        : undefined;
+
+      markers.push(
+        <AnalystMarker
+          key={`${date}-${ev.institution}-${offset}`}
+          cx={cx + offsetX}
+          cy={cy}
+          prevCy={prevCy}
+          direction={ev.direction}
+        />
+      );
+    });
+  });
+
+  return <g className="analyst-overlay">{markers}</g>;
+}
+
+// ─── Analyst Consensus Mini Card (header right side) ─────────────────────────
+function AnalystConsensusMiniCard({ summary }: { summary: AnalystSummary }) {
+  return (
+    <div className="min-w-[320px] bg-card border border-border rounded-2xl px-5 py-4">
+      <div className="text-sm font-semibold text-foreground mb-3">分析師共識</div>
+      <div className="grid grid-cols-4 gap-3 items-center">
+        <div>
+          <div className={cn("text-xl font-bold leading-tight", consensusColor(summary.consensusLabel))}>
+            {summary.consensusLabel}
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">平均分數 {summary.averageScore}</div>
+        </div>
+        <div>
+          <div className="text-xl font-bold text-[#ef4444]">{summary.bullishCount}</div>
+          <div className="text-[11px] text-muted-foreground">看漲 {summary.bullishPct}%</div>
+        </div>
+        <div>
+          <div className="text-xl font-bold text-foreground">{summary.neutralCount}</div>
+          <div className="text-[11px] text-muted-foreground">中性 {summary.neutralPct}%</div>
+        </div>
+        <div>
+          <div className="text-xl font-bold text-[#22c55e]">{summary.bearishCount}</div>
+          <div className="text-[11px] text-muted-foreground">看跌 {summary.bearishPct}%</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Wide consensus + target price card ──────────────────────────────────────
+function AnalystWideCard({
+  summary,
+  currentPrice,
+  currencySymbol,
+}: {
+  summary: AnalystSummary;
+  currentPrice: number;
+  currencySymbol: string;
+}) {
+  const { lowTargetPrice, highTargetPrice, averageTargetPrice } = summary;
+
+  // Compute track dot positions (%)
+  const range = highTargetPrice - lowTargetPrice;
+  const safeRange = range <= 0 ? 1 : range;
+  const currentPriceClamped = Math.max(lowTargetPrice, Math.min(highTargetPrice, currentPrice));
+
+  const pctOf = (v: number) => Math.round(((v - lowTargetPrice) / safeRange) * 100);
+  const lowPct  = 8;
+  const highPct = 92;
+  const currPct = Math.max(lowPct + 2, Math.min(highPct - 2, pctOf(currentPriceClamped)));
+  const avgPct  = Math.max(lowPct + 2, Math.min(highPct - 2, pctOf(averageTargetPrice)));
+
+  const upsidePct = currentPrice > 0
+    ? ((averageTargetPrice - currentPrice) / currentPrice * 100).toFixed(1)
+    : "—";
+
+  return (
+    <Card className="border-border mb-4">
+      <CardContent className="p-0">
+        <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border">
+          {/* Left: Consensus */}
+          <div className="p-5">
+            <div className="text-sm font-semibold text-foreground mb-4">分析師共識</div>
+            <div className="grid grid-cols-4 gap-3">
+              {/* Consensus result */}
+              <div className="col-span-1 bg-card border border-border/50 rounded-xl p-3">
+                <div className="text-[12px] text-muted-foreground mb-2">共識結果</div>
+                <div className={cn("text-2xl font-bold leading-tight", consensusColor(summary.consensusLabel))}>
+                  {summary.consensusLabel}
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-1.5">
+                  依各機構最新評級換算
+                </div>
+              </div>
+              {/* Bullish */}
+              <div className="bg-card border border-border/50 rounded-xl p-3">
+                <div className="text-[12px] text-muted-foreground mb-2">看漲</div>
+                <div className="text-2xl font-bold text-[#ef4444]">{summary.bullishCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.bullishPct}%</div>
+              </div>
+              {/* Neutral */}
+              <div className="bg-card border border-border/50 rounded-xl p-3">
+                <div className="text-[12px] text-muted-foreground mb-2">中性</div>
+                <div className="text-2xl font-bold text-foreground">{summary.neutralCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.neutralPct}%</div>
+              </div>
+              {/* Bearish */}
+              <div className="bg-card border border-border/50 rounded-xl p-3">
+                <div className="text-[12px] text-muted-foreground mb-2">看跌</div>
+                <div className="text-2xl font-bold text-[#22c55e]">{summary.bearishCount}</div>
+                <div className="text-[11px] text-muted-foreground mt-1.5">{summary.bearishPct}%</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: 52-week target price band */}
+          <div className="p-5">
+            <div className="text-sm font-semibold text-foreground mb-4">
+              分析師 52 週目標價
+              <span className="ml-2 text-[11px] text-muted-foreground font-normal">
+                近 6 個月樣本：{summary.sampleCount} 筆
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <div>
+                <div className="text-lg font-bold text-[#22c55e] tabular-nums">{currencySymbol}{lowTargetPrice.toLocaleString()}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">低</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-foreground tabular-nums">{currencySymbol}{currentPrice > 0 ? currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">目前</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-[#fda4af] tabular-nums">{currencySymbol}{averageTargetPrice.toLocaleString()}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">平均 (+{upsidePct}%)</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-[#ef4444] tabular-nums">{currencySymbol}{highTargetPrice.toLocaleString()}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">高</div>
+              </div>
+            </div>
+            {/* Track bar */}
+            <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "linear-gradient(90deg, rgba(34,197,94,.25), rgba(255,255,255,.1), rgba(239,68,68,.3))" }}>
+              {/* Low dot */}
+              <span style={{ position: "absolute", top: "50%", left: `${lowPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #22c55e", background: "hsl(var(--card))", display: "block" }} />
+              {/* Curr dot */}
+              <span style={{ position: "absolute", top: "50%", left: `${currPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #fff", background: "hsl(var(--card))", display: "block" }} />
+              {/* Avg dot */}
+              <span style={{ position: "absolute", top: "50%", left: `${avgPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #fda4af", background: "hsl(var(--card))", display: "block" }} />
+              {/* High dot */}
+              <span style={{ position: "absolute", top: "50%", left: `${highPct}%`, transform: "translate(-50%, -50%)", width: 14, height: 14, borderRadius: "50%", border: "3px solid #ef4444", background: "hsl(var(--card))", display: "block" }} />
+            </div>
+            <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
+              僅納入最近 6 個月內、且每家機構「最新一筆」目標價資料；若資料庫沒有分析師目標價則此區塊不顯示。
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Analyst target price table ───────────────────────────────────────────────
+function AnalystTargetTable({
+  rows,
+  currentPrice,
+  currencySymbol,
+}: {
+  rows: AnalystRow[];
+  currentPrice: number;
+  currencySymbol: string;
+}) {
+  if (!rows.length) return null;
+
+  const ratingPillClass = (cat: string) => {
+    if (cat === "bullish") return "bg-red-500/10 text-red-300 border border-red-500/20";
+    if (cat === "bearish") return "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20";
+    return "bg-slate-500/10 text-slate-300 border border-slate-500/20";
+  };
+
+  return (
+    <Card className="border-border mt-4">
+      <CardHeader className="pb-2 pt-4 px-4 flex-row items-center justify-between">
+        <CardTitle className="text-sm font-semibold">分析師目標價資料表</CardTitle>
+        <span className="text-[11px] text-muted-foreground">依日期新到舊，近 6 個月資料</span>
+      </CardHeader>
+      <CardContent className="p-0 overflow-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-card/80">
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">機構</th>
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">評級</th>
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">52 週目標價</th>
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">變動</th>
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">上行空間</th>
+              <th className="text-left text-muted-foreground font-semibold px-4 py-3 border-b border-border">日期</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const change = row.previousTargetPrice !== null && row.previousTargetPrice !== undefined
+                ? row.targetPrice - row.previousTargetPrice
+                : null;
+              const upsidePct = currentPrice > 0
+                ? ((row.targetPrice - currentPrice) / currentPrice * 100)
+                : null;
+
+              const changeColor = change === null ? "" : change > 0 ? "text-[#fca5a5]" : change < 0 ? "text-[#86efac]" : "text-muted-foreground";
+              const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#f87171]" : upsidePct < 0 ? "text-[#4ade80]" : "text-muted-foreground";
+
+              const dateFormatted = row.analystDate
+                ? row.analystDate.replace(/-/g, "/")
+                : "—";
+
+              return (
+                <tr key={row.id ?? i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                  <td className="px-4 py-3 font-medium">{row.institution}</td>
+                  <td className="px-4 py-3">
+                    <span className={cn("inline-flex px-2.5 py-1 rounded-lg text-[12px] font-semibold", ratingPillClass(row.ratingCategory))}>
+                      {row.rating}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 tabular-nums">
+                    <span className={changeColor !== "" ? changeColor.replace("text-[#fca5a5]", "text-[#fca5a5]").replace("text-[#86efac]", "text-[#86efac]") : ""}>
+                      {currencySymbol}{row.targetPrice.toLocaleString()}
+                    </span>
+                    {row.previousTargetPrice !== null && row.previousTargetPrice !== undefined && (
+                      <span className="ml-1.5 text-[11px] text-muted-foreground">
+                        原為 {currencySymbol}{row.previousTargetPrice.toLocaleString()}
+                      </span>
+                    )}
+                  </td>
+                  <td className={cn("px-4 py-3 tabular-nums font-medium", changeColor)}>
+                    {change === null ? "—" : change > 0 ? `+${change.toFixed(0)}` : change.toFixed(0)}
+                  </td>
+                  <td className={cn("px-4 py-3 tabular-nums font-medium", upsideColor)}>
+                    {upsidePct === null ? "—" : `${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}%`}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground tabular-nums">{dateFormatted}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Range options ────────────────────────────────────────────────────────────
 interface HistoryResponse {
   symbol: string;
   bars: CandleData[];
@@ -108,7 +528,6 @@ interface HistoryResponse {
   dataFrom: string;
   dataTo: string;
   dataSource: string;
-  // v2 DB-sync metadata
   fromDatabase?: boolean;
   fromCache?: boolean;
   refreshAttempted?: boolean;
@@ -123,24 +542,23 @@ const RANGE_OPTIONS = [
   { value: "1y",  label: "1年" },
 ];
 
-/** Client-side slice of the full-year bars pool — no backend re-query on range change */
+/** Client-side slice of the full-year bars pool */
 function sliceFullYearBars(bars: CandleData[], range: string): CandleData[] {
   if (!bars.length) return bars;
   const cutoff = new Date();
   if (range === "1mo")      cutoff.setMonth(cutoff.getMonth() - 1);
   else if (range === "3mo") cutoff.setMonth(cutoff.getMonth() - 3);
   else if (range === "6mo") cutoff.setMonth(cutoff.getMonth() - 6);
-  else return bars; // "1y" — return all
+  else return bars;
   const cutoffStr = cutoff.toISOString().slice(0, 10);
   return bars.filter((b) => b.time >= cutoffStr);
 }
 
 export default function TechnicalAnalysis() {
-  // ─── Global symbol state (v3) ──────────────────────────────────────────────
   const { activeSymbol, activeMarket } = useActiveSymbol();
   const [range, setRange] = useState("3mo");
 
-  // Derive meta from watchlist (fallback to STOCK_META)
+  // Watchlist meta
   const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
@@ -154,8 +572,7 @@ export default function TechnicalAnalysis() {
     return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
   }, [watchlist, activeSymbol, activeMarket]);
 
-  // Always fetch the full 1-year pool — range switching is purely client-side slice
-  // queryKey excludes range so switching range never triggers a new backend request
+  // Historical data (full 1-year pool)
   const { data, isLoading, isError, isFetching } = useQuery<HistoryResponse>({
     queryKey: ["/api/history", activeSymbol, meta.market],
     queryFn: () =>
@@ -167,7 +584,7 @@ export default function TechnicalAnalysis() {
     placeholderData: (prev: HistoryResponse | undefined) => prev,
   });
 
-  // Fetch transactions for this symbol to overlay buy/sell dots
+  // Transactions for buy/sell dots
   const { data: symbolTxns } = useQuery<Transaction[]>({
     queryKey: ["/api/transactions", activeSymbol],
     queryFn: () =>
@@ -177,23 +594,33 @@ export default function TechnicalAnalysis() {
     placeholderData: (prev) => prev,
   });
 
-  // Client-side range slice — no additional backend query on range change
+  // Analyst targets
+  const { data: analystData } = useQuery<AnalystData>({
+    queryKey: [`/api/analyst-targets/${activeSymbol}`, meta.market],
+    queryFn: () =>
+      apiRequest("GET", `/api/analyst-targets/${activeSymbol}?market=${meta.market}`)
+        .then(r => r.json()),
+    staleTime: 60_000,
+    enabled: !!activeSymbol,
+    placeholderData: (prev) => prev,
+  });
+
+  // Client-side range slice
   const fullYearBars: CandleData[] = data?.bars ?? [];
   const candleData: CandleData[] = useMemo(
     () => sliceFullYearBars(fullYearBars, range),
     [fullYearBars, range]
   );
 
-  const rsi = useMemo(() => (candleData.length >= 15 ? calculateRSI(candleData) : []), [candleData]);
-  const macdData = useMemo(() => (candleData.length >= 27 ? calculateMACD(candleData) : { macd: [], signal: [], histogram: [] }), [candleData]);
+  const rsi          = useMemo(() => (candleData.length >= 15 ? calculateRSI(candleData) : []), [candleData]);
+  const macdData     = useMemo(() => (candleData.length >= 27 ? calculateMACD(candleData) : { macd: [], signal: [], histogram: [] }), [candleData]);
   const bollingerData = useMemo(() => (candleData.length >= 20 ? calculateBollinger(candleData) : { upper: [], middle: [], lower: [] }), [candleData]);
 
-  // Build a date → trade info map for overlay dots
+  // Trade dot map
   const tradeDotMap = useMemo(() => {
     const map = new Map<string, TradeDot>();
     if (!symbolTxns?.length) return map;
     for (const tx of symbolTxns) {
-      // Skip dividend entries (price=0, shares=0) — they have no chart position
       if (tx.side === "dividend" || tx.price <= 0) continue;
       map.set(tx.tradeDate, {
         date: tx.tradeDate.slice(5),
@@ -207,10 +634,22 @@ export default function TechnicalAnalysis() {
     return map;
   }, [symbolTxns]);
 
+  // Analyst overlay event map (date → event, for single-event-per-date quick access in chartData)
+  const analystEventMap = useMemo(() => {
+    const map = new Map<string, AnalystOverlayEvent>();
+    if (!analystData?.overlayEvents?.length) return map;
+    for (const ev of analystData.overlayEvents) {
+      // If multiple on same date, keep the last one for tooltip (all shown in chart via custom layer)
+      map.set(ev.date, ev);
+    }
+    return map;
+  }, [analystData]);
+
   const chartData = useMemo(
     () =>
       candleData.map((d, i) => {
-        const tradeInfo = tradeDotMap.get(d.time) ?? null;
+        const tradeInfo   = tradeDotMap.get(d.time) ?? null;
+        const analystEvent = analystEventMap.get(d.time) ?? null;
         return {
           date: d.time.slice(5),
           fullDate: d.time,
@@ -228,46 +667,70 @@ export default function TechnicalAnalysis() {
           bbLower: bollingerData.lower[i] ?? null,
           tradeDot: tradeInfo ? tradeInfo.price : null,
           tradeInfo,
+          analystEvent,
         };
       }),
-    [candleData, rsi, macdData, bollingerData, tradeDotMap]
+    [candleData, rsi, macdData, bollingerData, tradeDotMap, analystEventMap]
   );
 
-  const lastRSI = rsi[rsi.length - 1] ?? 50;
-  const lastMACD = macdData.macd[macdData.macd.length - 1] ?? 0;
+  const lastRSI    = rsi[rsi.length - 1] ?? 50;
+  const lastMACD   = macdData.macd[macdData.macd.length - 1] ?? 0;
   const lastSignal = macdData.signal[macdData.signal.length - 1] ?? 0;
-  const lastClose = candleData[candleData.length - 1]?.close ?? 0;
+  const lastClose  = candleData[candleData.length - 1]?.close ?? 0;
   const lastBBUpper = bollingerData.upper[bollingerData.upper.length - 1] ?? lastClose * 1.02;
   const lastBBLower = bollingerData.lower[bollingerData.lower.length - 1] ?? lastClose * 0.98;
 
-  const rsiSignal = lastRSI > 70 ? "超買" : lastRSI < 30 ? "超賣" : "中性";
+  const rsiSignal  = lastRSI > 70 ? "超買" : lastRSI < 30 ? "超賣" : "中性";
   const macdSignal = lastMACD > lastSignal ? "多頭" : "空頭";
   const bbPosition = lastClose > lastBBUpper ? "超漲" : lastClose < lastBBLower ? "超跌" : "區間內";
+  const xInterval  = Math.max(1, Math.floor(chartData.length / 12));
 
-  const xInterval = Math.max(1, Math.floor(chartData.length / 12));
+  const currencySymbol = meta.market === "US" ? "$" : "NT";
+  const hasAnalyst = !!analystData?.hasData && !!analystData.summary;
+  // Filter overlay events to only those within the current sliced date range
+  const visibleOverlayEvents = useMemo(() => {
+    if (!analystData?.overlayEvents?.length || !candleData.length) return [];
+    const firstDate = candleData[0].time;
+    const lastDate  = candleData[candleData.length - 1].time;
+    return analystData.overlayEvents.filter(ev => ev.date >= firstDate && ev.date <= lastDate);
+  }, [analystData, candleData]);
 
   return (
     <div className="p-6 space-y-4" data-testid="analysis-page">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* ── Header: stock name + symbol + analyst mini card ── */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">技術分析</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">RSI、MACD、布林通道指標（真實歷史數據）</p>
+          <h1 className="text-2xl font-bold leading-tight">{meta.name}</h1>
+          <div className="flex items-center gap-2 mt-1.5 text-sm text-muted-foreground">
+            <span>{activeSymbol}</span>
+            <span>·</span>
+            <span>{meta.market === "US" ? "NYSE / NASDAQ" : "台灣證交所"}</span>
+            <Badge variant="outline" className="text-[11px] py-0.5">技術分析</Badge>
+            {hasAnalyst && (
+              <Badge variant="outline" className="text-[11px] py-0.5">
+                近 6 個月分析師樣本：{analystData!.summary!.sampleCount} 筆
+              </Badge>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Mobile: symbol picker trigger */}
-          <AnalysisSymbolSidebarMobile />
-          <Select value={range} onValueChange={setRange}>
-            <SelectTrigger className="w-[110px]" data-testid="range-selector">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {RANGE_OPTIONS.map((r) => (
-                <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {isFetching && <RefreshCw className="w-4 h-4 text-muted-foreground animate-spin" />}
+        <div className="flex flex-wrap items-center gap-3">
+          {hasAnalyst && (
+            <AnalystConsensusMiniCard summary={analystData!.summary!} />
+          )}
+          <div className="flex items-center gap-2">
+            <AnalysisSymbolSidebarMobile />
+            <Select value={range} onValueChange={setRange}>
+              <SelectTrigger className="w-[110px]" data-testid="range-selector">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RANGE_OPTIONS.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {isFetching && <RefreshCw className="w-4 h-4 text-muted-foreground animate-spin" />}
+          </div>
         </div>
       </div>
 
@@ -283,8 +746,17 @@ export default function TechnicalAnalysis() {
       {!isError && data?.fromDatabase && data?.refreshAttempted && !data?.refreshSucceeded && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 border border-border rounded-lg px-3 py-2">
           <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-          已顯示稍早資料（最新資料暂時無法取得，將在下次自動重試）
+          已顯示稍早資料（最新資料暫時無法取得，將在下次自動重試）
         </div>
+      )}
+
+      {/* ── Wide analyst card (above charts) ── */}
+      {hasAnalyst && (
+        <AnalystWideCard
+          summary={analystData!.summary!}
+          currentPrice={lastClose}
+          currencySymbol={currencySymbol}
+        />
       )}
 
       {/* Signal Cards */}
@@ -334,12 +806,17 @@ export default function TechnicalAnalysis() {
         </Card>
       </div>
 
-      {/* Price + Bollinger Chart */}
+      {/* ── Price + Bollinger Chart ── */}
       <Card className="border-border">
         <CardHeader className="pb-2 pt-4 px-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-sm font-semibold">
-              {activeSymbol} {meta.name} — 價格走勢與布林通道
+              {activeSymbol} — 價格走勢與布林通道
+              {visibleOverlayEvents.length > 0 && (
+                <span className="ml-2 text-[11px] font-normal text-muted-foreground">
+                  紅色正 T = 調升目標價，綠色倒 T = 下修目標價
+                </span>
+              )}
             </CardTitle>
             {data && (
               <span className="text-[11px] text-muted-foreground tabular-nums">
@@ -364,7 +841,7 @@ export default function TechnicalAnalysis() {
                 <Line type="monotone" dataKey="bbMiddle" stroke="hsl(var(--muted-foreground))" strokeWidth={1} strokeDasharray="2 2" dot={false} name="中軌" />
                 <Line type="monotone" dataKey="bbLower" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林下軌" />
                 <Line type="monotone" dataKey="close" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} name="收盤價" />
-                {/* Buy/sell trade dots overlay */}
+                {/* Buy/sell trade dots */}
                 <Line
                   type="monotone"
                   dataKey="tradeDot"
@@ -396,6 +873,19 @@ export default function TechnicalAnalysis() {
                 />
                 <Bar dataKey="volume" fill="hsl(var(--muted))" opacity={0.3} yAxisId="volume" name="成交量" />
                 <YAxis yAxisId="volume" orientation="right" tick={false} width={0} domain={[0, (max: number) => max * 5]} />
+                {/* Analyst T-marker overlay (custom layer) */}
+                {visibleOverlayEvents.length > 0 && (
+                  // @ts-ignore – Recharts passes chart internals as props to Customized
+                  <Customized
+                    component={(props: any) => (
+                      <AnalystOverlayLayer
+                        {...props}
+                        data={chartData}
+                        overlayEvents={visibleOverlayEvents}
+                      />
+                    )}
+                  />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
           )}
@@ -457,6 +947,15 @@ export default function TechnicalAnalysis() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Analyst target price table (bottom) ── */}
+      {hasAnalyst && analystData!.rows && analystData!.rows!.length > 0 && (
+        <AnalystTargetTable
+          rows={analystData!.rows!}
+          currentPrice={lastClose}
+          currencySymbol={currencySymbol}
+        />
+      )}
 
       {/* Data source */}
       <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">

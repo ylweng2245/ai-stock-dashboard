@@ -149,3 +149,28 @@ export const dailyNewsSources = sqliteTable("daily_news_sources", {
 export const insertDailyNewsSourceSchema = createInsertSchema(dailyNewsSources).omit({ id: true });
 export type InsertDailyNewsSource = z.infer<typeof insertDailyNewsSourceSchema>;
 export type DailyNewsSource = typeof dailyNewsSources.$inferSelect;
+
+// ── Analyst Target Prices ────────────────────────────────────────────────────
+
+export const analystTargets = sqliteTable("analyst_targets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  symbol: text("symbol").notNull(),
+  market: text("market").notNull(),              // "TW" or "US"
+  institution: text("institution").notNull(),
+  rating: text("rating").notNull(),              // raw rating string
+  ratingCategory: text("rating_category").notNull(), // "bullish" | "neutral" | "bearish"
+  score: integer("score").notNull(),             // 5 | 3 | 1
+  targetPrice: real("target_price").notNull(),   // new target price
+  previousTargetPrice: real("previous_target_price"), // nullable
+  analystDate: text("analyst_date").notNull(),   // "YYYY-MM-DD"
+  sourceSheet: text("source_sheet").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (t) => ({
+  analystSymbolDateInstIdx: uniqueIndex("analyst_symbol_date_inst")
+    .on(t.symbol, t.market, t.institution, t.analystDate),
+}));
+
+export const insertAnalystTargetSchema = createInsertSchema(analystTargets).omit({ id: true });
+export type InsertAnalystTarget = z.infer<typeof insertAnalystTargetSchema>;
+export type AnalystTarget = typeof analystTargets.$inferSelect;

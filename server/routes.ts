@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { storage } from "./storage";
-import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction } from "@shared/schema";
+import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction, type InsertAnalystTarget } from "@shared/schema";
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
@@ -398,6 +398,140 @@ export async function registerRoutes(
     }
     return result;
   }
+  // ── Analyst Target Helpers ─────────────────────────────────────────────────
+
+  /**
+   * Parse a target price string like "US1,183", "US$850", "$850", "1,327", 850
+   * Returns null if unparseable.
+   */
+  function parseTargetPrice(raw: any): number | null {
+    if (raw === null || raw === undefined || raw === "") return null;
+    if (typeof raw === "number") return isNaN(raw) ? null : raw;
+    const s = String(raw).trim()
+      .replace(/^US\$?/i, "")  // remove US$ or US prefix
+      .replace(/^\$/,    "")  // remove leading $
+      .replace(/,/g,    "")  // remove thousands separators
+      .trim();
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  }
+
+  /**
+   * Normalise a raw rating string to category + score.
+   * Unknown ratings → neutral (score 3) with a console warning.
+   */
+  function normalizeAnalystRating(raw: any): {
+    rating: string;
+    category: "bullish" | "neutral" | "bearish";
+    score: 5 | 3 | 1;
+  } {
+    const rating = String(raw ?? "").trim();
+    const lower  = rating.toLowerCase();
+
+    const bullish = [
+      "buy", "strong buy", "overweight", "outperform",
+      "accumulate", "sector outperform", "positive",
+    ];
+    const bearish = [
+      "sell", "underweight", "underperform",
+      "reduce", "negative",
+    ];
+    const neutral = [
+      "hold", "neutral", "market perform",
+      "equal weight", "sector perform", "mixed",
+    ];
+
+    if (bullish.includes(lower)) return { rating, category: "bullish", score: 5 };
+    if (bearish.includes(lower)) return { rating, category: "bearish", score: 1 };
+    if (neutral.includes(lower)) return { rating, category: "neutral", score: 3 };
+
+    console.warn(`[analyst] Unknown rating "${rating}" — defaulting to neutral`);
+    return { rating, category: "neutral", score: 3 };
+  }
+
+  /**
+   * Parse an analyst target price sheet.
+   * sheetName is used as the stock symbol.
+   * Expected column order (case-insensitive header detection or positional):
+   *   A=Institution  B=Rating  C=New Target  D=Previous Target  E=Date
+   */
+  function parseAnalystTargetSheet(
+    sheet: XLSX.WorkSheet,
+    sheetName: string,
+    market: "US" | "TW" = "US"
+  ): InsertAnalystTarget[] {
+    const symbol = sheetName.trim().toUpperCase();
+    const rows   = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: null });
+    if (rows.length < 2) return [];
+
+    // Detect header row (row 0) column positions by keyword matching
+    const headerRow = (rows[0] as any[]).map((c: any) => String(c ?? "").toLowerCase().trim());
+
+    const colIdx = {
+      institution: -1,
+      rating:      -1,
+      newTarget:   -1,
+      prevTarget:  -1,
+      date:        -1,
+    };
+
+    headerRow.forEach((h, i) => {
+      if (colIdx.institution < 0 && (h.includes("institution") || h.includes("firm") || h.includes("broker")))  colIdx.institution = i;
+      if (colIdx.rating      < 0 && (h.includes("rating") || h.includes("action")))                            colIdx.rating      = i;
+      if (colIdx.newTarget   < 0 && (h.includes("new") && h.includes("target")) || h === "target price" || h === "new target") colIdx.newTarget = i;
+      if (colIdx.prevTarget  < 0 && (h.includes("prev") || h.includes("old") || h.includes("previous")))       colIdx.prevTarget  = i;
+      if (colIdx.date        < 0 && (h.includes("date")))                                                       colIdx.date        = i;
+    });
+
+    // Fallback positional mapping (A=0 Institution B=1 Rating C=2 NewTarget D=3 PrevTarget E=4 Date)
+    if (colIdx.institution < 0) colIdx.institution = 0;
+    if (colIdx.rating      < 0) colIdx.rating      = 1;
+    if (colIdx.newTarget   < 0) colIdx.newTarget   = 2;
+    if (colIdx.prevTarget  < 0) colIdx.prevTarget  = 3;
+    if (colIdx.date        < 0) colIdx.date        = 4;
+
+    const now = Date.now();
+    const result: InsertAnalystTarget[] = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i] as any[];
+      if (!row || row.every((c: any) => c === null || c === undefined || c === "")) continue;
+
+      const institution = String(row[colIdx.institution] ?? "").trim();
+      if (!institution) continue;
+
+      const rawRating   = row[colIdx.rating];
+      const rawNew      = row[colIdx.newTarget];
+      const rawPrev     = row[colIdx.prevTarget];
+      const rawDate     = row[colIdx.date];
+
+      const newTarget   = parseTargetPrice(rawNew);
+      if (newTarget === null || newTarget <= 0) continue;  // must have a valid new target
+
+      const prevTarget  = parseTargetPrice(rawPrev);
+      const analystDate = parseExcelDate(rawDate) || new Date().toISOString().slice(0, 10);
+
+      const { rating, category, score } = normalizeAnalystRating(rawRating);
+
+      result.push({
+        symbol,
+        market,
+        institution,
+        rating,
+        ratingCategory: category,
+        score,
+        targetPrice: newTarget,
+        previousTargetPrice: prevTarget,
+        analystDate,
+        sourceSheet: sheetName,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return result;
+  }
+
   // ── End helpers ─────────────────────────────────────────────────────────────
 
   app.post("/api/transactions/import", upload.single("file"), async (req, res) => {
@@ -407,10 +541,11 @@ export async function registerRoutes(
       const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
       const imported: InsertTransaction[] = [];
 
-      // Sheet 1 → TW, Sheet 2 → US (by index; also try by name as fallback)
+      // Sheet 1 (index 0) → TW transactions
       const twSheet = wb.Sheets[wb.SheetNames[0]];
       if (twSheet) imported.push(...parseUnifiedTransactionSheet(twSheet, "TW"));
 
+      // Sheet 2 (index 1) → US transactions
       const usSheet = wb.Sheets[wb.SheetNames[1]];
       if (usSheet) imported.push(...parseUnifiedTransactionSheet(usSheet, "US"));
 
@@ -428,7 +563,50 @@ export async function registerRoutes(
       // Also clear old manual holdings (replaced by computed view)
       await storage.clearAllHoldings();
 
-      res.json({ ok: true, imported: count, tw: imported.filter(r => r.market === "TW").length, us: imported.filter(r => r.market === "US").length });
+      // ── Sheet 3+ → Analyst Target Sheets ────────────────────────────────
+      // Each sheet name is treated as the stock symbol (e.g. "LLY", "RKLB")
+      // We only replace analyst data for symbols present in this Excel file.
+      const analystSymbols: string[] = [];
+      let analystTargetsImported = 0;
+
+      for (let si = 2; si < wb.SheetNames.length; si++) {
+        const sheetName = wb.SheetNames[si];
+        const sheet     = wb.Sheets[sheetName];
+        if (!sheet) continue;
+
+        // Heuristic: analyst sheets have names that look like stock symbols
+        // (1-6 uppercase letters/digits, no spaces) — skip if it looks like a trade sheet
+        const looksLikeSymbol = /^[A-Za-z0-9]{1,8}$/.test(sheetName.trim());
+        if (!looksLikeSymbol) {
+          console.log(`[import] Skipping sheet "${sheetName}" — doesn't look like a stock symbol`);
+          continue;
+        }
+
+        const analystRows = parseAnalystTargetSheet(sheet, sheetName, "US");
+        if (analystRows.length === 0) {
+          console.log(`[import] Sheet "${sheetName}" yielded 0 analyst rows — skipping`);
+          continue;
+        }
+
+        // Replace only this symbol's analyst data
+        await storage.replaceAnalystTargetsForSymbol(
+          sheetName.trim().toUpperCase(),
+          "US",
+          analystRows
+        );
+        analystSymbols.push(sheetName.trim().toUpperCase());
+        analystTargetsImported += analystRows.length;
+        console.log(`[import] Analyst targets: ${sheetName} → ${analystRows.length} rows`);
+      }
+
+      res.json({
+        ok: true,
+        imported: count,
+        tw: imported.filter(r => r.market === "TW").length,
+        us: imported.filter(r => r.market === "US").length,
+        analystTargetsImported,
+        analystSymbols,
+      });
     } catch (e: any) {
       console.error("[import] error:", e.message, e.stack);
       res.status(500).json({ error: "Failed to import Excel", detail: e.message });
@@ -721,6 +899,107 @@ export async function registerRoutes(
       storage.upsertSectorTag(symbol.toUpperCase(), sectorTag);
       res.json({ ok: true });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // GET /api/analyst-targets/:symbol?market=US|TW
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/analyst-targets/:symbol", async (req, res) => {
+    try {
+      const symbol = req.params.symbol.toUpperCase();
+      const market = ((req.query.market as string) || "US").toUpperCase() as "US" | "TW";
+
+      // All rows for this symbol (newest first, near 6 months for table)
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
+
+      const allRows = await storage.getAnalystTargetsBySymbol(symbol, market);
+
+      // rows → near-6-month only (for table display)
+      const recentRows = allRows.filter(r => r.analystDate >= cutoff);
+
+      if (recentRows.length === 0) {
+        return res.json({ symbol, market, hasData: false });
+      }
+
+      // Consensus rows: each institution's latest entry within 6 months
+      const consensusRows = await storage.getLatestAnalystConsensusBySymbol(symbol, market);
+
+      // ── Compute consensus summary ─────────────────────────────────────────
+      const sampleCount  = consensusRows.length;
+      const bullishRows  = consensusRows.filter(r => r.ratingCategory === "bullish");
+      const neutralRows  = consensusRows.filter(r => r.ratingCategory === "neutral");
+      const bearishRows  = consensusRows.filter(r => r.ratingCategory === "bearish");
+
+      const avgScore = sampleCount > 0
+        ? consensusRows.reduce((s, r) => s + r.score, 0) / sampleCount
+        : 0;
+
+      let consensusLabel: string;
+      if      (avgScore >= 4.5) consensusLabel = "強烈買入";
+      else if (avgScore >= 3.5) consensusLabel = "買入";
+      else if (avgScore >= 2.5) consensusLabel = "持有";
+      else if (avgScore >= 1.5) consensusLabel = "賣出";
+      else                      consensusLabel = "強烈賣出";
+
+      const pct = (n: number) =>
+        sampleCount > 0 ? Math.round((n / sampleCount) * 1000) / 10 : 0;
+
+      const targetPrices = consensusRows.map(r => r.targetPrice);
+      const avgTargetPrice  = targetPrices.reduce((s, v) => s + v, 0) / targetPrices.length;
+      const highTargetPrice = Math.max(...targetPrices);
+      const lowTargetPrice  = Math.min(...targetPrices);
+
+      // ── Build overlay events ───────────────────────────────────────────
+      // Use recent-6-month rows for overlay (all events, not deduplicated)
+      const overlayEvents = recentRows.map(r => {
+        let direction: "up" | "down" | "flat";
+        if (r.previousTargetPrice === null || r.previousTargetPrice === undefined) {
+          direction = "flat";
+        } else if (r.targetPrice > r.previousTargetPrice) {
+          direction = "up";
+        } else if (r.targetPrice < r.previousTargetPrice) {
+          direction = "down";
+        } else {
+          direction = "flat";
+        }
+        return {
+          date:                r.analystDate,
+          institution:         r.institution,
+          rating:              r.rating,
+          ratingCategory:      r.ratingCategory,
+          targetPrice:         r.targetPrice,
+          previousTargetPrice: r.previousTargetPrice ?? null,
+          direction,
+        };
+      });
+
+      res.json({
+        symbol,
+        market,
+        hasData: true,
+        summary: {
+          consensusLabel,
+          averageScore:     Math.round(avgScore * 100) / 100,
+          bullishCount:     bullishRows.length,
+          neutralCount:     neutralRows.length,
+          bearishCount:     bearishRows.length,
+          bullishPct:       pct(bullishRows.length),
+          neutralPct:       pct(neutralRows.length),
+          bearishPct:       pct(bearishRows.length),
+          averageTargetPrice: Math.round(avgTargetPrice * 100) / 100,
+          highTargetPrice,
+          lowTargetPrice,
+          sampleCount,
+        },
+        overlayEvents,
+        rows: recentRows,  // full 6-month data for bottom table
+      });
+    } catch (e: any) {
+      console.error("[analyst-targets] error:", e.message);
       res.status(500).json({ error: e.message });
     }
   });

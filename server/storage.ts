@@ -8,6 +8,7 @@ import {
   type DailyNewsDigest, type InsertDailyNewsDigest, dailyNewsDigest,
   type DailyNewsSource, type InsertDailyNewsSource, dailyNewsSources,
   type WatchlistSectorTag, watchlistSectorTags,
+  type AnalystTarget, type InsertAnalystTarget, analystTargets,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -127,6 +128,12 @@ export interface IStorage {
   getIndicatorHistory(indicatorKey: string, fromDate?: string): Promise<MarketIndicator[]>;
   getLatestIndicatorDate(indicatorKey: string): Promise<string | null>;
   upsertIndicatorHistory(rows: InsertMarketIndicator[]): Promise<void>;
+
+  // Analyst Targets
+  getAnalystTargetsBySymbol(symbol: string, market: string): Promise<AnalystTarget[]>;
+  replaceAnalystTargetsForSymbol(symbol: string, market: string, rows: InsertAnalystTarget[]): Promise<void>;
+  upsertAnalystTargets(rows: InsertAnalystTarget[]): Promise<void>;
+  getLatestAnalystConsensusBySymbol(symbol: string, market: string): Promise<AnalystTarget[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -421,6 +428,95 @@ export class DatabaseStorage implements IStorage {
       db.insert(dailyNewsSources).values({ ...s, digestId, sortOrder: i }).run();
     });
   }
+
+  // ───────────────────────────────────────────────────────────────────
+  // Analyst Targets
+  // ───────────────────────────────────────────────────────────────────
+
+  /** All analyst target rows for a symbol, newest first */
+  async getAnalystTargetsBySymbol(symbol: string, market: string): Promise<AnalystTarget[]> {
+    return db.select().from(analystTargets)
+      .where(and(eq(analystTargets.symbol, symbol), eq(analystTargets.market, market)))
+      .orderBy(desc(analystTargets.analystDate))
+      .all();
+  }
+
+  /** Replace all analyst target rows for a specific symbol (full reimport) */
+  async replaceAnalystTargetsForSymbol(
+    symbol: string,
+    market: string,
+    rows: InsertAnalystTarget[]
+  ): Promise<void> {
+    db.delete(analystTargets)
+      .where(and(eq(analystTargets.symbol, symbol), eq(analystTargets.market, market)))
+      .run();
+    if (rows.length === 0) return;
+    const stmt = sqlite.prepare(`
+      INSERT OR REPLACE INTO analyst_targets
+        (symbol, market, institution, rating, rating_category, score,
+         target_price, previous_target_price, analyst_date, source_sheet, created_at, updated_at)
+      VALUES
+        (@symbol, @market, @institution, @rating, @ratingCategory, @score,
+         @targetPrice, @previousTargetPrice, @analystDate, @sourceSheet, @createdAt, @updatedAt)
+    `);
+    const insertAll = sqlite.transaction((items: InsertAnalystTarget[]) => {
+      for (const r of items) stmt.run(r);
+    });
+    insertAll(rows);
+  }
+
+  /** Upsert analyst target rows (used for incremental imports) */
+  async upsertAnalystTargets(rows: InsertAnalystTarget[]): Promise<void> {
+    if (rows.length === 0) return;
+    const stmt = sqlite.prepare(`
+      INSERT INTO analyst_targets
+        (symbol, market, institution, rating, rating_category, score,
+         target_price, previous_target_price, analyst_date, source_sheet, created_at, updated_at)
+      VALUES
+        (@symbol, @market, @institution, @rating, @ratingCategory, @score,
+         @targetPrice, @previousTargetPrice, @analystDate, @sourceSheet, @createdAt, @updatedAt)
+      ON CONFLICT (symbol, market, institution, analyst_date) DO UPDATE SET
+        rating          = excluded.rating,
+        rating_category = excluded.rating_category,
+        score           = excluded.score,
+        target_price    = excluded.target_price,
+        previous_target_price = excluded.previous_target_price,
+        source_sheet    = excluded.source_sheet,
+        updated_at      = excluded.updated_at
+    `);
+    const upsertAll = sqlite.transaction((items: InsertAnalystTarget[]) => {
+      for (const r of items) stmt.run(r);
+    });
+    upsertAll(rows);
+  }
+
+  /**
+   * Returns near-6-month rows, deduplicated to the most-recent entry per institution.
+   * Used directly for consensus calculation.
+   */
+  async getLatestAnalystConsensusBySymbol(symbol: string, market: string): Promise<AnalystTarget[]> {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
+
+    // Raw SQL: within 6 months, pick latest row per institution
+    const rows = sqlite.prepare(`
+      SELECT *
+      FROM analyst_targets
+      WHERE symbol = ? AND market = ? AND analyst_date >= ?
+        AND analyst_date = (
+          SELECT MAX(a2.analyst_date)
+          FROM analyst_targets a2
+          WHERE a2.symbol = analyst_targets.symbol
+            AND a2.market = analyst_targets.market
+            AND a2.institution = analyst_targets.institution
+            AND a2.analyst_date >= ?
+        )
+      ORDER BY analyst_date DESC
+    `).all(symbol, market, cutoff, cutoff) as AnalystTarget[];
+
+    return rows;
+  }
 }
 
 // ─── ALTER TABLE safety guards ─────────────────────────────────────────────
@@ -499,6 +595,29 @@ try {
   sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS mkt_indicator_key_date ON market_indicators (indicator_key, date)`);
 } catch {
   // Already exists — ignore
+}
+
+// Ensure analyst_targets table exists (migration-safe)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS analyst_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    institution TEXT NOT NULL,
+    rating TEXT NOT NULL,
+    rating_category TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    target_price REAL NOT NULL,
+    previous_target_price REAL,
+    analyst_date TEXT NOT NULL,
+    source_sheet TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS analyst_symbol_date_inst
+    ON analyst_targets (symbol, market, institution, analyst_date)`);
+} catch {
+  // Already exists
 }
 
 export const storage = new DatabaseStorage();
