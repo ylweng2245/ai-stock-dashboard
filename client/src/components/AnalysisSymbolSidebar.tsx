@@ -93,52 +93,44 @@ function SymbolRow({ item, quote, holding, isActive, onClick }: SymbolRowProps) 
       data-testid={`sidebar-symbol-${item.symbol}`}
       className={cn(
         "w-full text-left px-3 py-2.5 transition-colors group",
-        "flex items-start justify-between gap-2",
+        "flex flex-col gap-0",
         "hover:bg-accent hover:text-accent-foreground",
         isActive && "bg-primary/10 text-primary"
       )}
     >
-      {/* Left: name + symbol */}
-      <div className="flex flex-col min-w-0 flex-1">
-        <span className={cn("text-[13px] leading-snug truncate", isActive && "font-semibold")}>
-          {label}
-        </span>
-        <span className="text-[11px] text-muted-foreground leading-snug">{subLabel}</span>
-
-        {/* Holding info row */}
-        {shares > 0 && (
-          <span className="text-[11px] text-muted-foreground/70 leading-snug tabular-nums mt-0.5">
-            {shares.toLocaleString()} 股
-            {marketValue != null && (
-              <> · {fmtMarketValue(marketValue, item.market)}</>
-            )}
+      {/* Top row: name + price */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className={cn("text-[13px] leading-snug truncate", isActive && "font-semibold")}>
+            {label}
           </span>
-        )}
-      </div>
-
-      {/* Right: price + pct */}
-      <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
-        {price != null && (
-          <span className="text-[13px] tabular-nums font-medium leading-snug">
-            {item.market === "TW"
-              ? price.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-              : `$${price.toFixed(2)}`}
-          </span>
-        )}
-        <div className="flex items-center gap-1">
-          {pctChange !== null && (
-            <span
-              className={cn(
-                "text-[11px] tabular-nums font-semibold",
-                isUp ? "text-gain" : "text-loss"
-              )}
-            >
-              {pctChange.toFixed(2)}%
+          <span className="text-[11px] text-muted-foreground leading-snug">{subLabel}</span>
+        </div>
+        <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
+          {price != null && (
+            <span className="text-[13px] tabular-nums font-medium leading-snug">
+              {item.market === "TW"
+                ? price.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                : `$${price.toFixed(2)}`}
             </span>
           )}
-          <QuoteStatusDot status={quote?.quoteStatus} />
+          <div className="flex items-center gap-1">
+            {pctChange !== null && (
+              <span className={cn("text-[11px] tabular-nums font-semibold", isUp ? "text-gain" : "text-loss")}>
+                {pctChange.toFixed(2)}%
+              </span>
+            )}
+            <QuoteStatusDot status={quote?.quoteStatus} />
+          </div>
         </div>
       </div>
+
+      {/* Holding info — full-width centred row below */}
+      {shares > 0 && (
+        <div className="w-full text-center text-[11px] text-muted-foreground/70 tabular-nums mt-1">
+          {shares.toLocaleString()} 股{marketValue != null && <> · {fmtMarketValue(marketValue, item.market)}</>}
+        </div>
+      )}
     </button>
   );
 }
