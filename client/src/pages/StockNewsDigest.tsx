@@ -8,6 +8,7 @@ import {
   AlertCircle, Loader2, BookOpen, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ interface PageData {
   lastUpdated: number | null;
 }
 
+// LiveQuote / QuotesData interfaces retained for potential future use
 interface LiveQuote {
   symbol: string;
   price: number;
@@ -343,78 +345,6 @@ function StockDigestCard({
     </article>
   );
 }
-
-// ─── Watchlist Sidebar ────────────────────────────────────────────────────────
-
-function DigestWatchlistSidebar({
-  stocks,
-  activeSymbol,
-  liveQuotes,
-  onSelect,
-}: {
-  stocks: StockDigestData[];
-  activeSymbol: string | null;
-  liveQuotes: Map<string, LiveQuote>;
-  onSelect: (symbol: string) => void;
-}) {
-  return (
-    <aside className="w-[220px] shrink-0 border-l border-border bg-sidebar flex flex-col">
-      <div className="px-4 py-3 border-b border-border">
-        <h3 className="text-[14px] font-semibold">分析標的</h3>
-        <p className="text-[11px] text-muted-foreground mt-0.5">美股自選 · 即時行情</p>
-      </div>
-      <div className="flex-1 overflow-y-auto py-2 px-2 space-y-1">
-        {stocks.map((s) => {
-          const live = liveQuotes.get(s.symbol);
-          const pct = live?.changePercent ?? null;
-          const price = live?.price ?? null;
-          const isUp = pct != null && pct > 0;
-          const isDown = pct != null && pct < 0;
-          const isActive = s.symbol === activeSymbol;
-          return (
-            <button
-              key={s.symbol}
-              onClick={() => onSelect(s.symbol)}
-              className={cn(
-                "w-full flex items-start justify-between px-3 py-2.5 rounded-xl text-left transition-colors",
-                isActive
-                  ? "bg-[#66c6df]/12 border border-[#66c6df]/15"
-                  : "border border-transparent hover:bg-muted/30"
-              )}
-            >
-              <div className="min-w-0">
-                <div className="text-[13px] font-semibold">{s.symbol}</div>
-                <div className="text-[11px] text-muted-foreground truncate max-w-[110px]">{s.name}</div>
-              </div>
-              <div className="flex flex-col items-end shrink-0 ml-1">
-                {price != null && (
-                  <span className="text-[13px] font-bold tabular-nums">
-                    ${price.toFixed(2)}
-                  </span>
-                )}
-                {pct != null && (
-                  <span className={cn(
-                    "text-[11px] font-semibold tabular-nums",
-                    isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground"
-                  )}>
-                    {isUp ? "+" : ""}{pct.toFixed(2)}%
-                  </span>
-                )}
-                {price == null && pct == null && (
-                  <span className="text-[11px] text-muted-foreground/40">—</span>
-                )}
-              </div>
-            </button>
-          );
-        })}
-        {stocks.length === 0 && (
-          <p className="text-[12px] text-muted-foreground px-3 py-4">尚未新增美股自選標的</p>
-        )}
-      </div>
-    </aside>
-  );
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function StockNewsDigest() {
@@ -429,19 +359,7 @@ export default function StockNewsDigest() {
     refetchOnWindowFocus: false,
   });
 
-  // Live quotes from /api/quotes — shared with Dashboard, backend cache TTL is 60s
-  const { data: quotesData } = useQuery<QuotesData>({
-    queryKey: ["/api/quotes"],
-    queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
-    staleTime: 5 * 60_000,
-    refetchInterval: 60 * 1000,
-    refetchOnWindowFocus: true,
-    placeholderData: (prev: QuotesData | undefined) => prev,
-  });
-
-  const liveQuotes = new Map<string, LiveQuote>(
-    (quotesData?.quotes ?? []).map((q) => [q.symbol, q])
-  );
+  // Note: live quotes are now fetched inside AnalysisSymbolSidebarDesktop (shared component)
 
   const updateMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/news-digest/update").then((r) => r.json()),
@@ -470,7 +388,7 @@ export default function StockNewsDigest() {
           {/* Topbar */}
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-5">
             <div>
-              <h2 className="text-[32px] font-bold tracking-tight">個股每日新聞彙總</h2>
+              <h2 className="text-[32px] font-bold tracking-tight">美股每日新聞彙總</h2>
               <p className="text-[14px] text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
                 僅針對美股自選個股，依自選順序顯示。每張卡片保留該股票的歷史新聞摘要時間軸，可向下捲動回看過去彙總，並保留原始來源連結。
               </p>
@@ -568,13 +486,8 @@ export default function StockNewsDigest() {
         </div>
       </div>
 
-      {/* Right sidebar */}
-      <DigestWatchlistSidebar
-        stocks={stocks}
-        activeSymbol={activeSymbol}
-        liveQuotes={liveQuotes}
-        onSelect={handleScrollTo}
-      />
+      {/* Right sidebar — shared component (shows all markets + live price/pct/holdings) */}
+      <AnalysisSymbolSidebarDesktop />
     </div>
   );
 }

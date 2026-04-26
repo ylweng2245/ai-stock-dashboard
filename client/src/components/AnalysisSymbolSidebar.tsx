@@ -18,6 +18,7 @@ interface WatchlistItem {
 
 interface StockQuote {
   symbol: string;
+  market?: string;
   price: number;
   change: number;
   changePercent: number;
@@ -26,6 +27,21 @@ interface StockQuote {
 
 interface QuotesResponse {
   quotes: StockQuote[];
+}
+
+interface ComputedHolding {
+  symbol: string;
+  market: string;
+  shares: number;
+  avgCost: number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function fmtMarketValue(value: number, market: Market): string {
+  if (market === "TW") {
+    return `NT ${Math.round(value).toLocaleString("zh-TW")}`;
+  }
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ─── Status indicator ─────────────────────────────────────────────────────────
@@ -42,7 +58,6 @@ function QuoteStatusDot({ status }: { status?: "fresh" | "stale" | "error" }) {
       </span>
     );
   }
-  // stale
   return (
     <span
       className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40 flex-shrink-0"
@@ -56,44 +71,73 @@ function QuoteStatusDot({ status }: { status?: "fresh" | "stale" | "error" }) {
 interface SymbolRowProps {
   item: WatchlistItem;
   quote?: StockQuote;
+  holding?: ComputedHolding;
   isActive: boolean;
   onClick: () => void;
 }
 
-function SymbolRow({ item, quote, isActive, onClick }: SymbolRowProps) {
-  // Label: TW → show name, US → show symbol
-  const label = item.market === "TW" ? item.name : item.symbol;
+function SymbolRow({ item, quote, holding, isActive, onClick }: SymbolRowProps) {
+  const label    = item.market === "TW" ? item.name   : item.symbol;
   const subLabel = item.market === "TW" ? item.symbol : item.name;
-  const pctChange = quote?.changePercent ?? null;
-  const isUp = pctChange !== null && pctChange >= 0;
+  const price       = quote?.price ?? null;
+  const pctChange   = quote?.changePercent ?? null;
+  const isUp        = pctChange !== null && pctChange >= 0;
+
+  // Holding info
+  const shares = holding?.shares ?? 0;
+  const marketValue = price != null && shares > 0 ? price * shares : null;
 
   return (
     <button
       onClick={onClick}
       data-testid={`sidebar-symbol-${item.symbol}`}
       className={cn(
-        "w-full text-left px-3 py-2.5 rounded-md transition-colors group",
-        "flex items-center justify-between gap-2",
+        "w-full text-left px-3 py-2.5 transition-colors group",
+        "flex items-start justify-between gap-2",
         "hover:bg-accent hover:text-accent-foreground",
-        isActive && "bg-primary/10 text-primary font-medium"
+        isActive && "bg-primary/10 text-primary"
       )}
     >
-      <div className="flex flex-col min-w-0">
-        <span className="text-sm truncate leading-snug">{label}</span>
+      {/* Left: name + symbol */}
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className={cn("text-[13px] leading-snug truncate", isActive && "font-semibold")}>
+          {label}
+        </span>
         <span className="text-[11px] text-muted-foreground leading-snug">{subLabel}</span>
-      </div>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        {pctChange !== null && (
-          <span
-            className={cn(
-              "text-[11px] tabular-nums",
-              isUp ? "text-gain" : "text-loss"
+
+        {/* Holding info row */}
+        {shares > 0 && (
+          <span className="text-[11px] text-muted-foreground/70 leading-snug tabular-nums mt-0.5">
+            {shares.toLocaleString()} 股
+            {marketValue != null && (
+              <> · {fmtMarketValue(marketValue, item.market)}</>
             )}
-          >
-            {pctChange.toFixed(2)}%
           </span>
         )}
-        <QuoteStatusDot status={quote?.quoteStatus} />
+      </div>
+
+      {/* Right: price + pct */}
+      <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
+        {price != null && (
+          <span className="text-[13px] tabular-nums font-medium leading-snug">
+            {item.market === "TW"
+              ? price.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+              : `$${price.toFixed(2)}`}
+          </span>
+        )}
+        <div className="flex items-center gap-1">
+          {pctChange !== null && (
+            <span
+              className={cn(
+                "text-[11px] tabular-nums font-semibold",
+                isUp ? "text-gain" : "text-loss"
+              )}
+            >
+              {pctChange.toFixed(2)}%
+            </span>
+          )}
+          <QuoteStatusDot status={quote?.quoteStatus} />
+        </div>
       </div>
     </button>
   );
@@ -103,29 +147,35 @@ function SymbolRow({ item, quote, isActive, onClick }: SymbolRowProps) {
 interface MarketGroupProps {
   label: string;
   items: WatchlistItem[];
-  quotes: StockQuote[];
+  quoteMap: Map<string, StockQuote>;
+  holdingMap: Map<string, ComputedHolding>;
   activeSymbol: string;
   onSelect: (symbol: string, market: Market) => void;
 }
 
-function MarketGroup({ label, items, quotes, activeSymbol, onSelect }: MarketGroupProps) {
+function MarketGroup({ label, items, quoteMap, holdingMap, activeSymbol, onSelect }: MarketGroupProps) {
   if (items.length === 0) return null;
-  const quoteMap = new Map(quotes.map((q) => [q.symbol, q]));
 
   return (
     <div>
       <div className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
         {label}
       </div>
-      <div className="space-y-0.5">
-        {items.map((item) => (
-          <SymbolRow
-            key={item.symbol}
-            item={item}
-            quote={quoteMap.get(item.symbol)}
-            isActive={item.symbol === activeSymbol}
-            onClick={() => onSelect(item.symbol, item.market)}
-          />
+      <div>
+        {items.map((item, idx) => (
+          <div key={item.symbol}>
+            <SymbolRow
+              item={item}
+              quote={quoteMap.get(item.symbol)}
+              holding={holdingMap.get(item.symbol)}
+              isActive={item.symbol === activeSymbol}
+              onClick={() => onSelect(item.symbol, item.market)}
+            />
+            {/* Divider between items (not after last) */}
+            {idx < items.length - 1 && (
+              <div className="mx-3 border-b border-border/50" />
+            )}
+          </div>
         ))}
       </div>
     </div>
@@ -139,18 +189,32 @@ function SidebarContent() {
   const { data: watchlist } = useQuery<WatchlistItem[]>({
     queryKey: ["/api/watchlist"],
     queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
   });
 
   const { data: quotesData } = useQuery<QuotesResponse>({
     queryKey: ["/api/quotes"],
     queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
-    staleTime: 55_000,
+    staleTime: 5 * 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
   });
 
-  const quotes = quotesData?.quotes ?? [];
+  const { data: computedHoldings } = useQuery<ComputedHolding[]>({
+    queryKey: ["/api/portfolio/computed"],
+    queryFn: () => apiRequest("GET", "/api/portfolio/computed").then((r) => r.json()),
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+
+  const quoteMap   = new Map((quotesData?.quotes ?? []).map((q) => [q.symbol, q]));
+  const holdingMap = new Map((computedHoldings ?? [])
+    .filter((h) => h.shares > 0)
+    .map((h) => [h.symbol, h])
+  );
+
   const twList = (watchlist ?? []).filter((w) => w.market === "TW");
   const usList = (watchlist ?? []).filter((w) => w.market === "US");
 
@@ -160,14 +224,16 @@ function SidebarContent() {
         <MarketGroup
           label="台股"
           items={twList}
-          quotes={quotes}
+          quoteMap={quoteMap}
+          holdingMap={holdingMap}
           activeSymbol={activeSymbol}
           onSelect={setActive}
         />
         <MarketGroup
           label="美股"
           items={usList}
-          quotes={quotes}
+          quoteMap={quoteMap}
+          holdingMap={holdingMap}
           activeSymbol={activeSymbol}
           onSelect={setActive}
         />
@@ -180,7 +246,7 @@ function SidebarContent() {
 export function AnalysisSymbolSidebarDesktop() {
   return (
     <aside
-      className="hidden lg:flex flex-col w-[200px] flex-shrink-0 border-l border-border bg-card sticky top-0 h-screen overflow-hidden"
+      className="hidden lg:flex flex-col w-[210px] flex-shrink-0 border-l border-border bg-card sticky top-0 h-screen overflow-hidden"
       data-testid="analysis-sidebar-desktop"
       aria-label="分析標的側欄"
     >
@@ -198,7 +264,7 @@ export function AnalysisSymbolSidebarDesktop() {
 
 // ─── Mobile trigger + drawer ──────────────────────────────────────────────────
 export function AnalysisSymbolSidebarMobile() {
-  const { activeSymbol, activeMarket } = useActiveSymbol();
+  const { activeSymbol } = useActiveSymbol();
 
   return (
     <Sheet>
