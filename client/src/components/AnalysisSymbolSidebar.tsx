@@ -92,11 +92,12 @@ function SymbolRow({ item, quote, holding, isActive, onClick }: SymbolRowProps) 
       onClick={onClick}
       data-testid={`sidebar-symbol-${item.symbol}`}
       className={cn(
-        "w-full text-left px-3 py-2.5 transition-colors group",
+        "w-full text-left px-3 py-1.5 transition-colors group",
         "flex flex-col gap-0",
         "hover:bg-accent hover:text-accent-foreground",
         isActive && "bg-primary/10 text-primary"
       )}
+      style={{ minHeight: 64 }}  // fixed row height regardless of holding presence
     >
       {/* Top row: name + price */}
       <div className="flex items-start justify-between gap-2">
@@ -104,9 +105,9 @@ function SymbolRow({ item, quote, holding, isActive, onClick }: SymbolRowProps) 
           <span className={cn("text-[13px] leading-snug truncate", isActive && "font-semibold")}>
             {label}
           </span>
-          <span className="text-[11px] text-muted-foreground leading-snug">{subLabel}</span>
+          <span className="text-[11px] text-muted-foreground leading-none">{subLabel}</span>
         </div>
-        <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
+        <div className="flex flex-col items-end flex-shrink-0 gap-0">
           {price != null && (
             <span className="text-[13px] tabular-nums font-medium leading-snug">
               {item.market === "TW"
@@ -125,12 +126,17 @@ function SymbolRow({ item, quote, holding, isActive, onClick }: SymbolRowProps) 
         </div>
       </div>
 
-      {/* Holding info — full-width centred row below */}
-      {shares > 0 && (
-        <div className="w-full text-center text-[11px] text-muted-foreground/70 tabular-nums mt-1">
-          {shares.toLocaleString()} 股{marketValue != null && <> · {fmtMarketValue(marketValue, item.market)}</>}
-        </div>
-      )}
+      {/* Holding info — always reserves space to keep row height consistent */}
+      <div className="w-full text-center text-[11px] tabular-nums mt-0.5"
+           style={{ minHeight: 16 }}>
+        {shares > 0 ? (
+          <span className="text-muted-foreground/70">
+            {shares.toLocaleString()} 股{marketValue != null && <> · {fmtMarketValue(marketValue, item.market)}</>}
+          </span>
+        ) : (
+          <span className="text-transparent select-none">·</span>  // invisible placeholder
+        )}
+      </div>
     </button>
   );
 }
@@ -165,7 +171,7 @@ function MarketGroup({ label, items, quoteMap, holdingMap, activeSymbol, onSelec
             />
             {/* Divider between items (not after last) */}
             {idx < items.length - 1 && (
-              <div className="mx-3 border-b border-border/50" />
+              <div className="mx-3 border-b border-primary/30" />
             )}
           </div>
         ))}
