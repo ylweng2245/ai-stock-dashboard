@@ -763,23 +763,34 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
 // Also used for TW OTC ETFs (e.g. 00719B) with .TWO suffix, since TWSE STOCK_DAY only covers listed stocks.
 // ---------------------------------------------------------------------------
 
-async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = ""): Promise<HistoryResult> {
+/**
+ * Fetch Yahoo Finance history by explicit date range (period1/period2 unix timestamps).
+ * Use for targeted gap-fill instead of re-fetching the whole 1y/2y range.
+ */
+async function fetchYahooHistoryByDateRange(
+  symbol: string,
+  from: string,  // YYYY-MM-DD
+  to: string,    // YYYY-MM-DD
+  yahooSuffix = ""
+): Promise<HistoryResult> {
   const tickerForYahoo = yahooSuffix ? `${symbol}.${yahooSuffix}` : symbol;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(tickerForYahoo)}?interval=1d&range=${range}`;
-  // Use semaphore to cap concurrent Yahoo history requests (avoids 429 under load)
+  const period1 = Math.floor(new Date(from + "T00:00:00Z").getTime() / 1000);
+  const period2 = Math.floor(new Date(to   + "T23:59:59Z").getTime() / 1000);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(tickerForYahoo)}?interval=1d&period1=${period1}&period2=${period2}`;
   const body = await historySemaphore.run(() => fetchWithRetry(url));
   const json = JSON.parse(body);
-
   if (!json.chart?.result?.[0]) {
-    // Retry once after a short delay — Yahoo occasionally returns empty on first call
     await new Promise(r => setTimeout(r, 1500));
     const body2 = await historySemaphore.run(() => fetchWithRetry(url));
     const json2 = JSON.parse(body2);
-    if (!json2.chart?.result?.[0]) throw new Error(`No history for ${symbol}`);
-    // Reassign json to json2 so the rest of the function uses the retry result
+    if (!json2.chart?.result?.[0]) throw new Error(`No history for ${symbol} (${from}~${to})`);
     Object.assign(json, json2);
   }
+  return parseYahooChartResult(symbol, tickerForYahoo, json);
+}
 
+/** Shared JSON-to-bars parser for both fetchYahooHistory and fetchYahooHistoryByDateRange */
+function parseYahooChartResult(symbol: string, tickerForYahoo: string, json: any): HistoryResult {
   const result = json.chart.result[0];
   const timestamps: number[] = result.timestamp ?? [];
   const quote = result.indicators?.quote?.[0] ?? {};
@@ -787,7 +798,6 @@ async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = "")
   const bars: CandleBar[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const close = quote.close?.[i];
-    // Filter: close must be a valid positive number
     if (close == null || isNaN(close) || close <= 0) continue;
     const open  = quote.open?.[i];
     const high  = quote.high?.[i];
@@ -803,11 +813,10 @@ async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = "")
   }
 
   bars.sort((a, b) => a.time.localeCompare(b.time));
-  // Deduplicate — keep last bar per date (Yahoo sometimes returns duplicates)
   const deduped: CandleBar[] = [];
   for (const b of bars) {
     if (deduped.length > 0 && deduped[deduped.length - 1].time === b.time) {
-      deduped[deduped.length - 1] = b; // keep the later one
+      deduped[deduped.length - 1] = b;
     } else {
       deduped.push(b);
     }
@@ -822,6 +831,21 @@ async function fetchYahooHistory(symbol: string, range = "2y", yahooSuffix = "")
     dataFrom: deduped[0]?.time ?? "",
     dataTo: deduped[deduped.length - 1]?.time ?? "",
   };
+}
+
+async function fetchYahooHistory(symbol: string, range = "1y", yahooSuffix = ""): Promise<HistoryResult> {
+  const tickerForYahoo = yahooSuffix ? `${symbol}.${yahooSuffix}` : symbol;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(tickerForYahoo)}?interval=1d&range=${range}`;
+  const body = await historySemaphore.run(() => fetchWithRetry(url));
+  const json = JSON.parse(body);
+  if (!json.chart?.result?.[0]) {
+    await new Promise(r => setTimeout(r, 1500));
+    const body2 = await historySemaphore.run(() => fetchWithRetry(url));
+    const json2 = JSON.parse(body2);
+    if (!json2.chart?.result?.[0]) throw new Error(`No history for ${symbol}`);
+    Object.assign(json, json2);
+  }
+  return parseYahooChartResult(symbol, tickerForYahoo, json);
 }
 
 // ---------------------------------------------------------------------------
@@ -976,10 +1000,9 @@ function todayTPE(): string {
 }
 
 /**
- * If the market is open today and the last bar in `result` is not today,
- * fetch the current quote from cache and append an "incomplete today bar".
- * Uses a short TTL (QUOTE_TTL_MS) for the history cache entry when today's bar is injected,
- * so the bar refreshes every 60s during market hours.
+ * Build today's bar from a live quote and upsert it to DB (Method A).
+ * This replaces the old in-memory-only approach so today's bar persists
+ * across requests and is gradually updated until market close.
  */
 async function injectTodayBar(
   result: HistoryResult,
@@ -989,15 +1012,13 @@ async function injectTodayBar(
   const today = todayTPE();
   const lastBar = result.bars[result.bars.length - 1];
 
-  // Already has today's bar — no injection needed
+  // Already has today's bar in DB — no injection needed
   if (lastBar?.time === today) return { result, isLive: false };
 
   try {
-    // Try to get quote from cache first (populated by /api/quotes or /api/history prior calls)
     const cacheKey = `${symbol}_${market}`;
     let quote = quoteCache.get(cacheKey)?.data;
 
-    // If not in cache, fetch it now (single symbol)
     if (!quote) {
       if (market === "TW") {
         const wl = [{ symbol, name: symbol }];
@@ -1025,6 +1046,18 @@ async function injectTodayBar(
       volume: quote.volume || 0,
     };
 
+    // Write today's bar to DB (upsert — same date key can be overwritten on next refresh)
+    await storage.upsertHistoricalPrices([{
+      symbol, market,
+      date:   today,
+      open:   todayBar.open,
+      high:   todayBar.high,
+      low:    todayBar.low,
+      close:  todayBar.close,
+      volume: todayBar.volume,
+      updatedAt: Date.now(),
+    }]);
+
     const updatedResult: HistoryResult = {
       ...result,
       bars: [...result.bars, todayBar],
@@ -1039,19 +1072,104 @@ async function injectTodayBar(
   }
 }
 
+/**
+ * Check if DB already has sufficient 1-year base history for a symbol.
+ * Does NOT query Yahoo — pure DB check.
+ */
+export async function ensureHistoricalCoverage(
+  symbol: string,
+  market: "TW" | "US"
+): Promise<{ hasEnoughBaseHistory: boolean; latestStoredDate?: string; missingReason?: string }> {
+  const latestStoredDate = await storage.getLatestHistoricalDate(symbol, market);
+  if (!latestStoredDate) {
+    return { hasEnoughBaseHistory: false, missingReason: "no data in DB" };
+  }
+  // Check oldest stored date to verify ~1 year coverage
+  const dbRows = await storage.getHistoricalPrices(symbol, market);
+  if (dbRows.length < 200) { // ~1 year ≈ 250 trading days; 200 is a safe floor
+    return { hasEnoughBaseHistory: false, latestStoredDate, missingReason: `only ${dbRows.length} bars stored` };
+  }
+  return { hasEnoughBaseHistory: true, latestStoredDate };
+}
+
+/**
+ * Initialize the 1-year base history pool for a brand-new symbol.
+ * Called once when a symbol has no DB data.
+ */
+export async function initializeOneYearHistoryPool(
+  symbol: string,
+  market: "TW" | "US"
+): Promise<void> {
+  const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
+  const todayStr = todayTPE();
+  const now = Date.now();
+  console.log(`[initializeOneYearHistoryPool] ${symbol}: fetching 1y base history...`);
+  const fetched = await fetchYahooHistory(symbol, "1y", suffix);
+  const barsForDB = fetched.bars.filter((b) => b.time <= todayStr);
+  if (barsForDB.length > 0) {
+    const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
+      symbol, market,
+      date: b.time,
+      open: b.open, high: b.high, low: b.low, close: b.close,
+      volume: b.volume,
+      updatedAt: now,
+    }));
+    await storage.upsertHistoricalPrices(rows);
+    console.log(`[initializeOneYearHistoryPool] ${symbol}: stored ${rows.length} bars`);
+  }
+}
+
+/**
+ * Sync today's technical bar from a live quote directly (called by the 60s quote refresh).
+ * Only writes when the market is open (REGULAR) or just closed (POST/CLOSED with today's data).
+ */
+export async function syncTodayTechnicalBarFromQuote(
+  symbol: string,
+  market: "TW" | "US",
+  quote: StockQuote
+): Promise<void> {
+  try {
+    const today = todayTPE();
+    const quoteDate = new Date(quote.dataTimestamp * 1000 + 8 * 3600_000).toISOString().slice(0, 10);
+    // Only write if the quote is actually from today
+    if (quoteDate !== today) return;
+    // Only write during REGULAR, POST, or CLOSED (final bar) — skip PRE to avoid early noise
+    if (quote.marketState === "PRE" || quote.marketState === "PREPRE") return;
+    // Fetch existing today bar from DB to carry forward open/high/low
+    const dbRows = await storage.getHistoricalPrices(symbol, market);
+    const existingToday = dbRows.find(r => r.date === today);
+    const open   = existingToday?.open  ?? quote.open  ?? quote.price;
+    const curHigh = existingToday?.high ?? quote.price;
+    const curLow  = existingToday?.low  ?? quote.price;
+    await storage.upsertHistoricalPrices([{
+      symbol, market,
+      date:   today,
+      open:   +open.toFixed(2),
+      high:   +Math.max(curHigh, quote.price, quote.high ?? 0).toFixed(2),
+      low:    +Math.min(curLow,  quote.price, quote.low  ?? Infinity).toFixed(2),
+      close:  +quote.price.toFixed(2),
+      volume: quote.volume ?? existingToday?.volume ?? 0,
+      updatedAt: Date.now(),
+    }]);
+  } catch (e: any) {
+    console.warn(`[syncTodayTechnicalBarFromQuote] ${symbol}: ${e.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DB-first historical data sync
 // ---------------------------------------------------------------------------
 
 /**
- * DB-first strategy for historical data:
+ * DB-first strategy for historical data (v5.6.2):
  * 1. Check DB for existing bars
- * 2. If no DB data: fetch 2y from Yahoo, write ALL to DB
- * 3. If DB data exists: find gap from lastStoredDate to today, fetch only the gap, upsert
- * 4. Return DB rows sliced to the requested range
- * 5. If Yahoo fetch fails at any point: return what we have in DB (graceful degradation)
- *
- * Today's incomplete bar is NOT written to DB — only injected into the API response.
+ * 2. No DB data → initializeOneYearHistoryPool (fetch 1y, write to DB)
+ * 3. DB has data but gap detected (≥2 trading days since lastStoredDate)
+ *    → targeted gap-fill using fetchYahooHistoryByDateRange (lastStoredDate+1 → yesterday)
+ *    → never re-fetches the entire 1y/2y range for a small gap
+ * 4. Return all DB rows sliced to requested range
+ * 5. Inject today's live bar if market is open (also writes to DB via injectTodayBar)
+ * 6. Graceful degradation: if Yahoo fails, serve whatever is in DB
  */
 export async function getOrSyncHistoricalData(
   symbol: string,
@@ -1062,35 +1180,20 @@ export async function getOrSyncHistoricalData(
   const now = Date.now();
   const todayStr = todayTPE();
 
-  // Step 1: Check what we have in DB
+  // Step 1: Check DB coverage
   const lastStoredDate = await storage.getLatestHistoricalDate(symbol, market);
 
   let refreshAttempted = false;
   let refreshSucceeded = false;
 
   if (!lastStoredDate) {
-    // No DB data at all — fetch 2 years and store everything except today's bar
-    console.log(`[getOrSyncHistoricalData] ${symbol}: no DB data, fetching 2y from Yahoo...`);
+    // No DB data at all — initialize 1-year base history pool
     refreshAttempted = true;
     try {
-      const fetched = await fetchYahooHistory(symbol, "2y", suffix);
-      // Filter out today's incomplete bar before writing to DB
-      const barsForDB = fetched.bars.filter((b) => b.time < todayStr);
-      if (barsForDB.length > 0) {
-        const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
-          symbol, market,
-          date: b.time,
-          open: b.open, high: b.high, low: b.low, close: b.close,
-          volume: b.volume,
-          updatedAt: now,
-        }));
-        await storage.upsertHistoricalPrices(rows);
-      }
+      await initializeOneYearHistoryPool(symbol, market);
       refreshSucceeded = true;
-      console.log(`[getOrSyncHistoricalData] ${symbol}: stored ${barsForDB.length} bars to DB`);
     } catch (e: any) {
-      console.error(`[getOrSyncHistoricalData] ${symbol}: initial fetch failed: ${e.message}`);
-      // No DB data and fetch failed — return empty result
+      console.error(`[getOrSyncHistoricalData] ${symbol}: initial 1y fetch failed: ${e.message}`);
       return {
         symbol, bars: [], fetchedAt: now,
         source: "Yahoo Finance",
@@ -1101,38 +1204,46 @@ export async function getOrSyncHistoricalData(
       };
     }
   } else {
-    // We have DB data — check if we need to fill a gap
-    // Gap = from (lastStoredDate + 1 day) to today, but only trigger if ≥ 2 trading days
-    // have passed since lastStoredDate (avoids false positives on weekends/holidays)
-    if (countTradingDaysSince(lastStoredDate, market) > 2) {
-      // There's a gap — fetch from Yahoo to fill it (still fetch 2y to get full range,
-      // then upsert only bars newer than lastStoredDate and older than today)
+    // We have DB data — only fill gaps, never re-fetch the full year
+    const tradingDaysGap = countTradingDaysSince(lastStoredDate, market);
+    if (tradingDaysGap > 2) {
       refreshAttempted = true;
-      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${countTradingDaysSince(lastStoredDate, market)} trading days ago), refreshing...`);
+      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${tradingDaysGap} trading days ago), targeted gap-fill...`);
       try {
-        const fetched = await fetchYahooHistory(symbol, "2y", suffix);
-        const barsForDB = fetched.bars.filter(
-          (b) => b.time > lastStoredDate && b.time < todayStr
-        );
-        if (barsForDB.length > 0) {
-          const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
-            symbol, market,
-            date: b.time,
-            open: b.open, high: b.high, low: b.low, close: b.close,
-            volume: b.volume,
-            updatedAt: now,
-          }));
-          await storage.upsertHistoricalPrices(rows);
+        // Calculate the day after lastStoredDate as gap start
+        const gapFrom = new Date(lastStoredDate + "T00:00:00Z");
+        gapFrom.setUTCDate(gapFrom.getUTCDate() + 1);
+        const gapFromStr = gapFrom.toISOString().slice(0, 10);
+        // Gap end: yesterday (don’t include today, today’s bar handled by injectTodayBar)
+        const yesterday = new Date(Date.now() + 8 * 3600_000);
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+        yesterday.setUTCHours(0, 0, 0, 0);
+        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+        if (gapFromStr <= yesterdayStr) {
+          const fetched = await fetchYahooHistoryByDateRange(symbol, gapFromStr, yesterdayStr, suffix);
+          const barsForDB = fetched.bars.filter(
+            (b) => b.time > lastStoredDate && b.time < todayStr
+          );
+          if (barsForDB.length > 0) {
+            const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
+              symbol, market,
+              date: b.time,
+              open: b.open, high: b.high, low: b.low, close: b.close,
+              volume: b.volume,
+              updatedAt: now,
+            }));
+            await storage.upsertHistoricalPrices(rows);
+          }
+          console.log(`[getOrSyncHistoricalData] ${symbol}: gap-filled ${barsForDB.length} bars (${gapFromStr}→${yesterdayStr})`);
         }
         refreshSucceeded = true;
-        console.log(`[getOrSyncHistoricalData] ${symbol}: upserted ${barsForDB.length} new bars`);
       } catch (e: any) {
-        // Gap fill failed, but we still have old DB data — serve it with a flag
         console.warn(`[getOrSyncHistoricalData] ${symbol}: gap fill failed: ${e.message}, serving DB data`);
         refreshSucceeded = false;
       }
     }
-    // else: DB is up to date, no refresh needed
+    // else: DB is up to date — read directly, no Yahoo query needed
   }
 
   // Step 2: Read from DB and slice to requested range

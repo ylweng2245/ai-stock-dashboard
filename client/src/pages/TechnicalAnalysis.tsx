@@ -123,6 +123,18 @@ const RANGE_OPTIONS = [
   { value: "1y",  label: "1年" },
 ];
 
+/** Client-side slice of the full-year bars pool — no backend re-query on range change */
+function sliceFullYearBars(bars: CandleData[], range: string): CandleData[] {
+  if (!bars.length) return bars;
+  const cutoff = new Date();
+  if (range === "1mo")      cutoff.setMonth(cutoff.getMonth() - 1);
+  else if (range === "3mo") cutoff.setMonth(cutoff.getMonth() - 3);
+  else if (range === "6mo") cutoff.setMonth(cutoff.getMonth() - 6);
+  else return bars; // "1y" — return all
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  return bars.filter((b) => b.time >= cutoffStr);
+}
+
 export default function TechnicalAnalysis() {
   // ─── Global symbol state (v3) ──────────────────────────────────────────────
   const { activeSymbol, activeMarket } = useActiveSymbol();
@@ -141,10 +153,12 @@ export default function TechnicalAnalysis() {
     return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
   }, [watchlist, activeSymbol, activeMarket]);
 
+  // Always fetch the full 1-year pool — range switching is purely client-side slice
+  // queryKey excludes range so switching range never triggers a new backend request
   const { data, isLoading, isError, isFetching } = useQuery<HistoryResponse>({
-    queryKey: ["/api/history", activeSymbol, meta.market, range],
+    queryKey: ["/api/history", activeSymbol, meta.market],
     queryFn: () =>
-      apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=${range}`)
+      apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=1y`)
         .then((r) => r.json()),
     staleTime: 55_000,
     refetchInterval: 60_000,
@@ -161,7 +175,12 @@ export default function TechnicalAnalysis() {
     staleTime: 30_000,
   });
 
-  const candleData: CandleData[] = data?.bars ?? [];
+  // Client-side range slice — no additional backend query on range change
+  const fullYearBars: CandleData[] = data?.bars ?? [];
+  const candleData: CandleData[] = useMemo(
+    () => sliceFullYearBars(fullYearBars, range),
+    [fullYearBars, range]
+  );
 
   const rsi = useMemo(() => (candleData.length >= 15 ? calculateRSI(candleData) : []), [candleData]);
   const macdData = useMemo(() => (candleData.length >= 27 ? calculateMACD(candleData) : { macd: [], signal: [], histogram: [] }), [candleData]);

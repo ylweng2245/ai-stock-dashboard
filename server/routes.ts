@@ -59,6 +59,8 @@ import {
   getCacheStats,
   WATCHLIST_STOCKS,
   PORTFOLIO_EXTRA,
+  syncTodayTechnicalBarFromQuote,
+  initializeOneYearHistoryPool,
 } from "./stockService";
 
 export async function registerRoutes(
@@ -123,6 +125,11 @@ export async function registerRoutes(
     const parsed = insertWatchlistSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const item = await storage.addToWatchlist(parsed.data);
+    // Initialize 1-year history pool for the new symbol (fire-and-forget)
+    const market = (parsed.data.market ?? "TW") as "TW" | "US";
+    initializeOneYearHistoryPool(parsed.data.symbol, market).catch((e: any) =>
+      console.warn(`[watchlist POST] history init failed for ${parsed.data.symbol}: ${e.message}`)
+    );
     res.json(item);
   });
 
@@ -169,6 +176,16 @@ export async function registerRoutes(
       );
 
       const result = await getAllQuotes(mergedSymbols);
+
+      // Sync today's technical bar to DB for each watchlist stock (fire-and-forget)
+      // This keeps the today row updated every 60s during market hours
+      const allQuotes = [...(result.tw ?? []), ...(result.us ?? [])];
+      for (const q of allQuotes) {
+        if (q.symbol && q.market) {
+          syncTodayTechnicalBarFromQuote(q.symbol, q.market as "TW" | "US", q).catch(() => {});
+        }
+      }
+
       res.json({
         ...result,
         dataSource: "TWSE + Perplexity Finance",
