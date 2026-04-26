@@ -441,7 +441,7 @@ function AnalystTargetTable({
                   <td className="px-3 py-1.5 font-medium">{row.institution}</td>
                   <td className={cn(
                     "px-3 py-1.5 font-bold",
-                    row.ratingCategory === "bullish" ? "text-[#fca5a5]" :
+                    row.ratingCategory === "bullish" ? "text-[#f87171]" :
                     row.ratingCategory === "bearish" ? "text-[#4ade80]" :
                     "text-foreground"
                   )}>{row.rating}</td>
