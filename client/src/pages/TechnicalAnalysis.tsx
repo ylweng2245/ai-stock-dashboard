@@ -296,36 +296,36 @@ function AnalystWideCard({
               </span>
             </div>
 
-            {/* Price labels row — absolutely positioned to match track bar percentages */}
-            <div className="relative mb-2" style={{ height: 42 }}>
-              {/* Low */}
-              <div style={{ position: "absolute", left: `${lowPct}%`, transform: "translateX(-50%)", textAlign: "center", whiteSpace: "nowrap" }}>
+            {/* Price labels row — fixed equal-width 4 columns */}
+            <div className="grid grid-cols-4 mb-2">
+              {/* Low — left-aligned */}
+              <div>
                 <div className="text-[12px] font-semibold text-[#22c55e] tabular-nums">{currencySymbol}{lowTargetPrice.toLocaleString()}</div>
-                <div className="flex items-center gap-1 mt-0.5 justify-center">
+                <div className="flex items-center gap-1 mt-0.5">
                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", display: "inline-block", flexShrink: 0 }} />
                   <span className="text-[10px] text-muted-foreground">低</span>
                 </div>
               </div>
-              {/* Current */}
-              <div style={{ position: "absolute", left: `${currPct}%`, transform: "translateX(-50%)", textAlign: "center", whiteSpace: "nowrap" }}>
+              {/* Current — center */}
+              <div className="text-center">
                 <div className="text-[12px] font-semibold text-foreground tabular-nums">{currencySymbol}{currentPrice > 0 ? currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</div>
                 <div className="flex items-center gap-1 mt-0.5 justify-center">
                   <span style={{ width: 9, height: 9, borderRadius: "50%", border: "2px solid #fff", background: "transparent", display: "inline-block", flexShrink: 0 }} />
                   <span className="text-[10px] text-muted-foreground">目前</span>
                 </div>
               </div>
-              {/* Average */}
-              <div style={{ position: "absolute", left: `${avgPct}%`, transform: "translateX(-50%)", textAlign: "center", whiteSpace: "nowrap" }}>
+              {/* Average — center */}
+              <div className="text-center">
                 <div className="text-[12px] font-semibold text-[#fda4af] tabular-nums">{currencySymbol}{averageTargetPrice.toLocaleString()}</div>
                 <div className="flex items-center gap-1 mt-0.5 justify-center">
                   <span style={{ width: 9, height: 9, borderRadius: "50%", border: "2px solid #fda4af", background: "transparent", display: "inline-block", flexShrink: 0 }} />
                   <span className="text-[10px] text-muted-foreground">平均 ({Number(upsidePct) >= 0 ? "+" : ""}{upsidePct}%)</span>
                 </div>
               </div>
-              {/* High */}
-              <div style={{ position: "absolute", left: `${highPct}%`, transform: "translateX(-50%)", textAlign: "center", whiteSpace: "nowrap" }}>
+              {/* High — right-aligned */}
+              <div className="text-right">
                 <div className="text-[12px] font-semibold text-[#ef4444] tabular-nums">{currencySymbol}{highTargetPrice.toLocaleString()}</div>
-                <div className="flex items-center gap-1 mt-0.5 justify-center">
+                <div className="flex items-center gap-1 mt-0.5 justify-end">
                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ef4444", display: "inline-block", flexShrink: 0 }} />
                   <span className="text-[10px] text-muted-foreground">高</span>
                 </div>
