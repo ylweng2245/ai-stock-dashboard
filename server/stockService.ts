@@ -1206,7 +1206,7 @@ export async function getOrSyncHistoricalData(
   } else {
     // We have DB data — only fill gaps, never re-fetch the full year
     const tradingDaysGap = countTradingDaysSince(lastStoredDate, market);
-    if (tradingDaysGap > 2) {
+    if (tradingDaysGap >= 1) {
       refreshAttempted = true;
       console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${tradingDaysGap} trading days ago), targeted gap-fill...`);
       try {
