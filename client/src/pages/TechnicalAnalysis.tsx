@@ -517,13 +517,23 @@ export default function TechnicalAnalysis() {
     return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
   }, [watchlist, activeSymbol, activeMarket]);
 
-  // Force resync history from Yahoo (corrects intraday snapshots stored before shutdown)
+  // Force resync history from Yahoo for current symbol
   const resyncMutation = useMutation({
     mutationFn: () =>
       apiRequest("POST", `/api/history/${activeSymbol}/resync?market=${meta.market}`)
         .then((r) => r.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/history", activeSymbol] });
+    },
+  });
+
+  // Force resync ALL watchlist symbols at once
+  const resyncAllMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", "/api/history/resync-all")
+        .then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/history"] });
     },
   });
 
@@ -687,6 +697,19 @@ export default function TechnicalAnalysis() {
                 ))}
               </SelectContent>
             </Select>
+            <button
+              onClick={() => resyncAllMutation.mutate()}
+              disabled={resyncAllMutation.isPending || resyncMutation.isPending}
+              title="清除并重新從 Yahoo 拉取所有個股的完整歷史收盤價"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] border border-border/60 text-muted-foreground hover:text-foreground hover:border-border hover:bg-muted/30 transition-colors disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={resyncAllMutation.isPending ? "animate-spin" : ""} />
+              {resyncAllMutation.isPending
+                ? "全部同步中..."
+                : resyncAllMutation.isSuccess
+                ? `完成 (${resyncAllMutation.data?.total ?? 0} 支)`
+                : "全部重新同步"}
+            </button>
             {isFetching && <RefreshCw className="w-4 h-4 text-muted-foreground animate-spin" />}
           </div>
         </div>

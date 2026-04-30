@@ -1081,9 +1081,12 @@ async function injectTodayBar(
       updatedAt: Date.now(),
     }]);
 
+    // Filter out any existing today bar from DB result before appending live bar
+    // (prevents duplicate when today was already written to DB by syncTodayTechnicalBarFromQuote)
+    const barsWithoutToday = result.bars.filter((b) => b.time !== today);
     const updatedResult: HistoryResult = {
       ...result,
-      bars: [...result.bars, todayBar],
+      bars: [...barsWithoutToday, todayBar],
       dataTo: today,
       source: result.source + "（含今日盤中）",
     };

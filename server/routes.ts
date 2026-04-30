@@ -224,6 +224,38 @@ export async function registerRoutes(
   });
 
   /**
+   * POST /api/history/resync-all
+   * Force re-fetch 1 year of history for ALL watchlist symbols.
+   * Runs sequentially to avoid rate limiting.
+   */
+  app.post("/api/history/resync-all", async (_req, res) => {
+    try {
+      const dbWatchlist = await storage.getWatchlist();
+      const unique = new Map<string, "TW" | "US">();
+      for (const item of dbWatchlist) {
+        unique.set(`${item.symbol}_${item.market}`, item.market as "TW" | "US");
+      }
+      const results: { symbol: string; market: string; bars: number; error?: string }[] = [];
+      for (const [key, market] of unique) {
+        const symbol = key.split("_")[0];
+        try {
+          console.log(`[resync-all] ${symbol} (${market})...`);
+          await storage.deleteHistoricalPrices(symbol, market);
+          await initializeOneYearHistoryPool(symbol, market);
+          const rows = await storage.getHistoricalPrices(symbol, market);
+          results.push({ symbol, market, bars: rows.length });
+        } catch (e: any) {
+          console.error(`[resync-all] ${symbol} failed: ${e.message}`);
+          results.push({ symbol, market, bars: 0, error: e.message });
+        }
+      }
+      res.json({ ok: true, total: results.length, results });
+    } catch (e: any) {
+      res.status(500).json({ error: "Resync-all failed", detail: e.message });
+    }
+  });
+
+  /**
    * POST /api/history/:symbol/resync
    * Force re-fetch 1 year of history from Yahoo and overwrite DB.
    * Use to correct historical data that was captured as intraday snapshots.
