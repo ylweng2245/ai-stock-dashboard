@@ -1228,26 +1228,27 @@ export async function getOrSyncHistoricalData(
       };
     }
   } else {
-    // We have DB data — only fill gaps, never re-fetch the full year
+    // We have DB data. Gap-fill starts from lastStoredDate itself (not +1) so any
+    // intraday snapshot written before shutdown gets overwritten by Yahoo official close.
     const tradingDaysGap = countTradingDaysSince(lastStoredDate, market);
     if (tradingDaysGap >= 1) {
       refreshAttempted = true;
-      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${tradingDaysGap} trading days ago), targeted gap-fill...`);
+      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${tradingDaysGap} trading days ago), correcting from ${lastStoredDate}...`);
       try {
-        // Calculate the day after lastStoredDate as gap start
-        const gapFrom = new Date(lastStoredDate + "T00:00:00Z");
-        gapFrom.setUTCDate(gapFrom.getUTCDate() + 1);
-        const gapFromStr = gapFrom.toISOString().slice(0, 10);
-        // Gap end: yesterday (don’t include today, today’s bar handled by injectTodayBar)
-        const yesterday = new Date(Date.now() + 8 * 3600_000);
-        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-        yesterday.setUTCHours(0, 0, 0, 0);
-        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+        // Start from lastStoredDate itself to overwrite possible intraday snapshots
+        const gapFromStr = lastStoredDate;
+        // Gap end: yesterday in market timezone (today handled by injectTodayBar)
+        const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+        const yDate = new Date();
+        yDate.setDate(yDate.getDate() - 1);
+        const yesterdayStr = new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(yDate);
 
         if (gapFromStr <= yesterdayStr) {
           const fetched = await fetchYahooHistoryByDateRange(symbol, gapFromStr, yesterdayStr, suffix);
+          // >= lastStoredDate: overwrite possibly-intraday last bar with official close
+          // <  todayStr: never write today (handled by injectTodayBar with live quote)
           const barsForDB = fetched.bars.filter(
-            (b) => b.time > lastStoredDate && b.time < todayStr
+            (b) => b.time >= lastStoredDate && b.time < todayStr
           );
           if (barsForDB.length > 0) {
             const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
@@ -1259,7 +1260,7 @@ export async function getOrSyncHistoricalData(
             }));
             await storage.upsertHistoricalPrices(rows);
           }
-          console.log(`[getOrSyncHistoricalData] ${symbol}: gap-filled ${barsForDB.length} bars (${gapFromStr}→${yesterdayStr})`);
+          console.log(`[getOrSyncHistoricalData] ${symbol}: corrected/gap-filled ${barsForDB.length} bars (${gapFromStr}→${yesterdayStr})`);
         }
         refreshSucceeded = true;
       } catch (e: any) {
@@ -1267,7 +1268,7 @@ export async function getOrSyncHistoricalData(
         refreshSucceeded = false;
       }
     }
-    // else: DB is up to date — read directly, no Yahoo query needed
+    // else: DB is up to date, read directly
   }
 
   // Step 2: Read from DB and slice to requested range
