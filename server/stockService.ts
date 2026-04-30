@@ -1012,8 +1012,15 @@ async function injectTodayBar(
   const today = todayTPE();
   const lastBar = result.bars[result.bars.length - 1];
 
-  // Already has today's bar in DB — no injection needed
-  if (lastBar?.time === today) return { result, isLive: false };
+  // If today's bar already exists in DB, still refresh if the cached quote is stale
+  // (so the chart updates during live trading hours)
+  const cacheKey2 = `${symbol}_${market}`;
+  const existingQuote = quoteCache.get(cacheKey2);
+  const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
+  if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
+    // Quote is fresh enough — no need to re-inject
+    return { result, isLive: true };
+  }
 
   try {
     const cacheKey = `${symbol}_${market}`;
@@ -1433,7 +1440,9 @@ export async function getHistory(
 ): Promise<HistoryResult> {
   const cacheKey = `hist_${symbol}_${market}_${range}`;
   const cached = historyCache.get(cacheKey);
-  if (isCacheValid(cached, HISTORY_TTL_MS)) return { ...cached!.data, fromCache: true };
+  // Use short TTL when last cached result was a live bar
+  const effectiveTtl = cached?.data?.source?.includes("盤中") ? QUOTE_TTL_MS : HISTORY_TTL_MS;
+  if (isCacheValid(cached, effectiveTtl)) return { ...cached!.data, fromCache: true };
 
   // Use DB-first strategy: getOrSyncHistoricalData handles fetch, DB upsert, slicing, and today-bar injection
   return getOrSyncHistoricalData(symbol, market, range);
