@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -501,6 +501,7 @@ function sliceFullYearBars(bars: CandleData[], range: string): CandleData[] {
 export default function TechnicalAnalysis() {
   const { activeSymbol, activeMarket } = useActiveSymbol();
   const [range, setRange] = useState("3mo");
+  const queryClient = useQueryClient();
 
   // Watchlist meta
   const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
@@ -515,6 +516,16 @@ export default function TechnicalAnalysis() {
     if (wItem) return { name: wItem.name, market: wItem.market };
     return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
   }, [watchlist, activeSymbol, activeMarket]);
+
+  // Force resync history from Yahoo (corrects intraday snapshots stored before shutdown)
+  const resyncMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/history/${activeSymbol}/resync?market=${meta.market}`)
+        .then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/history", activeSymbol] });
+    },
+  });
 
   // Historical data (full 1-year pool)
   const { data, isLoading, isError, isFetching } = useQuery<HistoryResponse>({
@@ -765,11 +776,22 @@ export default function TechnicalAnalysis() {
                 </span>
               )}
             </CardTitle>
-            {data && (
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                {data.dataFrom} → {data.dataTo}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {data && (
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  {data.dataFrom} → {data.dataTo}
+                </span>
+              )}
+              <button
+                onClick={() => resyncMutation.mutate()}
+                disabled={resyncMutation.isPending}
+                title="重新從 Yahoo 同步歷史收盤價"
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors disabled:opacity-40"
+              >
+                <RefreshCw size={11} className={resyncMutation.isPending ? "animate-spin" : ""} />
+                {resyncMutation.isPending ? "同步中..." : resyncMutation.isSuccess ? "完成" : "重新同步"}
+              </button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="px-2 pb-3">

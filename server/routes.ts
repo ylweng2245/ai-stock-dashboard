@@ -224,6 +224,30 @@ export async function registerRoutes(
   });
 
   /**
+   * POST /api/history/:symbol/resync
+   * Force re-fetch 1 year of history from Yahoo and overwrite DB.
+   * Use to correct historical data that was captured as intraday snapshots.
+   */
+  app.post("/api/history/:symbol/resync", async (req, res) => {
+    try {
+      const symbol = req.params.symbol.toUpperCase();
+      const market = (req.query.market as "TW" | "US") || "US";
+      console.log(`[resync] Force re-fetching 1y history for ${symbol} (${market})...`);
+      // 1. Wipe existing historical data for this symbol
+      await storage.deleteHistoricalPrices(symbol, market);
+      // 2. Re-fetch full 1-year pool from Yahoo
+      await initializeOneYearHistoryPool(symbol, market);
+      // 3. Return new DB row count
+      const rows = await storage.getHistoricalPrices(symbol, market);
+      console.log(`[resync] ${symbol}: resynced ${rows.length} bars`);
+      res.json({ ok: true, symbol, market, bars: rows.length });
+    } catch (e: any) {
+      console.error("[resync] error:", e.message);
+      res.status(500).json({ error: "Resync failed", detail: e.message });
+    }
+  });
+
+  /**
    * GET /api/portfolio-quotes
    * Returns live quotes for all portfolio + extra symbols.
    */
