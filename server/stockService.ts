@@ -973,11 +973,9 @@ function isTradingDay(dateStr: string, market: "TW" | "US"): boolean {
  */
 function countTradingDaysSince(fromDateStr: string, market: "TW" | "US"): number {
   const from = new Date(fromDateStr + "T00:00:00Z");
-  const todayUTC = new Date(
-    market === "TW"
-      ? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) + "T00:00:00Z"
-      : new Date().toISOString().slice(0, 10) + "T00:00:00Z"
-  );
+  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+  const marketToday = new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
+  const todayUTC = new Date(marketToday + "T00:00:00Z");
   let count = 0;
   const cursor = new Date(from.getTime() + 86400_000); // start day after fromDate
   while (cursor <= todayUTC) {
@@ -994,9 +992,29 @@ function countTradingDaysSince(fromDateStr: string, market: "TW" | "US"): number
 
 /**
  * Returns today's date string in YYYY-MM-DD format using Asia/Taipei (UTC+8).
+ * Use for TW market date context.
  */
 function todayTPE(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Returns today's date string for the given market.
+ * TW  → Asia/Taipei (UTC+8)
+ * US  → America/New_York (UTC-5 EST / UTC-4 EDT)
+ * Using Intl.DateTimeFormat for correctness across DST.
+ */
+function todayForMarket(market: "TW" | "US"): string {
+  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
+}
+
+/**
+ * Convert a Unix timestamp (seconds) to a YYYY-MM-DD date string in the correct market timezone.
+ */
+function timestampToMarketDate(tsSec: number, market: "TW" | "US"): string {
+  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date(tsSec * 1000));
 }
 
 /**
@@ -1009,16 +1027,14 @@ async function injectTodayBar(
   symbol: string,
   market: "TW" | "US"
 ): Promise<{ result: HistoryResult; isLive: boolean }> {
-  const today = todayTPE();
+  const today = todayForMarket(market);  // correct timezone per market
   const lastBar = result.bars[result.bars.length - 1];
 
   // If today's bar already exists in DB, still refresh if the cached quote is stale
-  // (so the chart updates during live trading hours)
   const cacheKey2 = `${symbol}_${market}`;
   const existingQuote = quoteCache.get(cacheKey2);
   const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
   if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
-    // Quote is fresh enough — no need to re-inject
     return { result, isLive: true };
   }
 
@@ -1040,8 +1056,8 @@ async function injectTodayBar(
 
     if (!quote) return { result, isLive: false };
 
-    // Verify the quote is actually from today (not stale/weekend)
-    const quoteDate = new Date(quote.dataTimestamp * 1000 + 8 * 3600_000).toISOString().slice(0, 10);
+    // Verify the quote is actually from today in the market's own timezone
+    const quoteDate = timestampToMarketDate(quote.dataTimestamp, market);
     if (quoteDate !== today) return { result, isLive: false };
 
     const todayBar: CandleBar = {
@@ -1108,7 +1124,7 @@ export async function initializeOneYearHistoryPool(
   market: "TW" | "US"
 ): Promise<void> {
   const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
-  const todayStr = todayTPE();
+  const todayStr = todayForMarket(market);
   const now = Date.now();
   console.log(`[initializeOneYearHistoryPool] ${symbol}: fetching 1y base history...`);
   const fetched = await fetchYahooHistory(symbol, "1y", suffix);
@@ -1137,8 +1153,8 @@ export async function syncTodayTechnicalBarFromQuote(
   quote: StockQuote
 ): Promise<void> {
   try {
-    const today = todayTPE();
-    const quoteDate = new Date(quote.dataTimestamp * 1000 + 8 * 3600_000).toISOString().slice(0, 10);
+    const today = todayForMarket(market);  // correct timezone per market
+    const quoteDate = timestampToMarketDate(quote.dataTimestamp, market);
     // Only write if the quote is actually from today
     if (quoteDate !== today) return;
     // Only write during REGULAR, POST, or CLOSED (final bar) — skip PRE to avoid early noise
@@ -1186,7 +1202,7 @@ export async function getOrSyncHistoricalData(
 ): Promise<HistoryResult> {
   const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
   const now = Date.now();
-  const todayStr = todayTPE();
+  const todayStr = todayForMarket(market);
 
   // Step 1: Check DB coverage
   const lastStoredDate = await storage.getLatestHistoricalDate(symbol, market);
