@@ -1112,7 +1112,8 @@ export async function initializeOneYearHistoryPool(
   const now = Date.now();
   console.log(`[initializeOneYearHistoryPool] ${symbol}: fetching 1y base history...`);
   const fetched = await fetchYahooHistory(symbol, "1y", suffix);
-  const barsForDB = fetched.bars.filter((b) => b.time <= todayStr);
+  // Exclude today — today's bar is always injected via injectTodayBar with live quote
+  const barsForDB = fetched.bars.filter((b) => b.time < todayStr);
   if (barsForDB.length > 0) {
     const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
       symbol, market,
