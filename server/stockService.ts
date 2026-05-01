@@ -1045,7 +1045,9 @@ async function injectTodayBar(
   const cacheKey2 = `${symbol}_${market}`;
   const existingQuote = quoteCache.get(cacheKey2);
   const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
+  console.log(`[injectTodayBar] ${symbol} today=${today} lastBar=${lastBar?.time} quoteAge=${Math.round(quoteAge/1000)}s`);
   if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
+    console.log(`[injectTodayBar] ${symbol} skipped — fresh cache`);
     return { result, isLive: true };
   }
 
@@ -1065,11 +1067,18 @@ async function injectTodayBar(
       if (quote) quoteCache.set(cacheKey, { data: quote, fetchedAt: Date.now() });
     }
 
-    if (!quote) return { result, isLive: false };
+    if (!quote) {
+      console.log(`[injectTodayBar] ${symbol} skipped — no quote`);
+      return { result, isLive: false };
+    }
 
     // Verify the quote is actually from today in the market's own timezone
     const quoteDate = timestampToMarketDate(quote.dataTimestamp, market);
-    if (quoteDate !== today) return { result, isLive: false };
+    console.log(`[injectTodayBar] ${symbol} quoteDate=${quoteDate} today=${today} match=${quoteDate === today} price=${quote.price} marketState=${quote.marketState}`);
+    if (quoteDate !== today) {
+      console.log(`[injectTodayBar] ${symbol} skipped — quoteDate mismatch`);
+      return { result, isLive: false };
+    }
 
     const todayBar: CandleBar = {
       time:   today,
