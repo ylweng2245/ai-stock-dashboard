@@ -9,6 +9,7 @@ import {
   type DailyNewsSource, type InsertDailyNewsSource, dailyNewsSources,
   type WatchlistSectorTag, watchlistSectorTags,
   type AnalystTarget, type InsertAnalystTarget, analystTargets,
+  type FundamentalDataRow, type InsertFundamentalData, fundamentalData,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -134,6 +135,11 @@ export interface IStorage {
   replaceAnalystTargetsForSymbol(symbol: string, market: string, rows: InsertAnalystTarget[]): Promise<void>;
   upsertAnalystTargets(rows: InsertAnalystTarget[]): Promise<void>;
   getLatestAnalystConsensusBySymbol(symbol: string, market: string): Promise<AnalystTarget[]>;
+
+  // Fundamental Data (sync, not async — SQLite is synchronous)
+  getFundamental(symbol: string, market: string): FundamentalDataRow | undefined;
+  upsertFundamental(row: InsertFundamentalData): void;
+  getAllFundamentals(): FundamentalDataRow[];
 }
 
 export class DatabaseStorage implements IStorage {
@@ -534,6 +540,58 @@ export class DatabaseStorage implements IStorage {
 
     return rows;
   }
+
+  // ── Fundamental Data ──────────────────────────────────────────────────────
+  getFundamental(symbol: string, market: string): FundamentalDataRow | undefined {
+    const raw = sqlite.prepare(
+      "SELECT * FROM fundamental_data WHERE symbol = ? AND market = ? LIMIT 1"
+    ).get(symbol, market) as any;
+    if (!raw) return undefined;
+    return {
+      id:                   raw.id,
+      symbol:               raw.symbol,
+      market:               raw.market,
+      infoJson:             raw.info_json,
+      quarterlyIncomeJson:  raw.quarterly_income_json,
+      epsHistoryJson:       raw.eps_history_json,
+      calendarJson:         raw.calendar_json,
+      fetchedAt:            raw.fetched_at,
+      updatedAt:            raw.updated_at,
+    };
+  }
+
+  upsertFundamental(row: InsertFundamentalData): void {
+    sqlite.prepare(`
+      INSERT INTO fundamental_data (symbol, market, info_json, quarterly_income_json, eps_history_json, calendar_json, fetched_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, market) DO UPDATE SET
+        info_json             = excluded.info_json,
+        quarterly_income_json = excluded.quarterly_income_json,
+        eps_history_json      = excluded.eps_history_json,
+        calendar_json         = excluded.calendar_json,
+        fetched_at            = excluded.fetched_at,
+        updated_at            = excluded.updated_at
+    `).run(
+      row.symbol, row.market,
+      row.infoJson, row.quarterlyIncomeJson, row.epsHistoryJson, row.calendarJson,
+      row.fetchedAt, row.updatedAt
+    );
+  }
+
+  getAllFundamentals(): FundamentalDataRow[] {
+    const rows = sqlite.prepare("SELECT * FROM fundamental_data").all() as any[];
+    return rows.map(raw => ({
+      id:                   raw.id,
+      symbol:               raw.symbol,
+      market:               raw.market,
+      infoJson:             raw.info_json,
+      quarterlyIncomeJson:  raw.quarterly_income_json,
+      epsHistoryJson:       raw.eps_history_json,
+      calendarJson:         raw.calendar_json,
+      fetchedAt:            raw.fetched_at,
+      updatedAt:            raw.updated_at,
+    }));
+  }
 }
 
 // ─── ALTER TABLE safety guards ─────────────────────────────────────────────
@@ -633,6 +691,24 @@ try {
   )`);
   sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS analyst_symbol_date_inst
     ON analyst_targets (symbol, market, institution, analyst_date)`);
+} catch {
+  // Already exists
+}
+
+// Ensure fundamental_data table exists (migration-safe)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS fundamental_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    info_json TEXT NOT NULL DEFAULT '{}',
+    quarterly_income_json TEXT NOT NULL DEFAULT '[]',
+    eps_history_json TEXT NOT NULL DEFAULT '[]',
+    calendar_json TEXT NOT NULL DEFAULT '{}',
+    fetched_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS fund_sym_market ON fundamental_data (symbol, market)`);
 } catch {
   // Already exists
 }

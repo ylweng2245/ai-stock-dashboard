@@ -8,7 +8,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol, type Market } from "@/context/ActiveSymbolContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface WatchlistItem {
+export interface WatchlistItem {
   id: number;
   symbol: string;
   name: string;
@@ -181,7 +181,11 @@ function MarketGroup({ label, items, quoteMap, holdingMap, activeSymbol, onSelec
 }
 
 // ─── Inner list (shared between desktop + mobile) ────────────────────────────
-function SidebarContent() {
+interface SidebarContentProps {
+  symbolFilter?: (item: WatchlistItem) => boolean;
+}
+
+function SidebarContent({ symbolFilter }: SidebarContentProps) {
   const { activeSymbol, setActive } = useActiveSymbol();
 
   const { data: watchlist } = useQuery<WatchlistItem[]>({
@@ -213,8 +217,8 @@ function SidebarContent() {
     .map((h) => [h.symbol, h])
   );
 
-  const twList = (watchlist ?? []).filter((w) => w.market === "TW");
-  const usList = (watchlist ?? []).filter((w) => w.market === "US");
+  const twList = (watchlist ?? []).filter((w) => w.market === "TW" && (!symbolFilter || symbolFilter(w)));
+  const usList = (watchlist ?? []).filter((w) => w.market === "US" && (!symbolFilter || symbolFilter(w)));
 
   return (
     <ScrollArea className="h-full">
@@ -241,7 +245,11 @@ function SidebarContent() {
 }
 
 // ─── Desktop sidebar ─────────────────────────────────────────────────────────
-export function AnalysisSymbolSidebarDesktop() {
+export interface AnalysisSymbolSidebarProps {
+  symbolFilter?: (item: WatchlistItem) => boolean;
+}
+
+export function AnalysisSymbolSidebarDesktop({ symbolFilter }: AnalysisSymbolSidebarProps = {}) {
   return (
     <aside
       className="hidden lg:flex flex-col w-[210px] flex-shrink-0 border-l border-border bg-card sticky top-0 h-screen overflow-hidden"
@@ -254,14 +262,14 @@ export function AnalysisSymbolSidebarDesktop() {
         </h2>
       </div>
       <div className="flex-1 overflow-hidden">
-        <SidebarContent />
+        <SidebarContent symbolFilter={symbolFilter} />
       </div>
     </aside>
   );
 }
 
 // ─── Mobile trigger + drawer ──────────────────────────────────────────────────
-export function AnalysisSymbolSidebarMobile() {
+export function AnalysisSymbolSidebarMobile({ symbolFilter }: AnalysisSymbolSidebarProps = {}) {
   const { activeSymbol } = useActiveSymbol();
 
   return (
@@ -285,7 +293,7 @@ export function AnalysisSymbolSidebarMobile() {
           </SheetTitle>
         </SheetHeader>
         <div className="flex-1 overflow-hidden">
-          <SidebarContent />
+          <SidebarContent symbolFilter={symbolFilter} />
         </div>
       </SheetContent>
     </Sheet>

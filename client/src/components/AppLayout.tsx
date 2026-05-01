@@ -11,6 +11,7 @@ import {
   Moon,
   Activity,
   Newspaper,
+  BarChart2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { path: "/", label: "市場總覽", icon: LayoutDashboard },
   { path: "/news-digest", label: "個股每日新聞", icon: Newspaper },
+  { path: "/fundamentals", label: "基本面分析", icon: BarChart2 },
   { path: "/analysis", label: "技術分析", icon: TrendingUp },
   { path: "/prediction", label: "ML 預測", icon: Brain },
   { path: "/insights", label: "AI 洞察", icon: Sparkles },
@@ -47,7 +49,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Nav */}
         <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
           {navItems.map((item) => {
-            const isActive = location === item.path;
+            const isActive = item.path === "/"
+              ? location === "/"
+              : location === item.path || location.startsWith(item.path + "/");
             return (
               <Link key={item.path} href={item.path}>
                 <div

@@ -174,3 +174,24 @@ export const analystTargets = sqliteTable("analyst_targets", {
 export const insertAnalystTargetSchema = createInsertSchema(analystTargets).omit({ id: true });
 export type InsertAnalystTarget = z.infer<typeof insertAnalystTargetSchema>;
 export type AnalystTarget = typeof analystTargets.$inferSelect;
+
+// ── Fundamental Data ──────────────────────────────────────────────────────────
+// One snapshot per symbol+market. Always full-replace on update.
+// Raw yfinance data stored as JSON blobs for flexibility.
+export const fundamentalData = sqliteTable("fundamental_data", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  symbol: text("symbol").notNull(),
+  market: text("market").notNull(),           // "TW" or "US"
+  infoJson: text("info_json").notNull(),       // yfinance .info dict as JSON
+  quarterlyIncomeJson: text("quarterly_income_json").notNull().default(""), // last 8 quarters
+  epsHistoryJson: text("eps_history_json").notNull().default(""),           // EPS actual vs estimate
+  calendarJson: text("calendar_json").notNull().default(""),               // earnings/dividend dates
+  fetchedAt: integer("fetched_at").notNull(), // Unix ms — when last fetched
+  updatedAt: integer("updated_at").notNull(), // Unix ms — last upsert time
+}, (t) => ({
+  symMarketIdx: uniqueIndex("fund_sym_market").on(t.symbol, t.market),
+}));
+
+export const insertFundamentalDataSchema = createInsertSchema(fundamentalData).omit({ id: true });
+export type InsertFundamentalData = z.infer<typeof insertFundamentalDataSchema>;
+export type FundamentalDataRow = typeof fundamentalData.$inferSelect;

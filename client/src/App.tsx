@@ -9,6 +9,7 @@ import AppLayout from "@/components/AppLayout";
 import StockAnalysisLayout from "@/components/StockAnalysisLayout";
 import { ActiveSymbolProvider } from "@/context/ActiveSymbolContext";
 import Dashboard from "@/pages/Dashboard";
+import FundamentalAnalysis, { EXCLUDED_FUNDAMENTAL_SYMBOLS } from "@/pages/FundamentalAnalysis";
 import TechnicalAnalysis from "@/pages/TechnicalAnalysis";
 import MLPrediction from "@/pages/MLPrediction";
 import AIInsights from "@/pages/AIInsights";
@@ -16,12 +17,22 @@ import Portfolio from "@/pages/Portfolio";
 import Alerts from "@/pages/Alerts";
 import StockNewsDigest from "@/pages/StockNewsDigest";
 import NotFound from "@/pages/not-found";
+import type { WatchlistItem } from "@/components/AnalysisSymbolSidebar";
+
+// Filter out ETF/bond symbols from the fundamental analysis sidebar
+const fundamentalSymbolFilter = (item: WatchlistItem) =>
+  !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(item.symbol);
 
 function AppRouter() {
   return (
     <AppLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/fundamentals">
+          <StockAnalysisLayout symbolFilter={fundamentalSymbolFilter}>
+            <FundamentalAnalysis />
+          </StockAnalysisLayout>
+        </Route>
         <Route path="/analysis">
           <StockAnalysisLayout>
             <TechnicalAnalysis />

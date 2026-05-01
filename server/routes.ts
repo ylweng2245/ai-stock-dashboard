@@ -62,6 +62,7 @@ import {
   syncTodayTechnicalBarFromQuote,
   initializeOneYearHistoryPool,
 } from "./stockService";
+import { getOrFetchFundamentals } from "./fundamentalService";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -1099,6 +1100,43 @@ export async function registerRoutes(
       });
     } catch (e: any) {
       console.error("[analyst-targets] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──── Fundamentals ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/fundamentals/:symbol?market=US
+   * Returns computed fundamental scores + raw metrics for the given symbol.
+   * Data is cached in DB for 7 days; fetches from yfinance if expired.
+   */
+  app.get("/api/fundamentals/:symbol", async (req, res) => {
+    const symbol  = (req.params.symbol ?? "").toUpperCase();
+    const market  = (req.query.market as string ?? "US").toUpperCase() as "TW" | "US";
+    if (!symbol) return res.status(400).json({ error: "symbol required" });
+    try {
+      const result = await getOrFetchFundamentals(symbol, market);
+      res.json(result);
+    } catch (e: any) {
+      console.error(`[fundamentals] ${symbol}:`, e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * POST /api/fundamentals/:symbol/resync?market=US
+   * Force re-fetch from yfinance regardless of TTL.
+   */
+  app.post("/api/fundamentals/:symbol/resync", async (req, res) => {
+    const symbol  = (req.params.symbol ?? "").toUpperCase();
+    const market  = (req.query.market as string ?? "US").toUpperCase() as "TW" | "US";
+    if (!symbol) return res.status(400).json({ error: "symbol required" });
+    try {
+      const result = await getOrFetchFundamentals(symbol, market, true);
+      res.json({ ok: true, fetchedAt: result.fetchedAt });
+    } catch (e: any) {
+      console.error(`[fundamentals/resync] ${symbol}:`, e.message);
       res.status(500).json({ error: e.message });
     }
   });
