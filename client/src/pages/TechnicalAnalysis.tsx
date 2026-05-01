@@ -538,7 +538,7 @@ export default function TechnicalAnalysis() {
   });
 
   // Historical data (full 1-year pool)
-  const { data, isLoading, isError, isFetching } = useQuery<HistoryResponse>({
+  const { data, isLoading: _isLoading, isError, isFetching } = useQuery<HistoryResponse>({
     queryKey: ["/api/history", activeSymbol, meta.market],
     queryFn: () =>
       apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=1y`)
@@ -569,6 +569,9 @@ export default function TechnicalAnalysis() {
     enabled: !!activeSymbol,
     placeholderData: (prev) => prev,
   });
+
+  // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
+  const isLoading = data === undefined;
 
   // Client-side range slice
   const fullYearBars: CandleData[] = data?.bars ?? [];

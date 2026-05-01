@@ -828,6 +828,33 @@ export async function registerRoutes(
   // Warm up cache on server start (non-blocking)
   getOverviewPayload().catch(() => {});
 
+  // ─── Background Quote Poller ─────────────────────────────────────────────
+  // Proactively refresh all watchlist quotes every 60s during market hours.
+  // This keeps technical bar DB and quoteCache warm so page switches show
+  // data instantly instead of waiting for on-demand fetch.
+  const BACKGROUND_POLL_INTERVAL = 60_000; // 60 seconds
+  async function backgroundQuotePoll() {
+    try {
+      const dbWatchlist = await storage.getWatchlist();
+      if (dbWatchlist.length === 0) return;
+      const symbols = dbWatchlist.map((item) => ({ symbol: item.symbol, name: item.name, market: item.market as "TW" | "US" }));
+      const result = await getAllQuotes(symbols);
+      const allQuotes = [...(result.tw ?? []), ...(result.us ?? [])];
+      for (const q of allQuotes) {
+        if (q.symbol && q.market) {
+          syncTodayTechnicalBarFromQuote(q.symbol, q.market as "TW" | "US", q).catch(() => {});
+        }
+      }
+    } catch (e: any) {
+      // Silent fail — background poller should never crash the server
+    }
+  }
+  // Start polling after a short delay so server is fully ready
+  setTimeout(() => {
+    backgroundQuotePoll(); // immediate first run
+    setInterval(backgroundQuotePoll, BACKGROUND_POLL_INTERVAL);
+  }, 5000);
+
   // ─── Intraday Chart Data (短 TTL 2-minute cache) ────────────────────────
   // Symbol map: taiex → ^TWII, djia → ^DJI, sp500 → ^GSPC, nasdaq → ^IXIC, sox → ^SOX
   const INTRADAY_SYMBOL_MAP: Record<string, string> = {

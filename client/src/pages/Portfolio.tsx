@@ -102,7 +102,7 @@ export default function Portfolio() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Fetch computed portfolio from DB transactions
-  const { data: computedHoldings = [], isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<ComputedHolding[]>({
+  const { data: computedHoldingsRaw, isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<ComputedHolding[]>({
     queryKey: ["/api/portfolio/computed"],
     queryFn: () => apiRequest("GET", "/api/portfolio/computed").then(r => r.json()),
     staleTime: 5 * 60_000,          // 5 min — pure DB calc, changes only on import
@@ -117,6 +117,9 @@ export default function Portfolio() {
     staleTime: 5 * 60_000,           // 5 min — prevents blank flash on re-enter; refetchInterval still runs
     placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // show previous data while background update runs
   });
+
+  // isPending = true only when there is truly no cached data yet (first load ever)
+  const computedHoldings: ComputedHolding[] = computedHoldingsRaw ?? [];
 
   // Build price map
   const priceMap = useMemo(() => {
@@ -220,7 +223,10 @@ export default function Portfolio() {
       currency: r.currency,
     })).sort((a, b) => b.value - a.value);
 
-  const isLoading = holdingsLoading || pricesLoading;
+  // isPending: only true when there is no cached/placeholder data at all (first ever load)
+  // holdingsLoading and pricesLoading are true even during background refetch when placeholderData is active,
+  // but data will be defined (from placeholder). So we check data === undefined instead.
+  const isPending = computedHoldingsRaw === undefined || priceData === undefined;
   const hasData = enriched.length > 0 || realizedRows.length > 0;
 
   // ─── Table columns ──────────────────────────────────────────────────────────
@@ -252,7 +258,7 @@ export default function Portfolio() {
       </div>
 
       {/* Empty state */}
-      {!isLoading && !hasData && (
+      {!isPending && !hasData && (
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center py-16 gap-4 text-center">
             <Briefcase className="w-12 h-12 text-muted-foreground/40" />
@@ -267,9 +273,9 @@ export default function Portfolio() {
         </Card>
       )}
 
-      {isLoading && <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full" />)}</div>}
+      {isPending && <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full" />)}</div>}
 
-      {hasData && !isLoading && (
+      {hasData && (
         <>
           {/* Summary Cards — 4 cards: TW market value, US market value (TWD), unrealized P&L, realized P&L */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
