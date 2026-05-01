@@ -973,8 +973,7 @@ function isTradingDay(dateStr: string, market: "TW" | "US"): boolean {
  */
 function countTradingDaysSince(fromDateStr: string, market: "TW" | "US"): number {
   const from = new Date(fromDateStr + "T00:00:00Z");
-  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
-  const marketToday = new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
+  const marketToday = todayForMarket(market);  // uses Intl with fallback
   const todayUTC = new Date(marketToday + "T00:00:00Z");
   let count = 0;
   const cursor = new Date(from.getTime() + 86400_000); // start day after fromDate
@@ -1001,20 +1000,32 @@ function todayTPE(): string {
 /**
  * Returns today's date string for the given market.
  * TW  → Asia/Taipei (UTC+8)
- * US  → America/New_York (UTC-5 EST / UTC-4 EDT)
- * Using Intl.DateTimeFormat for correctness across DST.
+ * US  → America/New_York (UTC-5 EST / UTC-4 EDT, auto-DST)
+ * Uses Intl.DateTimeFormat with fallback to fixed UTC offsets.
  */
 function todayForMarket(market: "TW" | "US"): string {
-  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
-  return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
+  try {
+    const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
+  } catch {
+    // Fallback: TW=UTC+8, US=UTC-4 (EDT approximation)
+    const offsetMs = market === "TW" ? 8 * 3600_000 : -4 * 3600_000;
+    return new Date(Date.now() + offsetMs).toISOString().slice(0, 10);
+  }
 }
 
 /**
  * Convert a Unix timestamp (seconds) to a YYYY-MM-DD date string in the correct market timezone.
+ * Uses Intl.DateTimeFormat with fallback to fixed UTC offsets.
  */
 function timestampToMarketDate(tsSec: number, market: "TW" | "US"): string {
-  const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
-  return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date(tsSec * 1000));
+  try {
+    const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date(tsSec * 1000));
+  } catch {
+    const offsetMs = market === "TW" ? 8 * 3600_000 : -4 * 3600_000;
+    return new Date(tsSec * 1000 + offsetMs).toISOString().slice(0, 10);
+  }
 }
 
 /**
@@ -1241,10 +1252,10 @@ export async function getOrSyncHistoricalData(
         // Start from lastStoredDate itself to overwrite possible intraday snapshots
         const gapFromStr = lastStoredDate;
         // Gap end: yesterday in market timezone (today handled by injectTodayBar)
-        const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
-        const yDate = new Date();
-        yDate.setDate(yDate.getDate() - 1);
-        const yesterdayStr = new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(yDate);
+        // Use todayForMarket with date arithmetic to get yesterday correctly
+        const marketTodayStr = todayForMarket(market);
+        const marketTodayMs = new Date(marketTodayStr + "T12:00:00Z").getTime();
+        const yesterdayStr = new Date(marketTodayMs - 86400_000).toISOString().slice(0, 10);
 
         if (gapFromStr <= yesterdayStr) {
           const fetched = await fetchYahooHistoryByDateRange(symbol, gapFromStr, yesterdayStr, suffix);
