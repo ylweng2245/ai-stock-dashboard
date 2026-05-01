@@ -223,11 +223,12 @@ export default function Portfolio() {
       currency: r.currency,
     })).sort((a, b) => b.value - a.value);
 
-  // isPending: only true when there is no cached/placeholder data at all (first ever load)
-  // holdingsLoading and pricesLoading are true even during background refetch when placeholderData is active,
-  // but data will be defined (from placeholder). So we check data === undefined instead.
-  const isPending = computedHoldingsRaw === undefined || priceData === undefined;
-  const hasData = enriched.length > 0 || realizedRows.length > 0;
+  // isPending: true only when holdings (the primary data) has never loaded.
+  // priceData is allowed to still be loading — we'll show avgCost as fallback.
+  const isPending = computedHoldingsRaw === undefined;
+  // pricesPending: true when priceData has no cached/placeholder data yet
+  const pricesPending = priceData === undefined;
+  const hasData = !isPending && (enriched.length > 0 || realizedRows.length > 0);
 
   // ─── Table columns ──────────────────────────────────────────────────────────
   const thClass = "px-4 py-3 text-right font-medium";
@@ -280,15 +281,16 @@ export default function Portfolio() {
           {/* Summary Cards — 4 cards: TW market value, US market value (TWD), unrealized P&L, realized P&L */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {/* 台股市值 */}
-            <SummaryCard label="台股市值" value={`NT ${fmtNum(twMarketValueTWD, "TWD")}`} sub={`佔總資產 ${twPct.toFixed(1)}%`} />
+            <SummaryCard label="台股市值" value={`NT ${fmtNum(twMarketValueTWD, "TWD")}`} sub={`佔總資產 ${twPct.toFixed(1)}%`} loading={pricesPending} />
             {/* 美股市值 (換算台幣) */}
-            <SummaryCard label="美股市值（換算台幣）" value={`NT ${fmtNum(usMarketValueTWD, "TWD")}`} sub={`佔總資產 ${usPct.toFixed(1)}%`} />
+            <SummaryCard label="美股市值（換算台幣）" value={`NT ${fmtNum(usMarketValueTWD, "TWD")}`} sub={`佔總資產 ${usPct.toFixed(1)}%`} loading={pricesPending} />
             {/* 未實現損益 — 大字總計 + 右側台/美分列 */}
             <PnLSplitCard
               label="未實現損益"
               total={totalUnrealizedTWD}
               tw={twUnrealized}
               us={usUnrealizedTWD}
+              loading={pricesPending}
             />
             {/* 已實現損益 — 大字總計 + 右側台/美分列 */}
             <PnLSplitCard
@@ -561,20 +563,23 @@ function RealizedRow({ row }: { row: any }) {
 
 // ─── SummaryCard ──────────────────────────────────────────────────────────────
 
-function SummaryCard({ label, value, sub, colorClass }: {
+function SummaryCard({ label, value, sub, colorClass, loading }: {
   label: string;
   value?: string;
   sub?: string;
   colorClass?: string;
+  loading?: boolean;
 }) {
   return (
     <Card>
       <CardContent className="p-4">
         <p className="text-xs text-muted-foreground mb-1">{label}</p>
-        <p className={cn("text-lg font-semibold tabular-nums", colorClass ?? "text-foreground")}>
-          {value}
-        </p>
-        {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+        {loading
+          ? <Skeleton className="h-7 w-32 mt-1" />
+          : <p className={cn("text-lg font-semibold tabular-nums", colorClass ?? "text-foreground")}>{value}</p>
+        }
+        {sub && !loading && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+        {loading && <Skeleton className="h-3 w-20 mt-1.5" />}
       </CardContent>
     </Card>
   );
@@ -582,31 +587,42 @@ function SummaryCard({ label, value, sub, colorClass }: {
 
 // ─── PnLSplitCard ────────────────────────────────────────────────────────────────
 /** 左側大字顯示總損益(TWD)，右側小字顯示台股 / 美股分列 */
-function PnLSplitCard({ label, total, tw, us }: {
+function PnLSplitCard({ label, total, tw, us, loading }: {
   label: string;
   total: number;  // TWD total
   tw: number;     // TWD
   us: number;     // TWD-converted
+  loading?: boolean;
 }) {
   return (
     <Card>
       <CardContent className="p-4">
         <p className="text-xs text-muted-foreground mb-1.5">{label}</p>
-        <div className="flex items-center gap-3">
-          {/* Left: large total */}
-          <p className={cn("text-lg font-bold tabular-nums flex-1", total >= 0 ? "text-gain" : "text-loss")}>
-            NT {fmtNum(total, "TWD")}
-          </p>
-          {/* Right: TW / US breakdown */}
-          <div className="text-right space-y-0.5 flex-shrink-0 border-l border-border/40 pl-3">
-            <p className={cn("text-sm tabular-nums", tw >= 0 ? "text-gain" : "text-loss")}>
-              台 {fmtNum(tw, "TWD")}
-            </p>
-            <p className={cn("text-sm tabular-nums", us >= 0 ? "text-gain" : "text-loss")}>
-              美 {fmtNum(us, "TWD")}
-            </p>
+        {loading ? (
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-7 w-28 flex-1" />
+            <div className="text-right space-y-1 flex-shrink-0 border-l border-border/40 pl-3">
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-4 w-16" />
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            {/* Left: large total */}
+            <p className={cn("text-lg font-bold tabular-nums flex-1", total >= 0 ? "text-gain" : "text-loss")}>
+              NT {fmtNum(total, "TWD")}
+            </p>
+            {/* Right: TW / US breakdown */}
+            <div className="text-right space-y-0.5 flex-shrink-0 border-l border-border/40 pl-3">
+              <p className={cn("text-sm tabular-nums", tw >= 0 ? "text-gain" : "text-loss")}>
+                台 {fmtNum(tw, "TWD")}
+              </p>
+              <p className={cn("text-sm tabular-nums", us >= 0 ? "text-gain" : "text-loss")}>
+                美 {fmtNum(us, "TWD")}
+              </p>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
