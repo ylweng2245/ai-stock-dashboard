@@ -37,7 +37,13 @@ echo.
 echo [4/4] Restarting server...
 taskkill /F /IM node.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
-start "AI Stock Dashboard" /D "C:\ai-stock-dashboard" cmd /c "node dist\index.cjs > server.log 2>&1"
+
+REM Load .env file if it exists (pass as --env-file for Node.js native dotenv support)
+if exist "%~dp0.env" (
+    start "AI Stock Dashboard" /D "C:\ai-stock-dashboard" cmd /c "node --env-file=.env dist\index.cjs > server.log 2>&1"
+) else (
+    start "AI Stock Dashboard" /D "C:\ai-stock-dashboard" cmd /c "node dist\index.cjs > server.log 2>&1"
+)
 
 echo.
 echo ========================================
