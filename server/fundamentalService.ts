@@ -118,48 +118,53 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
     ],
   });
 
-  // Fetch quarterly income via fundamentalsTimeSeries (more reliable post-Nov 2024)
+  // Fetch quarterly income: merge both sources to maximise available quarters.
+  // - fundamentalsTimeSeries: deeper history but may lack the very latest quarter
+  // - incomeStatementHistoryQuarterly: latest 4 quarters (often includes newest unreported)
+  // Merge by date key, newer source wins on conflict, sort newest-first, take up to 12.
   let quarterlyIncome: any[] = [];
+  const qMap = new Map<string, any>();
+
+  // Source 1: fundamentalsTimeSeries
   try {
     const period1 = new Date();
-    period1.setFullYear(period1.getFullYear() - 3); // last 3 years (12 quarters)
+    period1.setFullYear(period1.getFullYear() - 3); // last 3 years
     const ts = await yf.fundamentalsTimeSeries(ySymbol, {
       period1: period1.toISOString().slice(0, 10),
       type: "quarterly",
       module: "financials",
     });
-    // Normalize to simple objects sorted newest-first
-    quarterlyIncome = (ts as any[])
-      .map((q: any) => ({
-        date: q.date instanceof Date ? q.date.toISOString().slice(0, 10) : String(q.date).slice(0, 10),
-        totalRevenue:     q.totalRevenue     ?? q.operatingRevenue ?? null,
-        grossProfit:      q.grossProfit      ?? null,
-        operatingIncome:  q.operatingIncome  ?? q.EBIT             ?? null,
-        netIncome:        q.netIncome        ?? null,
-      }))
-      .filter((q: any) => q.totalRevenue != null)
-      .sort((a: any, b: any) => b.date.localeCompare(a.date))
-      .slice(0, 12);
+    for (const q of ts as any[]) {
+      const rev = q.totalRevenue ?? q.operatingRevenue ?? null;
+      if (rev == null) continue;
+      const date = q.date instanceof Date ? q.date.toISOString().slice(0, 10) : String(q.date).slice(0, 10);
+      qMap.set(date, { date, totalRevenue: rev, grossProfit: q.grossProfit ?? null, operatingIncome: q.operatingIncome ?? q.EBIT ?? null, netIncome: q.netIncome ?? null });
+    }
+    console.log(`[fundamentalService] fundamentalsTimeSeries: ${qMap.size} quarters for ${ySymbol}`);
   } catch (e: any) {
     console.warn(`[fundamentalService] fundamentalsTimeSeries failed for ${ySymbol}:`, e.message);
-    // Fallback: use incomeStatementHistoryQuarterly (older data, may be incomplete)
-    try {
-      const fallback = await yf.quoteSummary(ySymbol, {
-        modules: ["incomeStatementHistoryQuarterly"],
-      });
-      const hist = fallback.incomeStatementHistoryQuarterly?.incomeStatementHistory ?? [];
-      quarterlyIncome = hist
-        .map((q: any) => ({
-          date: q.endDate instanceof Date ? q.endDate.toISOString().slice(0, 10) : String(q.endDate).slice(0, 10),
-          totalRevenue:    q.totalRevenue    ?? null,
-          grossProfit:     q.grossProfit     ?? null,
-          operatingIncome: q.operatingIncome ?? null,
-          netIncome:       q.netIncome       ?? null,
-        }))
-        .filter((q: any) => q.totalRevenue != null)
-        .slice(0, 12);
-    } catch { /* ignore */ }
   }
+
+  // Source 2: incomeStatementHistoryQuarterly (often includes latest quarter missing above)
+  try {
+    const fallback = await yf.quoteSummary(ySymbol, {
+      modules: ["incomeStatementHistoryQuarterly"],
+    });
+    const hist = fallback.incomeStatementHistoryQuarterly?.incomeStatementHistory ?? [];
+    for (const q of hist as any[]) {
+      if (q.totalRevenue == null) continue;
+      const date = q.endDate instanceof Date ? q.endDate.toISOString().slice(0, 10) : String(q.endDate).slice(0, 10);
+      // Newer source (fallback) wins — overwrite if exists
+      qMap.set(date, { date, totalRevenue: q.totalRevenue, grossProfit: q.grossProfit ?? null, operatingIncome: q.operatingIncome ?? null, netIncome: q.netIncome ?? null });
+    }
+    console.log(`[fundamentalService] after merge: ${qMap.size} quarters for ${ySymbol}`);
+  } catch (e: any) {
+    console.warn(`[fundamentalService] incomeStatementHistoryQuarterly failed for ${ySymbol}:`, e.message);
+  }
+
+  quarterlyIncome = Array.from(qMap.values())
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 12);
 
   // Build info object compatible with scoring functions
   const fd  = summary.financialData        ?? {};
