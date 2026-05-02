@@ -810,6 +810,34 @@ function isExpired(fetchedAt: number, _calendar?: any): boolean {
 // Main public API
 // ---------------------------------------------------------------------------
 
+// Track symbols currently being refreshed in background to avoid duplicate fetches
+const _bgRefreshInFlight = new Set<string>();
+
+function triggerBackgroundRefresh(symbol: string, market: "TW" | "US"): void {
+  const key = `${symbol}:${market}`;
+  if (_bgRefreshInFlight.has(key)) return; // already in progress
+  _bgRefreshInFlight.add(key);
+  // Use a new call that bypasses the stale check (forceRefresh=true)
+  // but we need to call the inner fetch directly to avoid infinite recursion
+  fetchFromYahooFinance(symbol, market)
+    .then((raw) => {
+      const now = Date.now();
+      const row: InsertFundamentalData = {
+        symbol, market,
+        infoJson:            JSON.stringify(raw.info           ?? {}),
+        quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
+        epsHistoryJson:      JSON.stringify(raw.epsHistory     ?? []),
+        calendarJson:        JSON.stringify(raw.calendar       ?? {}),
+        fetchedAt: now,
+        updatedAt: now,
+      };
+      storage.upsertFundamental(row);
+      console.log(`[fundamentalService] bg refresh done: ${symbol} (${market})`);
+    })
+    .catch((e) => console.error(`[fundamentalService] bg refresh failed: ${symbol}:`, e.message))
+    .finally(() => _bgRefreshInFlight.delete(key));
+}
+
 export async function getOrFetchFundamentals(
   symbol: string,
   market: "TW" | "US",
@@ -822,11 +850,17 @@ export async function getOrFetchFundamentals(
       let cal: any = {};
       try { cal = JSON.parse(cached.calendarJson || "{}"); } catch { /* */ }
       if (!isExpired(cached.fetchedAt, cal)) {
+        // Cache is fresh — return immediately
         return assembleFundamentalResult(symbol, market, cached);
       }
+      // Cache is stale — return existing data immediately, refresh in background
+      console.log(`[fundamentalService] stale cache for ${symbol}, serving cached + bg refresh`);
+      triggerBackgroundRefresh(symbol, market);
+      return assembleFundamentalResult(symbol, market, cached);
     }
   }
 
+  // No cache at all (first fetch) or forceRefresh — fetch synchronously
   // Fetch fresh
   console.log(`[fundamentalService] Fetching yahoo-finance2: ${symbol} (${market})`);
   let raw: any;
