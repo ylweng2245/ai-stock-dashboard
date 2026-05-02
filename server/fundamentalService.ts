@@ -6,8 +6,8 @@
  *   - TW stocks: symbol + ".TW" suffix  (e.g. 2330.TW)
  *
  * Update strategy:
- *   - TTL: 7 days (fundamental data changes at quarterly cadence)
- *   - During earnings season (within 3 days of earnings date), TTL shrinks to 1 day
+ *   - TTL: 1 day (auto-refreshed daily before market open via scheduled job)
+ *   - Manual resync always bypasses TTL
  *   - Always full-replace on upsert
  *
  * Scoring:
@@ -95,7 +95,7 @@ export interface FundamentalResult {
   profitMargins?: number;
 
   fetchedAt: number;
-  isStale: boolean;        // true if > 7 days old
+  isStale: boolean;        // true if > 1 day old
 }
 
 // ---------------------------------------------------------------------------
@@ -800,19 +800,10 @@ function buildEpsHistory(epsRows: any[]): EpsPoint[] {
 // TTL logic
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TTL_MS      = 7 * 24 * 60 * 60 * 1000;   // 7 days
-const EARNINGS_NEAR_TTL_MS = 1 * 24 * 60 * 60 * 1000;  // 1 day during earnings season
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
-function isExpired(fetchedAt: number, calendar: any): boolean {
-  const age = Date.now() - fetchedAt;
-  const earningsDate = calendar?.earningsDate;
-  if (earningsDate) {
-    try {
-      const daysToEarnings = Math.abs(Math.round((new Date(earningsDate).getTime() - Date.now()) / 86400000));
-      if (daysToEarnings <= 3) return age > EARNINGS_NEAR_TTL_MS;
-    } catch { /* ignore */ }
-  }
-  return age > DEFAULT_TTL_MS;
+function isExpired(fetchedAt: number, _calendar?: any): boolean {
+  return Date.now() - fetchedAt > DEFAULT_TTL_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -909,4 +900,74 @@ function assembleFundamentalResult(
     fetchedAt: row.fetchedAt,
     isStale:   isExpired(row.fetchedAt, calendar),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled auto-refresh
+// ---------------------------------------------------------------------------
+// Runs daily before market open:
+//   - TW stocks: 08:30 CST = UTC 00:30
+//   - US stocks: 08:30 EST = UTC 13:30
+// Uses setTimeout loop so no external scheduler dependency.
+
+function msUntilNextUTC(hour: number, minute: number): number {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCHours(hour, minute, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+async function runFundamentalAutoRefresh(market: "TW" | "US"): Promise<void> {
+  let watchlist: { symbol: string; market: string }[] = [];
+  try {
+    watchlist = await storage.getWatchlist();
+  } catch (e: any) {
+    console.error("[autoRefresh] Failed to load watchlist:", e.message);
+    return;
+  }
+
+  const targets = watchlist.filter((w) => w.market === market);
+  console.log(`[autoRefresh] Starting ${market} refresh for ${targets.length} symbols`);
+
+  for (const item of targets) {
+    try {
+      await getOrFetchFundamentals(item.symbol, market, true);
+      console.log(`[autoRefresh] ${item.symbol} (${market}) refreshed`);
+    } catch (e: any) {
+      console.error(`[autoRefresh] ${item.symbol} (${market}) failed:`, e.message);
+    }
+    // Small delay between symbols to avoid rate limiting
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  console.log(`[autoRefresh] ${market} refresh complete`);
+}
+
+function scheduleDailyRefresh(market: "TW" | "US", utcHour: number, utcMinute: number): void {
+  const label = `${market} daily refresh (UTC ${String(utcHour).padStart(2,"0")}:${String(utcMinute).padStart(2,"0")})`;
+
+  function scheduleNext() {
+    const delay = msUntilNextUTC(utcHour, utcMinute);
+    const fireAt = new Date(Date.now() + delay).toISOString();
+    console.log(`[autoRefresh] ${label} scheduled at ${fireAt}`);
+    setTimeout(async () => {
+      await runFundamentalAutoRefresh(market);
+      scheduleNext(); // reschedule for tomorrow
+    }, delay);
+  }
+
+  scheduleNext();
+}
+
+/**
+ * Call once at server startup to register daily auto-refresh jobs.
+ *   - TW: 08:30 CST = UTC 00:30
+ *   - US: 08:30 EST = UTC 13:30
+ */
+export function scheduleAutoRefresh(): void {
+  scheduleDailyRefresh("TW", 0, 30);   // 08:30 CST
+  scheduleDailyRefresh("US", 13, 30);  // 08:30 EST
 }

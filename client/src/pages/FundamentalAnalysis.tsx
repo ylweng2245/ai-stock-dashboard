@@ -576,7 +576,9 @@ export default function FundamentalAnalysis() {
       apiRequest("POST", `/api/fundamentals/${activeSymbol}/resync?market=${activeMarket}`)
         .then((r) => r.json()),
     onSuccess: () => {
+      // invalidate + force refetch (staleTime:Infinity means invalidate alone won't re-fetch)
       qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
+      qc.refetchQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
     },
   });
 
