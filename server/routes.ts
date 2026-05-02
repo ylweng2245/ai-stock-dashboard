@@ -62,7 +62,7 @@ import {
   syncTodayTechnicalBarFromQuote,
   initializeOneYearHistoryPool,
 } from "./stockService";
-import { getOrFetchFundamentals } from "./fundamentalService";
+import { getOrFetchFundamentals, triggerFullFundamentalSync } from "./fundamentalService";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -1153,6 +1153,19 @@ export async function registerRoutes(
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  /**
+   * POST /api/fundamentals/sync-all
+   * Manually trigger a full fundamentals refresh for all watchlist symbols.
+   * Runs in background — responds immediately with { ok: true, message }.
+   */
+  app.post("/api/fundamentals/sync-all", (_req, res) => {
+    // Respond immediately, run in background
+    res.json({ ok: true, message: "全部財務資料同步已啟動，約需數分鐘完成" });
+    triggerFullFundamentalSync().catch((e: any) =>
+      console.error("[sync-all] background error:", e.message)
+    );
   });
 
   /**

@@ -959,6 +959,28 @@ function msUntilNextUTC(hour: number, minute: number): number {
   return next.getTime() - now.getTime();
 }
 
+export async function triggerFullFundamentalSync(): Promise<{ synced: number; total: number }> {
+  let watchlist: { symbol: string; market: string }[] = [];
+  try {
+    watchlist = await storage.getWatchlist();
+  } catch (e: any) {
+    console.error("[manualSync] Failed to load watchlist:", e.message);
+    return { synced: 0, total: 0 };
+  }
+  let synced = 0;
+  for (const item of watchlist) {
+    try {
+      await getOrFetchFundamentals(item.symbol, item.market as "TW" | "US", true);
+      synced++;
+    } catch (e: any) {
+      console.error(`[manualSync] ${item.symbol} failed:`, e.message);
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  console.log(`[manualSync] done ${synced}/${watchlist.length}`);
+  return { synced, total: watchlist.length };
+}
+
 async function runFundamentalAutoRefresh(market: "TW" | "US"): Promise<void> {
   let watchlist: { symbol: string; market: string }[] = [];
   try {
