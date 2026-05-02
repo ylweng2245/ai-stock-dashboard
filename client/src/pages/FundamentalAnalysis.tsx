@@ -7,6 +7,7 @@
  * - 資料來源：GET /api/fundamentals/:symbol?market=
  */
 
+import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ComposedChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -19,6 +20,7 @@ import { RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
+import { STOCK_META } from "@/lib/stockData";
 import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
 import type {
   FundamentalResult,
@@ -48,10 +50,15 @@ function fmtRev(n: number, currency: string): string {
   return `$${n.toLocaleString()}`;
 }
 
-/** Build chart data with YoY and QoQ computed from quarterlyBars (newest-first array) */
+/** Sort quarter label e.g. "2025Q3" ascending (oldest → newest) */
+function sortQuartersAsc(bars: QuarterlyBar[]): QuarterlyBar[] {
+  return [...bars].sort((a, b) => a.quarter.localeCompare(b.quarter));
+}
+
+/** Build chart data with YoY and QoQ computed from quarterlyBars */
 function buildRevenueRows(bars: QuarterlyBar[]) {
-  // bars = newest-first; reverse to oldest-first for chart x-axis
-  const arr = [...bars].slice(0, 8).reverse();
+  // Sort oldest→newest, take last 8 for chart
+  const arr = sortQuartersAsc(bars).slice(-8);
   return arr.map((b, i) => {
     const prev = arr[i - 1];   // previous quarter (QoQ)
     const yoy  = arr[i - 4];   // same quarter last year (YoY)
@@ -67,7 +74,7 @@ function buildRevenueRows(bars: QuarterlyBar[]) {
 
 /** Build profit chart data: EPS bar + gross margin % + net margin % lines */
 function buildProfitRows(bars: QuarterlyBar[], eps: EpsPoint[]) {
-  const arr = [...bars].slice(0, 8).reverse();
+  const arr = sortQuartersAsc(bars).slice(-8);
   // Build EPS map by quarter label
   const epsMap = new Map(eps.map(e => [e.quarter, e.actual]));
   return arr.map((b) => {
@@ -101,8 +108,8 @@ function pctStr(v: number | null): string {
 function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: string }) {
   if (bars.length === 0) return null;
   const rows = buildRevenueRows(bars);
-  // Table: newest-first
-  const tableRows = [...rows].reverse();
+  // Table: oldest at top, newest at bottom (same as chart direction)
+  const tableRows = rows;
 
   // Axis domains
   const pctVals = rows.flatMap(r => [r.qoq, r.yoy]).filter(v => v !== null) as number[];
@@ -122,7 +129,7 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
         {/* Chart */}
         <div style={{ height: 200 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={rows} margin={{ top: 4, right: 36, left: 0, bottom: 0 }}>
+            <ComposedChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.06)" />
               <XAxis dataKey="quarter" tick={{ fill: "#8ea1b6", fontSize: 10 }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={36} />
               <YAxis
@@ -130,7 +137,7 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
                 orientation="left"
                 tickFormatter={(v) => fmtRev(v, currency)}
                 tick={{ fill: "#8ea1b6", fontSize: 10 }}
-                axisLine={false} tickLine={false} width={56}
+                axisLine={false} tickLine={false} width={54}
               />
               <YAxis
                 yAxisId="pct"
@@ -138,7 +145,7 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
                 domain={[pctMin, pctMax]}
                 tickFormatter={(v) => `${v}%`}
                 tick={{ fill: "#8ea1b6", fontSize: 10 }}
-                axisLine={false} tickLine={false} width={40}
+                axisLine={false} tickLine={false} width={38}
               />
               <Tooltip
                 contentStyle={{ background: "#0b1420", border: "1px solid rgba(255,255,255,.12)", borderRadius: 10, color: "#e6eef8", fontSize: 11 }}
@@ -201,7 +208,8 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
 function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoint[]; currency: string }) {
   if (bars.length === 0) return null;
   const rows = buildProfitRows(bars, eps);
-  const tableRows = [...rows].reverse();
+  // Table: oldest at top, newest at bottom
+  const tableRows = rows;
 
   const pctVals = rows.flatMap(r => [r.grossMargin, r.netMargin]).filter(v => v !== null) as number[];
   const pctMin = pctVals.length ? Math.floor(Math.min(...pctVals) / 10) * 10 - 5 : -20;
@@ -221,7 +229,7 @@ function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoi
         {/* Chart */}
         <div style={{ height: 200 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={rows} margin={{ top: 4, right: 36, left: 0, bottom: 0 }}>
+            <ComposedChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.06)" />
               <XAxis dataKey="quarter" tick={{ fill: "#8ea1b6", fontSize: 10 }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={36} />
               <YAxis
@@ -529,6 +537,19 @@ export default function FundamentalAnalysis() {
   const { activeSymbol, activeMarket } = useActiveSymbol();
   const qc = useQueryClient();
 
+  // Watchlist meta — use user-entered name (same pattern as TechnicalAnalysis)
+  const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
+    queryKey: ["/api/watchlist"],
+    queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+  const meta = useMemo(() => {
+    const wItem = watchlist?.find((w) => w.symbol === activeSymbol);
+    if (wItem) return { name: wItem.name };
+    return STOCK_META[activeSymbol] ? { name: STOCK_META[activeSymbol].name } : { name: activeSymbol };
+  }, [watchlist, activeSymbol]);
+
   // Don't show fundamentals for excluded ETF/bond symbols
   const isExcluded = EXCLUDED_FUNDAMENTAL_SYMBOLS.has(activeSymbol);
 
@@ -606,9 +627,9 @@ export default function FundamentalAnalysis() {
       {/* Header — mirrors TechnicalAnalysis layout */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          {/* Company name as primary title */}
+          {/* Company name — use watchlist user-entered name, same as TechnicalAnalysis */}
           <h1 className="text-2xl font-bold leading-tight">
-            {data.name || activeSymbol}
+            {meta.name}
           </h1>
           {/* Symbol · market · industry · age */}
           <div className="flex items-center gap-2 mt-1.5 text-sm text-muted-foreground flex-wrap">
