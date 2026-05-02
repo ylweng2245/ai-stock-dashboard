@@ -204,8 +204,9 @@ function getPythonCmd(): string {
 function callYfinance(symbol: string, market: "TW" | "US"): any {
   const suffix = market === "TW" ? ".TW" : "";
   const ySymbol = symbol + suffix;
-  // Use os.tmpdir() for cross-platform temp path (works on Windows + Linux)
-  const tmpScript = path.join(os.tmpdir(), `yfinance_fetch_${symbol}.py`);
+  // Use TEMP env var on Windows, fallback to os.tmpdir() on Linux
+  const tmpDir = process.env.TEMP ?? process.env.TMP ?? os.tmpdir();
+  const tmpScript = path.join(tmpDir, `yfinance_fetch_${symbol}.py`);
   fs.writeFileSync(tmpScript, PYTHON_SCRIPT);
   const python = getPythonCmd();
   let raw: string;
