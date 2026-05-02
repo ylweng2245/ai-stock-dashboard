@@ -1,7 +1,7 @@
 /**
- * fundamentalService.ts — Fundamental data via yfinance (Python)
+ * fundamentalService.ts — Fundamental data via yahoo-finance2 (pure Node.js)
  *
- * Data source: yfinance Python library
+ * Data source: yahoo-finance2 npm package (no Python required)
  *   - US stocks: symbol as-is  (e.g. LLY, PANW)
  *   - TW stocks: symbol + ".TW" suffix  (e.g. 2330.TW)
  *
@@ -16,12 +16,11 @@
  *   - 價值評估 (Valuation):  trailingPE, forwardPE, PEG, dividendYield (vs sector benchmarks)
  */
 
-import { execSync } from "child_process";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import YahooFinance from "yahoo-finance2";
 import { storage } from "./storage";
 import type { InsertFundamentalData } from "@shared/schema";
+
+const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,134 +99,130 @@ export interface FundamentalResult {
 }
 
 // ---------------------------------------------------------------------------
-// Python yfinance fetcher
+// Yahoo Finance fetcher (pure Node.js, no Python)
 // ---------------------------------------------------------------------------
 
-const PYTHON_SCRIPT = `
-import sys, json, math
-import yfinance as yf
+async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promise<any> {
+  const ySymbol = market === "TW" ? `${symbol}.TW` : symbol;
 
-symbol_arg = sys.argv[1]  # e.g. "LLY" or "2330.TW"
-ticker = yf.Ticker(symbol_arg)
-info = ticker.info or {}
+  // Fetch quoteSummary for ratios + EPS history + calendar
+  const summary = await yf.quoteSummary(ySymbol, {
+    modules: [
+      "financialData",
+      "defaultKeyStatistics",
+      "summaryDetail",
+      "earningsHistory",
+      "calendarEvents",
+    ],
+  });
 
-def safe(v):
-    if v is None: return None
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)): return None
-    return v
-
-# Quarterly income statement (last 8 quarters)
-qi = ticker.quarterly_income_stmt
-quarters = []
-if qi is not None and not qi.empty:
-    rows_needed = ["Total Revenue","Gross Profit","Operating Income","Net Income"]
-    for col in list(qi.columns[:8]):
-        q = {"date": col.strftime("%Y-%m-%d") if hasattr(col,"strftime") else str(col)}
-        for r in rows_needed:
-            if r in qi.index:
-                v = qi.loc[r, col]
-                q[r] = None if (isinstance(v,float) and (math.isnan(v) or math.isinf(v))) else float(v) if v == v else None
-            else:
-                q[r] = None
-        quarters.append(q)
-
-# EPS history
-eps_rows = []
-try:
-    eh = ticker.earnings_history
-    if eh is not None and not eh.empty:
-        for _, row_data in eh.head(8).iterrows():
-            eps_rows.append({
-                "quarter": str(row_data.name) if hasattr(row_data,"name") else "",
-                "epsActual": safe(float(row_data.get("epsActual") or 0)),
-                "epsEstimate": safe(float(row_data.get("epsEstimate") or 0)),
-                "surprisePercent": safe(float(row_data.get("surprisePercent") or 0)),
-            })
-except Exception as e:
-    pass
-
-# Calendar
-cal_data = {}
-try:
-    cal = ticker.calendar
-    if cal:
-        import datetime
-        def fmt_date(d):
-            if isinstance(d, datetime.date): return d.strftime("%Y-%m-%d")
-            if isinstance(d, list) and d: return fmt_date(d[0])
-            return str(d) if d else None
-        cal_data = {
-            "earningsDate": fmt_date(cal.get("Earnings Date")),
-            "exDividendDate": fmt_date(cal.get("Ex-Dividend Date")),
-            "nextFiscalYearEnd": fmt_date(cal.get("Next Fiscal Year End")),
-            "earningsAverage": safe(cal.get("Earnings Average")),
-            "revenueAverage": safe(cal.get("Revenue Average")),
-        }
-except Exception:
-    pass
-
-# Build info subset (only what we need, safe serialization)
-info_keys = [
-    "shortName","longName","sector","industry","currency","exchange",
-    "trailingPE","forwardPE","pegRatio","trailingEps","forwardEps",
-    "grossMargins","operatingMargins","profitMargins","ebitdaMargins",
-    "revenueGrowth","earningsGrowth","revenuePerShare",
-    "freeCashflow","operatingCashflow","totalRevenue",
-    "debtToEquity","totalDebt","totalStockholdersEquity","currentRatio","quickRatio",
-    "dividendYield","trailingAnnualDividendYield","payoutRatio",
-    "marketCap","priceToBook","priceToSalesTrailing12Months",
-    "beta","fiftyTwoWeekHigh","fiftyTwoWeekLow",
-    "sharesOutstanding","floatShares","bookValue",
-]
-info_out = {k: safe(info.get(k)) for k in info_keys}
-
-result = {
-    "info": info_out,
-    "quarterlyIncome": quarters,
-    "epsHistory": eps_rows,
-    "calendar": cal_data,
-}
-print(json.dumps(result))
-`;
-
-/** Detect python command: tries python3 first, then python */
-function getPythonCmd(): string {
-  for (const cmd of ["python3", "python"]) {
-    try {
-      const v = execSync(`${cmd} --version`, { timeout: 5000, encoding: "utf8" });
-      if (v.toLowerCase().includes("python")) return cmd;
-    } catch { /* not found */ }
-  }
-  throw new Error("Python not found. Install Python 3 and run: pip install yfinance");
-}
-
-function callYfinance(symbol: string, market: "TW" | "US"): any {
-  const suffix = market === "TW" ? ".TW" : "";
-  const ySymbol = symbol + suffix;
-  // Use TEMP env var on Windows, fallback to os.tmpdir() on Linux
-  const tmpDir = process.env.TEMP ?? process.env.TMP ?? os.tmpdir();
-  const tmpScript = path.join(tmpDir, `yfinance_fetch_${symbol}.py`);
-  fs.writeFileSync(tmpScript, PYTHON_SCRIPT);
-  const python = getPythonCmd();
-  let raw: string;
+  // Fetch quarterly income via fundamentalsTimeSeries (more reliable post-Nov 2024)
+  let quarterlyIncome: any[] = [];
   try {
-    raw = execSync(`"${python}" "${tmpScript}" "${ySymbol}"`, {
-      timeout: 60_000,
-      encoding: "utf8",
+    const period1 = new Date();
+    period1.setFullYear(period1.getFullYear() - 2); // last 2 years
+    const ts = await yf.fundamentalsTimeSeries(ySymbol, {
+      period1: period1.toISOString().slice(0, 10),
+      type: "quarterly",
+      module: "financials",
     });
+    // Normalize to simple objects sorted newest-first
+    quarterlyIncome = (ts as any[])
+      .map((q: any) => ({
+        date: q.date instanceof Date ? q.date.toISOString().slice(0, 10) : String(q.date).slice(0, 10),
+        totalRevenue:     q.totalRevenue     ?? q.operatingRevenue ?? null,
+        grossProfit:      q.grossProfit      ?? null,
+        operatingIncome:  q.operatingIncome  ?? q.EBIT             ?? null,
+        netIncome:        q.netIncome        ?? null,
+      }))
+      .filter((q: any) => q.totalRevenue != null)
+      .sort((a: any, b: any) => b.date.localeCompare(a.date))
+      .slice(0, 8);
   } catch (e: any) {
-    // Include stderr in the error message for easier debugging
-    const stderr = e.stderr ? String(e.stderr).trim() : "";
-    if (stderr.includes("ModuleNotFoundError") || stderr.includes("No module named")) {
-      throw new Error(`yfinance not installed. Run: ${python} -m pip install yfinance pandas`);
-    }
-    throw new Error(`yfinance subprocess failed for ${ySymbol}: ${stderr || e.message}`);
+    console.warn(`[fundamentalService] fundamentalsTimeSeries failed for ${ySymbol}:`, e.message);
+    // Fallback: use incomeStatementHistoryQuarterly (older data, may be incomplete)
+    try {
+      const fallback = await yf.quoteSummary(ySymbol, {
+        modules: ["incomeStatementHistoryQuarterly"],
+      });
+      const hist = fallback.incomeStatementHistoryQuarterly?.incomeStatementHistory ?? [];
+      quarterlyIncome = hist
+        .map((q: any) => ({
+          date: q.endDate instanceof Date ? q.endDate.toISOString().slice(0, 10) : String(q.endDate).slice(0, 10),
+          totalRevenue:    q.totalRevenue    ?? null,
+          grossProfit:     q.grossProfit     ?? null,
+          operatingIncome: q.operatingIncome ?? null,
+          netIncome:       q.netIncome       ?? null,
+        }))
+        .filter((q: any) => q.totalRevenue != null)
+        .slice(0, 8);
+    } catch { /* ignore */ }
   }
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("{")) {
-    throw new Error(`yfinance returned unexpected output for ${ySymbol}: ${trimmed.slice(0, 200)}`);
-  }
-  return JSON.parse(trimmed);
+
+  // Build info object compatible with scoring functions
+  const fd  = summary.financialData        ?? {};
+  const ks  = summary.defaultKeyStatistics ?? {};
+  const sd  = summary.summaryDetail        ?? {};
+  const cal = summary.calendarEvents       ?? {};
+  const eh  = summary.earningsHistory?.history ?? [];
+
+  const info: any = {
+    // Names
+    longName:  (summary as any).longName  ?? (summary as any).shortName ?? ySymbol,
+    shortName: (summary as any).shortName ?? ySymbol,
+    sector:    (fd as any).sector         ?? "",
+    industry:  (fd as any).industry       ?? "",
+    currency:  (fd as any).financialCurrency ?? (sd as any).currency ?? (market === "TW" ? "TWD" : "USD"),
+
+    // Ratios from summaryDetail (most reliable source)
+    trailingPE:  (sd as any).trailingPE  ?? null,
+    forwardPE:   (sd as any).forwardPE   ?? null,
+    dividendYield: (sd as any).dividendYield ?? (sd as any).trailingAnnualDividendYield ?? null,
+
+    // Ratios from defaultKeyStatistics
+    pegRatio:    (ks as any).pegRatio    ?? null,
+    trailingEps: (ks as any).trailingEps ?? null,
+    forwardEps:  (ks as any).forwardEps  ?? null,
+    priceToBook: (ks as any).priceToBook ?? null,
+
+    // Growth & margins from financialData
+    grossMargins:      (fd as any).grossMargins      ?? null,
+    operatingMargins:  (fd as any).operatingMargins  ?? null,
+    profitMargins:     (fd as any).profitMargins      ?? null,
+    revenueGrowth:     (fd as any).revenueGrowth     ?? null,
+    earningsGrowth:    (fd as any).earningsGrowth    ?? null,
+    freeCashflow:      (fd as any).freeCashflow       ?? null,
+    operatingCashflow: (fd as any).operatingCashflow  ?? null,
+    totalRevenue:      (fd as any).totalRevenue       ?? null,
+    debtToEquity:      (fd as any).debtToEquity       ?? null,
+    currentRatio:      (fd as any).currentRatio       ?? null,
+    marketCap:         (sd as any).marketCap          ?? null,
+  };
+
+  // Parse calendar
+  const earningsArr = (cal as any).earnings?.earningsDate ?? [];
+  const earningsDate = earningsArr.length > 0
+    ? (earningsArr[0] instanceof Date ? earningsArr[0].toISOString().slice(0,10) : String(earningsArr[0]).slice(0,10))
+    : null;
+  const exDiv = (cal as any).exDividendDate;
+  const exDividendDate = exDiv instanceof Date ? exDiv.toISOString().slice(0,10) : (exDiv ? String(exDiv).slice(0,10) : null);
+
+  const calendarData: any = {
+    earningsDate,
+    exDividendDate,
+    earningsAverage:  (cal as any).earnings?.earningsAverage   ?? null,
+    revenueAverage:   (cal as any).earnings?.revenueAverage    ?? null,
+  };
+
+  // EPS history
+  const epsRows = eh.slice(0, 8).map((row: any) => ({
+    quarter:         row.quarter instanceof Date ? row.quarter.toISOString().slice(0,10) : String(row.quarter ?? ""),
+    epsActual:       row.epsActual      ?? 0,
+    epsEstimate:     row.epsEstimate    ?? 0,
+    surprisePercent: row.surprisePercent ?? 0,
+  }));
+
+  return { info, quarterlyIncome, epsHistory: epsRows, calendar: calendarData };
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +339,7 @@ function computeGrowthPillar(
 
   // 1. 季度營收 YoY
   const revValues = quarters
-    .map((q: any) => q["Total Revenue"])
+    .map((q: any) => q["totalRevenue"])
     .filter((v: any): v is number => v != null && v > 0);
   let revYoY = info.revenueGrowth as number | null;
   if (revYoY == null && revValues.length >= 5) revYoY = yoyPct(revValues);
@@ -427,10 +422,9 @@ function computeGrowthPillar(
       weak: "共識預估成長動能趨緩。",
       poor: "共識預估下修，後市需謹慎。",
     };
-    const displayVal = pct(fwdGrowth);
     metrics.push({
       name: "下季共識成長",
-      value: displayVal,
+      value: pct(fwdGrowth),
       numericValue: fwdGrowth,
       rating,
       commentary: commentaries[rating],
@@ -541,7 +535,7 @@ function computeQualityPillar(info: any, quarters: any[]): PillarCard {
   // 4. Debt / Equity
   const de = info.debtToEquity as number | null;
   if (de != null) {
-    // debtToEquity is in percent (165.31 = 1.6531x) in yfinance
+    // debtToEquity is in percent (165.31 = 1.6531x) in yahoo-finance2
     const deRatio = de / 100;
     const { score, rating } = scoreFromThresholds(deRatio, [0.3, 0.8, 1.5, 2.5], false);
     scores.push(score);
@@ -735,7 +729,7 @@ function buildSummaryRows(pillars: PillarCard[], info: any, industry: string): S
   ];
 }
 
-function buildFinancialEvents(calendar: any, info: any): FinancialEvent[] {
+function buildFinancialEvents(calendar: any): FinancialEvent[] {
   const events: FinancialEvent[] = [];
   const now = Date.now();
 
@@ -753,7 +747,6 @@ function buildFinancialEvents(calendar: any, info: any): FinancialEvent[] {
 
   addEvent(calendar?.earningsDate, "earnings", "財報發布日 Earnings");
   addEvent(calendar?.exDividendDate, "dividend", "除息日 Dividend");
-  addEvent(calendar?.nextFiscalYearEnd, "fiscalYearEnd", "會計年度結束");
 
   events.sort((a, b) => a.daysFromNow - b.daysFromNow);
   return events;
@@ -761,7 +754,7 @@ function buildFinancialEvents(calendar: any, info: any): FinancialEvent[] {
 
 function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
   return quarters
-    .filter((q: any) => q["Total Revenue"] != null)
+    .filter((q: any) => q["totalRevenue"] != null)
     .map((q: any) => {
       // Convert date "YYYY-MM-DD" to quarter label "YYYYQn"
       const d = new Date(q.date);
@@ -770,10 +763,10 @@ function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
       const label = `${d.getFullYear()}Q${qn}`;
       return {
         quarter: label,
-        revenue: q["Total Revenue"] ?? 0,
-        grossProfit: q["Gross Profit"] ?? 0,
-        operatingIncome: q["Operating Income"] ?? 0,
-        netIncome: q["Net Income"] ?? 0,
+        revenue:         q["totalRevenue"]    ?? 0,
+        grossProfit:     q["grossProfit"]     ?? 0,
+        operatingIncome: q["operatingIncome"] ?? 0,
+        netIncome:       q["netIncome"]       ?? 0,
       } as QuarterlyBar;
     })
     .reverse(); // oldest first for chart
@@ -782,7 +775,6 @@ function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
 function buildEpsHistory(epsRows: any[]): EpsPoint[] {
   return epsRows
     .map((row: any, i: number) => {
-      // quarter label from index (most recent first)
       const d = new Date(row.quarter || "");
       let label = `Q${i + 1}`;
       if (!isNaN(d.getTime())) {
@@ -791,8 +783,8 @@ function buildEpsHistory(epsRows: any[]): EpsPoint[] {
         label = `${d.getFullYear()}Q${qn}`;
       }
       return {
-        quarter: label,
-        actual: row.epsActual ?? 0,
+        quarter:  label,
+        actual:   row.epsActual   ?? 0,
         estimate: row.epsEstimate ?? 0,
         surprise: row.surprisePercent != null ? row.surprisePercent * 100 : 0,
       };
@@ -804,8 +796,8 @@ function buildEpsHistory(epsRows: any[]): EpsPoint[] {
 // TTL logic
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // 7 days
-const EARNINGS_NEAR_TTL_MS = 1 * 24 * 60 * 60 * 1000; // 1 day during earnings season
+const DEFAULT_TTL_MS      = 7 * 24 * 60 * 60 * 1000;   // 7 days
+const EARNINGS_NEAR_TTL_MS = 1 * 24 * 60 * 60 * 1000;  // 1 day during earnings season
 
 function isExpired(fetchedAt: number, calendar: any): boolean {
   const age = Date.now() - fetchedAt;
@@ -841,12 +833,12 @@ export async function getOrFetchFundamentals(
   }
 
   // Fetch fresh
-  console.log(`[fundamentalService] Fetching yfinance: ${symbol} (${market})`);
+  console.log(`[fundamentalService] Fetching yahoo-finance2: ${symbol} (${market})`);
   let raw: any;
   try {
-    raw = callYfinance(symbol, market);
+    raw = await fetchFromYahooFinance(symbol, market);
   } catch (e: any) {
-    console.error(`[fundamentalService] yfinance error for ${symbol}:`, e.message);
+    console.error(`[fundamentalService] fetch error for ${symbol}:`, e.message);
     // Fall back to cached (possibly stale) data
     const cached = storage.getFundamental(symbol, market);
     if (cached) return assembleFundamentalResult(symbol, market, cached);
@@ -857,10 +849,10 @@ export async function getOrFetchFundamentals(
   const row: InsertFundamentalData = {
     symbol,
     market,
-    infoJson: JSON.stringify(raw.info ?? {}),
+    infoJson:            JSON.stringify(raw.info          ?? {}),
     quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
-    epsHistoryJson: JSON.stringify(raw.epsHistory ?? []),
-    calendarJson: JSON.stringify(raw.calendar ?? {}),
+    epsHistoryJson:      JSON.stringify(raw.epsHistory    ?? []),
+    calendarJson:        JSON.stringify(raw.calendar      ?? {}),
     fetchedAt: now,
     updatedAt: now,
   };
@@ -874,43 +866,43 @@ function assembleFundamentalResult(
   market: "TW" | "US",
   row: { infoJson: string; quarterlyIncomeJson: string; epsHistoryJson: string; calendarJson: string; fetchedAt: number }
 ): FundamentalResult {
-  let info: any = {};
+  let info: any     = {};
   let quarters: any[] = [];
-  let epsRows: any[] = [];
-  let calendar: any = {};
+  let epsRows: any[]  = [];
+  let calendar: any   = {};
 
-  try { info = JSON.parse(row.infoJson); } catch { /* */ }
+  try { info     = JSON.parse(row.infoJson);            } catch { /* */ }
   try { quarters = JSON.parse(row.quarterlyIncomeJson); } catch { /* */ }
-  try { epsRows = JSON.parse(row.epsHistoryJson); } catch { /* */ }
-  try { calendar = JSON.parse(row.calendarJson); } catch { /* */ }
+  try { epsRows  = JSON.parse(row.epsHistoryJson);      } catch { /* */ }
+  try { calendar = JSON.parse(row.calendarJson);        } catch { /* */ }
 
   const industry = info.industry ?? "";
-  const sector = info.sector ?? "";
+  const sector   = info.sector   ?? "";
 
-  const growthPillar = computeGrowthPillar(info, quarters, calendar);
-  const qualityPillar = computeQualityPillar(info, quarters);
+  const growthPillar    = computeGrowthPillar(info, quarters, calendar);
+  const qualityPillar   = computeQualityPillar(info, quarters);
   const valuationPillar = computeValuationPillar(info, industry, sector);
   const pillars = [growthPillar, qualityPillar, valuationPillar];
 
   return {
     symbol,
     market,
-    name: info.longName ?? info.shortName ?? symbol,
+    name:     info.longName  ?? info.shortName ?? symbol,
     sector,
     industry,
-    currency: info.currency ?? (market === "TW" ? "TWD" : "USD"),
+    currency: info.currency  ?? (market === "TW" ? "TWD" : "USD"),
     pillars,
-    quarterlyBars: buildQuarterlyBars(quarters),
-    epsHistory: buildEpsHistory(epsRows),
-    financialEvents: buildFinancialEvents(calendar, info),
-    summaryRows: buildSummaryRows(pillars, info, industry),
-    trailingPE: info.trailingPE ?? undefined,
-    forwardPE: info.forwardPE ?? undefined,
-    pegRatio: info.pegRatio ?? undefined,
-    grossMargins: info.grossMargins ?? undefined,
-    operatingMargins: info.operatingMargins ?? undefined,
-    profitMargins: info.profitMargins ?? undefined,
+    quarterlyBars:   buildQuarterlyBars(quarters),
+    epsHistory:      buildEpsHistory(epsRows),
+    financialEvents: buildFinancialEvents(calendar),
+    summaryRows:     buildSummaryRows(pillars, info, industry),
+    trailingPE:      info.trailingPE      ?? undefined,
+    forwardPE:       info.forwardPE       ?? undefined,
+    pegRatio:        info.pegRatio        ?? undefined,
+    grossMargins:    info.grossMargins    ?? undefined,
+    operatingMargins:info.operatingMargins ?? undefined,
+    profitMargins:   info.profitMargins   ?? undefined,
     fetchedAt: row.fetchedAt,
-    isStale: isExpired(row.fetchedAt, calendar),
+    isStale:   isExpired(row.fetchedAt, calendar),
   };
 }
