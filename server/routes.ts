@@ -1141,5 +1141,19 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * DELETE /api/fundamentals/cache/all
+   * Wipe all cached fundamental data so every symbol re-fetches fresh on next request.
+   */
+  app.delete("/api/fundamentals/cache/all", (_req, res) => {
+    try {
+      storage.clearAllFundamentals();
+      console.log("[fundamentals] cache cleared");
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return httpServer;
 }

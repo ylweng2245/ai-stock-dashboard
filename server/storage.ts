@@ -140,6 +140,7 @@ export interface IStorage {
   getFundamental(symbol: string, market: string): FundamentalDataRow | undefined;
   upsertFundamental(row: InsertFundamentalData): void;
   getAllFundamentals(): FundamentalDataRow[];
+  clearAllFundamentals(): void;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -576,6 +577,10 @@ export class DatabaseStorage implements IStorage {
       row.infoJson, row.quarterlyIncomeJson, row.epsHistoryJson, row.calendarJson,
       row.fetchedAt, row.updatedAt
     );
+  }
+
+  clearAllFundamentals(): void {
+    sqlite.prepare("DELETE FROM fundamental_data").run();
   }
 
   getAllFundamentals(): FundamentalDataRow[] {
