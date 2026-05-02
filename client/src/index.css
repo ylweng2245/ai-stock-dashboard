@@ -146,6 +146,38 @@
   @apply text-emerald-500 dark:text-emerald-400;
 }
 
+/* ── Five-tier rating utility classes (Taiwan convention) ── */
+/* 極佳: strongest gain (bright rose) */
+.rating-excellent {
+  color: #fb7185;
+  background-color: rgba(251, 113, 133, 0.15);
+  border-color: rgba(251, 113, 133, 0.24);
+}
+/* 良好: gain red */
+.rating-good {
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.22);
+}
+/* 中性: neutral white */
+.rating-neutral {
+  color: #f3f4f6;
+  background-color: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+/* 疲弱: loss green (lighter) */
+.rating-weak {
+  color: #34d399;
+  background-color: rgba(52, 211, 153, 0.14);
+  border-color: rgba(52, 211, 153, 0.24);
+}
+/* 差勁: strongest loss (emerald) */
+.rating-poor {
+  color: #10b981;
+  background-color: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.22);
+}
+
 .tabular-nums {
   font-variant-numeric: tabular-nums lining-nums;
 }

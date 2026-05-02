@@ -97,8 +97,8 @@ function consensusColor(label: string): string {
   if (label === "強烈買入") return "text-[#ef4444]";
   if (label === "買入")     return "text-[#f87171]";
   if (label === "持有")     return "text-muted-foreground";
-  if (label === "賣出")     return "text-[#4ade80]";
-  return "text-[#22c55e]"; // 強烈賣出
+  if (label === "賣出")     return "text-[#10b981]";
+  return "text-[#10b981]"; // 強烈賣出
 }
 
 // ─── Custom dot renderer for buy/sell marks ───────────────────────────────────
@@ -106,7 +106,7 @@ function TradeDotRenderer(props: any) {
   const { cx, cy, payload } = props;
   if (!payload?.tradeInfo) return null;
   const { side } = payload.tradeInfo as TradeDot;
-  const color = side === "buy" ? "#ef4444" : "#22c55e";
+  const color = side === "buy" ? "#ef4444" : "#10b981";
   return (
     <g>
       <circle cx={cx} cy={cy} r={6} fill={color} stroke="#fff" strokeWidth={1.5} opacity={0.92} style={{ cursor: "pointer" }} />
@@ -141,8 +141,8 @@ function BollingerTooltip({ active, payload, label }: any) {
       {hasTrade && (
         <div style={{ borderTop: "1px solid hsl(var(--border))", marginTop: 6, paddingTop: 6 }}>
           <div className="flex items-center gap-1.5">
-            <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block", background: p.tradeInfo.side === "buy" ? "#ef4444" : "#22c55e" }} />
-            <span className="font-semibold" style={{ color: p.tradeInfo.side === "buy" ? "#ef4444" : "#22c55e" }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block", background: p.tradeInfo.side === "buy" ? "#ef4444" : "#10b981" }} />
+            <span className="font-semibold" style={{ color: p.tradeInfo.side === "buy" ? "#ef4444" : "#10b981" }}>
               {p.tradeInfo.side === "buy" ? "買進" : "賣出"}
             </span>
           </div>
@@ -159,12 +159,12 @@ function BollingerTooltip({ active, payload, label }: any) {
       {hasAnalyst && ae && (
         <div style={{ borderTop: "1px solid hsl(var(--border))", marginTop: 6, paddingTop: 6 }}>
           <div className="flex items-center gap-1.5 mb-1">
-            <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block", background: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#22c55e" : "#94a3b8" }} />
+            <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block", background: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#10b981" : "#94a3b8" }} />
             <span className="font-semibold text-muted-foreground">{ae.institution}</span>
           </div>
           <div className="flex justify-between gap-4">
             <span className="text-muted-foreground">評級</span>
-            <span className="font-medium" style={{ color: ae.ratingCategory === "bullish" ? "#f87171" : ae.ratingCategory === "bearish" ? "#4ade80" : "#cbd5e1" }}>{ae.rating}</span>
+            <span className="font-medium" style={{ color: ae.ratingCategory === "bullish" ? "#ef4444" : ae.ratingCategory === "bearish" ? "#10b981" : "#cbd5e1" }}>{ae.rating}</span>
           </div>
           <div className="flex justify-between gap-4">
             <span className="text-muted-foreground">目標價</span>
@@ -178,7 +178,7 @@ function BollingerTooltip({ active, payload, label }: any) {
           )}
           <div className="flex justify-between gap-4">
             <span className="text-muted-foreground">調整</span>
-            <span style={{ color: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#22c55e" : "#94a3b8" }}>
+            <span style={{ color: ae.direction === "up" ? "#ef4444" : ae.direction === "down" ? "#10b981" : "#94a3b8" }}>
               {ae.direction === "up" ? "上調" : ae.direction === "down" ? "下修" : "維持"}
             </span>
           </div>
@@ -195,7 +195,7 @@ function AnalystRefLabel(props: any) {
   const { viewBox, event }: { viewBox?: { x: number; y: number }; event: AnalystOverlayEvent } = props;
   if (!viewBox) return null;
   const { x, y } = viewBox;
-  const color = event.direction === "up" ? "#ef4444" : event.direction === "down" ? "#22c55e" : "#94a3b8";
+  const color = event.direction === "up" ? "#ef4444" : event.direction === "down" ? "#10b981" : "#94a3b8";
   const hLen = 14;
   return (
     <g>
@@ -281,7 +281,7 @@ function AnalystWideCard({
               {/* Bearish */}
               <div>
                 <div className="text-[12px] text-muted-foreground mb-1">看跌</div>
-                <div className="text-[22px] font-semibold text-[#22c55e] leading-tight">{summary.bearishCount}</div>
+                <div className="text-[22px] font-semibold text-[#10b981] leading-tight">{summary.bearishCount}</div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">{summary.bearishPct}%</div>
               </div>
             </div>
@@ -300,9 +300,9 @@ function AnalystWideCard({
             <div className="grid grid-cols-4 mb-2">
               {/* Low — left-aligned */}
               <div>
-                <div className="text-[12px] font-semibold text-[#22c55e] tabular-nums">{currencySymbol}{lowTargetPrice.toLocaleString()}</div>
+                <div className="text-[12px] font-semibold text-[#10b981] tabular-nums">{currencySymbol}{lowTargetPrice.toLocaleString()}</div>
                 <div className="flex items-center gap-1 mt-0.5">
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981", display: "inline-block", flexShrink: 0 }} />
                   <span className="text-[10px] text-muted-foreground">低</span>
                 </div>
               </div>
@@ -343,14 +343,14 @@ function AnalystWideCard({
                 height: 4,
                 borderRadius: 999,
                 transform: "translateY(-50%)",
-                background: "linear-gradient(90deg, rgba(34,197,94,.3) 0%, rgba(255,255,255,.12) 50%, rgba(239,68,68,.35) 100%)",
+                background: "linear-gradient(90deg, rgba(16,185,129,.3) 0%, rgba(255,255,255,.12) 50%, rgba(239,68,68,.35) 100%)",
               }} />
               {/* Low dot — small solid green */}
               <span style={{
                 position: "absolute", top: "50%", left: `${lowPct}%`,
                 transform: "translate(-50%,-50%)",
                 width: 8, height: 8, borderRadius: "50%",
-                background: "#22c55e", display: "block",
+                background: "#10b981", display: "block",
               }} />
               {/* Current dot — larger open circle white */}
               <span style={{
@@ -397,8 +397,8 @@ function AnalystTargetTable({
   if (!rows.length) return null;
 
   const ratingPillClass = (cat: string) => {
-    if (cat === "bullish") return "bg-red-500/10 text-red-300 border border-red-500/20";
-    if (cat === "bearish") return "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20";
+    if (cat === "bullish") return "bg-[rgba(239,68,68,.12)] text-[#ef4444] border border-[rgba(239,68,68,.22)]";
+    if (cat === "bearish") return "bg-[rgba(16,185,129,.12)] text-[#10b981] border border-[rgba(16,185,129,.22)]";
     return "bg-slate-500/10 text-slate-300 border border-slate-500/20";
   };
 
@@ -426,7 +426,7 @@ function AnalystTargetTable({
                 ? ((row.targetPrice - currentPrice) / currentPrice * 100)
                 : null;
 
-              const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#f87171]" : upsidePct < 0 ? "text-[#4ade80]" : "text-muted-foreground";
+              const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#ef4444]" : upsidePct < 0 ? "text-[#10b981]" : "text-muted-foreground";
 
               const dateFormatted = row.analystDate
                 ? row.analystDate.replace(/-/g, "/")
@@ -437,8 +437,8 @@ function AnalystTargetTable({
                   <td className="px-3 py-1.5 font-medium">{row.institution}</td>
                   <td className={cn(
                     "px-3 py-1.5 font-bold",
-                    row.ratingCategory === "bullish" ? "text-[#f87171]" :
-                    row.ratingCategory === "bearish" ? "text-[#4ade80]" :
+                    row.ratingCategory === "bullish" ? "text-[#ef4444]" :
+                    row.ratingCategory === "bearish" ? "text-[#10b981]" :
                     "text-foreground"
                   )}>{row.rating}</td>
                   <td className="px-3 py-1.5 tabular-nums font-medium">
@@ -752,8 +752,14 @@ export default function TechnicalAnalysis() {
               <div className="flex items-center gap-2">
                 <span className="text-lg font-semibold tabular-nums">{lastRSI.toFixed(1)}</span>
                 <Badge
-                  variant={rsiSignal === "超買" ? "destructive" : rsiSignal === "超賣" ? "default" : "secondary"}
-                  className="text-[10px]"
+                  className={cn(
+                    "text-[10px] border",
+                    rsiSignal === "超買"
+                      ? "bg-[rgba(239,68,68,.15)] text-[#ef4444] border-[rgba(239,68,68,.25)]"
+                      : rsiSignal === "超賣"
+                      ? "bg-[rgba(16,185,129,.14)] text-[#10b981] border-[rgba(16,185,129,.22)]"
+                      : "bg-[rgba(255,255,255,.08)] text-muted-foreground border-[rgba(255,255,255,.12)]"
+                  )}
                 >
                   {rsiSignal}
                 </Badge>
@@ -768,8 +774,12 @@ export default function TechnicalAnalysis() {
               <div className="flex items-center gap-2">
                 <span className="text-lg font-semibold tabular-nums">{lastMACD.toFixed(2)}</span>
                 <Badge
-                  variant={macdSignal === "多頭" ? "default" : "destructive"}
-                  className={cn("text-[10px]", macdSignal === "多頭" ? "bg-red-500/20 text-red-500 border-red-500/30" : "bg-emerald-500/20 text-emerald-500 border-emerald-500/30")}
+                  className={cn(
+                    "text-[10px] border",
+                    macdSignal === "多頭"
+                      ? "bg-[rgba(239,68,68,.15)] text-[#ef4444] border-[rgba(239,68,68,.25)]"
+                      : "bg-[rgba(16,185,129,.14)] text-[#10b981] border-[rgba(16,185,129,.22)]"
+                  )}
                 >
                   {macdSignal}
                 </Badge>
@@ -844,7 +854,7 @@ export default function TechnicalAnalysis() {
                   dot={(props: any) => {
                     const { payload } = props;
                     if (!payload?.tradeInfo) return <g key={props.key} />;
-                    const color = payload.tradeInfo.side === "buy" ? "#ef4444" : "#22c55e";
+                    const color = payload.tradeInfo.side === "buy" ? "#ef4444" : "#10b981";
                     return (
                       <g key={props.key}>
                         <circle cx={props.cx} cy={props.cy} r={8} fill={color} opacity={0.15} />
@@ -855,7 +865,7 @@ export default function TechnicalAnalysis() {
                   activeDot={(props: any) => {
                     const { payload } = props;
                     if (!payload?.tradeInfo) return <g key="active" />;
-                    const color = payload.tradeInfo.side === "buy" ? "#ef4444" : "#22c55e";
+                    const color = payload.tradeInfo.side === "buy" ? "#ef4444" : "#10b981";
                     return (
                       <g key="active">
                         <circle cx={props.cx} cy={props.cy} r={10} fill={color} opacity={0.2} />
@@ -873,7 +883,7 @@ export default function TechnicalAnalysis() {
                   const avg = analystData.summary.averageTargetPrice;
                   const currentPrice = data?.currentPrice ?? 0;
                   const avgLineColor = currentPrice > 0
-                    ? avg > currentPrice ? "#ef4444" : avg < currentPrice ? "#22c55e" : "#ffffff"
+                    ? avg > currentPrice ? "#ef4444" : avg < currentPrice ? "#10b981" : "#ffffff"
                     : "#ffffff";
                   return (
                     <ReferenceLine
@@ -896,7 +906,7 @@ export default function TechnicalAnalysis() {
                       const ev: AnalystOverlayEvent | null = props.payload?.analystEvent ?? null;
                       if (!ev) return <g key={props.key} />;
                       const { cx, cy } = props;
-                      const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#22c55e" : "#94a3b8";
+                      const color = ev.direction === "up" ? "#ef4444" : ev.direction === "down" ? "#10b981" : "#94a3b8";
                       const hLen = 10;
                       return (
                         <g key={props.key}>
@@ -935,7 +945,7 @@ export default function TechnicalAnalysis() {
                     formatter={(v: any) => [typeof v === "number" ? v.toFixed(1) : v, "RSI"]}
                   />
                   <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" />
-                  <ReferenceLine y={30} stroke="#22c55e" strokeDasharray="3 3" />
+                  <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" />
                   <Line type="monotone" dataKey="rsi" stroke="#a78bfa" strokeWidth={1.5} dot={false} name="RSI" connectNulls />
                 </LineChart>
               </ResponsiveContainer>
