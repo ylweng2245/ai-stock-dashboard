@@ -83,25 +83,24 @@ function RatingBadge({ rating }: { rating: FundamentalRating }) {
 }
 
 // ---------------------------------------------------------------------------
-// Metric row
+// Metric row (compact)
 // ---------------------------------------------------------------------------
 function MetricRow({ metric }: { metric: MetricItem }) {
-  const isPositive = metric.value.startsWith("+") || (!metric.value.startsWith("-") && !metric.value.startsWith("N"));
   const hasSign = metric.value.startsWith("+") || metric.value.startsWith("-");
   const colorClass = hasSign
     ? (metric.value.startsWith("+") ? "text-[#ef4444]" : "text-[#10b981]")
     : "text-[#e6eef8]";
 
   return (
-    <div className="border-t border-white/[0.06] pt-3.5 pb-0.5">
+    <div className="border-t border-white/[0.06] pt-2.5 pb-0">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[14px] text-[#dce6f3]">{metric.name}</span>
+        <span className="text-[12px] text-[#dce6f3]">{metric.name}</span>
         <RatingBadge rating={metric.rating} />
       </div>
-      <div className={cn("mt-2 text-[26px] font-extrabold", colorClass)}>
+      <div className={cn("mt-1 text-[20px] font-extrabold", colorClass)}>
         {metric.value}
       </div>
-      <div className="mt-1.5 text-[13px] text-[#8ea1b6] leading-snug">
+      <div className="mt-1 text-[11px] text-[#8ea1b6] leading-snug">
         {metric.commentary}
       </div>
     </div>
@@ -109,19 +108,19 @@ function MetricRow({ metric }: { metric: MetricItem }) {
 }
 
 // ---------------------------------------------------------------------------
-// Pillar card
+// Pillar card (compressed ~60%)
 // ---------------------------------------------------------------------------
 function PillarCardComponent({ card }: { card: PillarCard }) {
   return (
-    <Card className="border border-white/[0.08] rounded-[22px]" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.98), rgba(7,12,20,.98))" }}>
-      <CardContent className="p-[18px]">
-        <div className="flex items-end justify-between mb-2.5">
-          <h3 className="text-[17px] font-bold text-[#e6eef8]">{card.title}</h3>
-          <span className={cn("text-[44px] font-black leading-none", scoreColor(card.score))}>
+    <Card className="border border-white/[0.08] rounded-[18px]" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.98), rgba(7,12,20,.98))" }}>
+      <CardContent className="p-[14px]">
+        <div className="flex items-end justify-between mb-1.5">
+          <h3 className="text-[15px] font-bold text-[#e6eef8]">{card.title}</h3>
+          <span className={cn("text-[36px] font-black leading-none", scoreColor(card.score))}>
             {card.score}
           </span>
         </div>
-        <p className="text-[14px] text-[#c8d6e7] leading-relaxed mb-1">
+        <p className="text-[12px] text-[#c8d6e7] leading-snug mb-0.5">
           {card.summary}
         </p>
         <div className="space-y-0">
@@ -135,28 +134,47 @@ function PillarCardComponent({ card }: { card: PillarCard }) {
 }
 
 // ---------------------------------------------------------------------------
-// Rating legend
+// Investment strategy card (replaces rating legend)
 // ---------------------------------------------------------------------------
-function RatingLegend() {
-  const items: Array<[FundamentalRating, string]> = [
-    ["excellent", "最好，偏多解讀"],
-    ["good",      "正向但未到極強"],
-    ["neutral",   "無明顯優劣"],
-    ["weak",      "需追蹤留意"],
-    ["poor",      "相對不利"],
-  ];
+function deriveStrategy(pillars: PillarCard[]): { title: string; description: string; badge: FundamentalRating } {
+  const growth    = pillars.find(p => p.pillar === "growth")!;
+  const quality   = pillars.find(p => p.pillar === "quality")!;
+  const valuation = pillars.find(p => p.pillar === "valuation")!;
+  const avg = Math.round((growth.score + quality.score + valuation.score) / 3);
+
+  if (avg >= 78) {
+    // High growth + high quality
+    if (valuation.score >= 60)
+      return { title: "積極持有 / 逢低加碼", description: "基本面全面優異，成長動能強且估值尚在合理區間。可積極持有，遇回檔視為加碼機會。", badge: "excellent" };
+    else
+      return { title: "持有 / 分批布局", description: "成長與財務體質俱佳，但估值已有溢價。建議持有現有部位，若估值收斂可考慮分批加碼。", badge: "good" };
+  }
+  if (avg >= 60) {
+    if (valuation.score >= 65)
+      return { title: "分批建倉", description: "基本面穩健，估值具合理安全邊際。可考慮分批建立部位，搭配財報節奏進場。", badge: "good" };
+    else
+      return { title: "觀望 / 小量持有", description: "基本面良好但估值偏高，進場CP值不足。建議小量持有或等待回調至合理估值再加碼。", badge: "neutral" };
+  }
+  if (avg >= 42) {
+    return { title: "中性觀望", description: "各面向表現普通，尚無明確催化劑。建議觀望為主，等待財報或共識上修訊號再行動。", badge: "neutral" };
+  }
+  if (avg >= 28) {
+    return { title: "減碼 / 謹慎", description: "基本面出現疲態，成長放緩或財務體質轉弱。建議降低部位比重，密切追蹤後續財報。", badge: "weak" };
+  }
+  return { title: "回避 / 出場", description: "多項指標亮燈，基本面明顯惡化。除非有特殊事件驅動，否則建議回避或評估出場。", badge: "poor" };
+}
+
+function StrategyCard({ pillars }: { pillars: PillarCard[] }) {
+  const { title, description, badge } = deriveStrategy(pillars);
   return (
     <Card className="border border-white/[0.08] rounded-[18px]" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.9), rgba(8,14,22,.94))" }}>
       <CardContent className="p-4">
-        <h3 className="text-[16px] font-bold text-[#e6eef8] mb-3">五級評價說明</h3>
-        <div className="grid grid-cols-[auto_1fr] gap-x-3.5 gap-y-2.5 text-[14px]">
-          {items.map(([rating, desc]) => (
-            <>
-              <div key={`badge-${rating}`}><RatingBadge rating={rating} /></div>
-              <div key={`desc-${rating}`} className="flex items-center text-[#d7e3f1]">{desc}</div>
-            </>
-          ))}
+        <h3 className="text-[13px] font-semibold text-[#8ea1b6] uppercase tracking-wider mb-2">綜合投資策略</h3>
+        <div className="flex items-center gap-2.5 mb-2.5">
+          <RatingBadge rating={badge} />
+          <span className="text-[16px] font-bold text-[#e6eef8]">{title}</span>
         </div>
+        <p className="text-[13px] text-[#b8cde0] leading-relaxed">{description}</p>
       </CardContent>
     </Card>
   );
@@ -343,11 +361,9 @@ function SummaryTable({ rows }: { rows: SummaryRow[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Financial events timeline
+// Financial events timeline (compact card, no outer mt)
 // ---------------------------------------------------------------------------
 function EventsTimeline({ events }: { events: FinancialEvent[] }) {
-  if (events.length === 0) return null;
-
   function daysLabel(days: number): string {
     if (days === 0) return "今日";
     if (days < 0) return `T${days}`;
@@ -355,27 +371,30 @@ function EventsTimeline({ events }: { events: FinancialEvent[] }) {
   }
 
   const typeLabel: Record<string, string> = {
-    earnings:      "財報發布日 Earnings",
-    dividend:      "除息日 Dividend",
-    fiscalYearEnd: "會計年度結束",
+    earnings:      "財報日",
+    dividend:      "除息日",
+    fiscalYearEnd: "年度結束",
   };
 
   return (
-    <Card className="border border-white/[0.08] rounded-[22px] mt-4" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.96), rgba(7,12,20,.96))" }}>
-      <CardContent className="p-[18px]">
-        <h3 className="text-[16px] font-bold text-[#e6eef8] mb-1">重要財務日</h3>
-        <p className="text-[12px] text-[#8ea1b6] mb-3">未來 90 天</p>
-        <div className="space-y-2">
-          {events.slice(0, 5).map((ev, i) => (
-            <div key={i} className="grid grid-cols-[110px_1fr_76px] gap-3 items-center px-3 py-2.5 border border-white/[0.06] rounded-[14px] bg-white/[0.03]">
-              <div className="text-[14px] font-bold text-[#dce7f5]">{ev.date}</div>
-              <div className="text-[13px] text-[#8ea1b6]">{typeLabel[ev.type] ?? ev.label}</div>
-              <div className="text-right text-[13px] font-bold" style={{ color: ev.daysFromNow <= 7 ? "#f5b4b4" : "#8ea1b6" }}>
-                {daysLabel(ev.daysFromNow)}
+    <Card className="border border-white/[0.08] rounded-[18px] h-full" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.9), rgba(8,14,22,.94))" }}>
+      <CardContent className="p-4">
+        <h3 className="text-[13px] font-semibold text-[#8ea1b6] uppercase tracking-wider mb-2">重要財務日</h3>
+        {events.length === 0 ? (
+          <p className="text-[13px] text-[#8ea1b6]/50 py-2">近期無重要財務事件</p>
+        ) : (
+          <div className="space-y-1.5">
+            {events.slice(0, 4).map((ev, i) => (
+              <div key={i} className="grid grid-cols-[90px_1fr_52px] gap-2 items-center px-2.5 py-2 border border-white/[0.06] rounded-[10px] bg-white/[0.02]">
+                <div className="text-[12px] font-bold text-[#dce7f5]">{ev.date}</div>
+                <div className="text-[12px] text-[#8ea1b6]">{typeLabel[ev.type] ?? ev.label}</div>
+                <div className="text-right text-[12px] font-bold" style={{ color: ev.daysFromNow <= 7 ? "#fb7185" : "#8ea1b6" }}>
+                  {daysLabel(ev.daysFromNow)}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -522,13 +541,14 @@ export default function FundamentalAnalysis() {
         </div>
       </div>
 
-      {/* Rating legend */}
-      <div className="mt-4">
-        <RatingLegend />
+      {/* Strategy card + Financial events (50/50) */}
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <StrategyCard pillars={data.pillars} />
+        <EventsTimeline events={data.financialEvents} />
       </div>
 
       {/* Three pillar cards */}
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-3">
         {data.pillars.map((card) => (
           <PillarCardComponent key={card.pillar} card={card} />
         ))}
@@ -548,9 +568,6 @@ export default function FundamentalAnalysis() {
 
       {/* EPS chart */}
       <EpsChart eps={data.epsHistory} />
-
-      {/* Financial events */}
-      <EventsTimeline events={data.financialEvents} />
     </div>
   );
 }
