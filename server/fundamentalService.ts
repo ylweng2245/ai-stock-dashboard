@@ -111,6 +111,8 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
       "financialData",
       "defaultKeyStatistics",
       "summaryDetail",
+      "assetProfile",
+      "price",
       "earningsHistory",
       "calendarEvents",
     ],
@@ -163,16 +165,18 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
   const fd  = summary.financialData        ?? {};
   const ks  = summary.defaultKeyStatistics ?? {};
   const sd  = summary.summaryDetail        ?? {};
+  const ap  = (summary as any).assetProfile ?? {};
+  const pr  = (summary as any).price        ?? {};
   const cal = summary.calendarEvents       ?? {};
   const eh  = summary.earningsHistory?.history ?? [];
 
   const info: any = {
-    // Names
-    longName:  (summary as any).longName  ?? (summary as any).shortName ?? ySymbol,
-    shortName: (summary as any).shortName ?? ySymbol,
-    sector:    (fd as any).sector         ?? "",
-    industry:  (fd as any).industry       ?? "",
-    currency:  (fd as any).financialCurrency ?? (sd as any).currency ?? (market === "TW" ? "TWD" : "USD"),
+    // Names — longName/shortName from price module; sector/industry from assetProfile
+    longName:  pr.longName  ?? pr.shortName  ?? ySymbol,
+    shortName: pr.shortName ?? pr.longName   ?? ySymbol,
+    sector:    ap.sector    ?? "",
+    industry:  ap.industry  ?? "",
+    currency:  pr.currency  ?? (fd as any).financialCurrency ?? (market === "TW" ? "TWD" : "USD"),
 
     // Ratios from summaryDetail (most reliable source)
     trailingPE:  (sd as any).trailingPE  ?? null,
