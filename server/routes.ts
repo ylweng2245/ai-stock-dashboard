@@ -1155,5 +1155,46 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * POST /api/internal/fundamentals-sync
+   * Called by Perplexity cron to write fresh fundamental data into the DB.
+   * Requires X-Sync-Secret header matching INTERNAL_SYNC_SECRET env var.
+   *
+   * Body: Array of { symbol, market, quarterlyIncome, epsHistory, info, calendar }
+   */
+  app.post("/api/internal/fundamentals-sync", async (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const items = req.body as any[];
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Expected non-empty array" });
+    }
+    const now = Date.now();
+    let saved = 0;
+    for (const item of items) {
+      try {
+        const { symbol, market, info, quarterlyIncome, epsHistory, calendar } = item;
+        if (!symbol || !market) continue;
+        storage.upsertFundamental({
+          symbol: String(symbol).toUpperCase(),
+          market: String(market).toUpperCase() as "TW" | "US",
+          infoJson:            JSON.stringify(info            ?? {}),
+          quarterlyIncomeJson: JSON.stringify(quarterlyIncome ?? []),
+          epsHistoryJson:      JSON.stringify(epsHistory      ?? []),
+          calendarJson:        JSON.stringify(calendar        ?? {}),
+          fetchedAt: now,
+          updatedAt: now,
+        });
+        saved++;
+      } catch (e: any) {
+        console.error(`[fundamentals-sync] failed for ${item?.symbol}:`, e.message);
+      }
+    }
+    console.log(`[fundamentals-sync] saved ${saved}/${items.length} symbols`);
+    res.json({ ok: true, saved });
+  });
+
   return httpServer;
 }

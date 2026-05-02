@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { scheduleAutoRefresh } from "./fundamentalService";
+import { syncNgrokUrlToGist } from "./gistSync";
 
 const app = express();
 const httpServer = createServer(app);
@@ -95,5 +96,7 @@ app.use((req, res, next) => {
     log(`serving on port ${port}`);
     // Schedule daily fundamental data refresh before market open
     scheduleAutoRefresh();
+    // Update GitHub Gist with current ngrok URL (so cron tasks can find this server)
+    syncNgrokUrlToGist().catch((e) => console.error("[gistSync] startup error:", e.message));
   });
 })();
