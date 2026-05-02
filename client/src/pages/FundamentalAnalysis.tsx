@@ -28,7 +28,6 @@ import type {
   QuarterlyBar,
   EpsPoint,
   FinancialEvent,
-  SummaryRow,
   FundamentalRating,
 } from "@/types/fundamental";
 
@@ -49,25 +48,37 @@ const RATING_LABEL: Record<FundamentalRating, string> = {
 };
 
 // Taiwan color convention: gain=red (bullish), loss=green (bearish), neutral=white
+// 極佳=深紅(rose), 良好=紅(red), 中性=白, 疲弱=淡綠(emerald), 差勁=深綠
 const RATING_STYLE: Record<FundamentalRating, string> = {
-  excellent: "text-[#fb7185] bg-[rgba(251,113,133,.15)] border border-[rgba(251,113,133,.24)]",
-  good:      "text-[#ef4444] bg-[rgba(239,68,68,.14)] border border-[rgba(239,68,68,.22)]",
+  excellent: "text-[#ef4444] bg-[rgba(239,68,68,.14)] border border-[rgba(239,68,68,.22)]",
+  good:      "text-[#fb7185] bg-[rgba(251,113,133,.15)] border border-[rgba(251,113,133,.24)]",
   neutral:   "text-[#f3f4f6] bg-[rgba(255,255,255,.09)] border border-[rgba(255,255,255,.14)]",
-  weak:      "text-[#34d399] bg-[rgba(52,211,153,.14)] border border-[rgba(52,211,153,.24)]",
-  poor:      "text-[#10b981] bg-[rgba(16,185,129,.14)] border border-[rgba(16,185,129,.22)]",
+  weak:      "text-[#10b981] bg-[rgba(16,185,129,.14)] border border-[rgba(16,185,129,.22)]",
+  poor:      "text-[#34d399] bg-[rgba(52,211,153,.14)] border border-[rgba(52,211,153,.24)]",
 };
 
-// Score number color
+// Score number color (matches rating tiers: high=極佳 red, medium=neutral white, low=差勁 green)
 const SCORE_COLOR: Record<string, string> = {
-  high:    "text-[#ef4444]",  // red (good)
-  medium:  "text-[#f3f4f6]",  // white (neutral)
-  low:     "text-[#10b981]",  // green (bad)
+  high:    "text-[#ef4444]",  // 極佳: red
+  medium:  "text-[#f3f4f6]",  // 中性: white
+  low:     "text-[#34d399]",  // 差勁: deep green
 };
 
 function scoreColor(score: number): string {
   if (score >= 65) return SCORE_COLOR.high;
   if (score >= 40) return SCORE_COLOR.medium;
   return SCORE_COLOR.low;
+}
+
+// Return the text-color hex matching a rating (for numeric values in metric cards)
+function ratingTextColor(rating: FundamentalRating): string {
+  switch (rating) {
+    case "excellent": return "#ef4444";
+    case "good":      return "#fb7185";
+    case "neutral":   return "#f3f4f6";
+    case "weak":      return "#10b981";
+    case "poor":      return "#34d399";
+  }
 }
 
 function RatingBadge({ rating }: { rating: FundamentalRating }) {
@@ -83,24 +94,25 @@ function RatingBadge({ rating }: { rating: FundamentalRating }) {
 }
 
 // ---------------------------------------------------------------------------
-// Metric row (compact)
+// Metric mini-card (replaces MetricRow)
 // ---------------------------------------------------------------------------
 function MetricRow({ metric }: { metric: MetricItem }) {
-  const hasSign = metric.value.startsWith("+") || metric.value.startsWith("-");
-  const colorClass = hasSign
-    ? (metric.value.startsWith("+") ? "text-[#ef4444]" : "text-[#10b981]")
-    : "text-[#e6eef8]";
+  // Value color = rating color (not sign-based)
+  const valColor = ratingTextColor(metric.rating);
 
   return (
-    <div className="border-t border-white/[0.06] pt-2.5 pb-0">
+    <div className="rounded-[10px] border border-white/[0.07] bg-white/[0.03] px-3 py-2.5 space-y-1">
+      {/* Top row: name left, badge right */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[12px] text-[#dce6f3]">{metric.name}</span>
+        <span className="text-[11px] text-[#8ea1b6] leading-none">{metric.name}</span>
         <RatingBadge rating={metric.rating} />
       </div>
-      <div className={cn("mt-1 text-[20px] font-extrabold", colorClass)}>
+      {/* Value — 50% smaller than old 20px → 10px = too small, use 13px for readability */}
+      <div className="text-[13px] font-extrabold leading-none tabular-nums" style={{ color: valColor }}>
         {metric.value}
       </div>
-      <div className="mt-1 text-[11px] text-[#8ea1b6] leading-snug">
+      {/* Commentary */}
+      <div className="text-[10px] text-[#7a90a8] leading-snug">
         {metric.commentary}
       </div>
     </div>
@@ -123,7 +135,7 @@ function PillarCardComponent({ card }: { card: PillarCard }) {
         <p className="text-[12px] text-[#c8d6e7] leading-snug mb-0.5">
           {card.summary}
         </p>
-        <div className="space-y-0">
+        <div className="space-y-1.5 mt-2">
           {card.metrics.map((m, i) => (
             <MetricRow key={i} metric={m} />
           ))}
@@ -339,28 +351,6 @@ function ValuationCard({ data }: { data: FundamentalResult }) {
 }
 
 // ---------------------------------------------------------------------------
-// Summary table
-// ---------------------------------------------------------------------------
-function SummaryTable({ rows }: { rows: SummaryRow[] }) {
-  return (
-    <Card className="border border-white/[0.08] rounded-[22px] mt-4" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.96), rgba(7,12,20,.96))" }}>
-      <CardContent className="p-[18px]">
-        <h3 className="text-[16px] font-bold text-[#e6eef8] mb-3">核心判讀摘要</h3>
-        <div className="grid grid-cols-[120px_auto_1fr] gap-x-3.5 gap-y-2.5 text-[14px] items-center">
-          {rows.map((row, i) => (
-            <>
-              <div key={`dim-${i}`} className="text-[#8ea1b6]">{row.dimension}</div>
-              <div key={`badge-${i}`}><RatingBadge rating={row.rating} /></div>
-              <div key={`comment-${i}`} className="text-[#d7e3f1]">{row.commentary}</div>
-            </>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Financial events timeline (compact card, no outer mt)
 // ---------------------------------------------------------------------------
 function EventsTimeline({ events }: { events: FinancialEvent[] }) {
@@ -499,28 +489,36 @@ export default function FundamentalAnalysis() {
 
   return (
     <div className="p-5 pb-12 max-w-[1200px]">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+      {/* Header — mirrors TechnicalAnalysis layout */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-[36px] sm:text-[42px] font-black tracking-tight text-[#e6eef8] leading-tight">
-            {activeSymbol} · {data.name}
+          {/* Company name as primary title */}
+          <h1 className="text-2xl font-bold leading-tight">
+            {data.name || activeSymbol}
           </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[#8ea1b6] text-[14px]">
-            <span>市場：{activeMarket === "TW" ? "台股" : "美股"}</span>
+          {/* Symbol · market · industry · age */}
+          <div className="flex items-center gap-2 mt-1.5 text-sm text-muted-foreground flex-wrap">
+            <span>{activeSymbol}</span>
             <span>·</span>
-            <span>{data.industry || data.sector || "—"}</span>
-            {data.isStale && (
-              <span className="text-[12px] text-amber-400/70">資料較舊（{fetchLabel}）</span>
-            )}
-            {!data.isStale && (
-              <span className="text-[12px] text-[#8ea1b6]/50">{fetchLabel}</span>
+            <span>{activeMarket === "TW" ? "台灣證交所" : "NYSE / NASDAQ"}</span>
+            {(data.industry || data.sector) && (
+              <>
+                <span>·</span>
+                <span>{data.industry || data.sector}</span>
+              </>
             )}
             <span
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border text-[#dbe7f5]"
-              style={{ background: "rgba(255,255,255,.03)", borderColor: "rgba(255,255,255,.08)" }}
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border"
+              style={{ background: "rgba(255,255,255,.03)", borderColor: "rgba(255,255,255,.08)", color: "hsl(var(--muted-foreground))" }}
             >
-              評級色系：台股規則
+              基本面分析
             </span>
+            {data.isStale && (
+              <span className="text-[11px] text-amber-400/70">資料較舊（{fetchLabel}）</span>
+            )}
+            {!data.isStale && (
+              <span className="text-[11px] text-muted-foreground/50">{fetchLabel}</span>
+            )}
           </div>
         </div>
 
@@ -556,9 +554,6 @@ export default function FundamentalAnalysis() {
 
       {/* Quarterly chart */}
       <QuarterlyChart bars={data.quarterlyBars} currency={data.currency} />
-
-      {/* Summary table */}
-      <SummaryTable rows={data.summaryRows} />
 
       {/* Two-column charts: margin trend + valuation */}
       <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
