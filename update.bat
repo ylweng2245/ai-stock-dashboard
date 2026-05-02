@@ -5,7 +5,7 @@ echo ========================================
 echo.
 cd /d "%~dp0"
 
-echo [1/3] Pulling latest code from GitHub...
+echo [1/4] Pulling latest code from GitHub...
 git rm --cached data.db >nul 2>&1
 git fetch origin
 git reset --hard origin/main
@@ -16,7 +16,16 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/3] Building...
+echo [2/4] Installing dependencies...
+call npm install
+if errorlevel 1 (
+    echo ERROR: npm install failed
+    pause
+    exit /b 1
+)
+
+echo.
+echo [3/4] Building...
 call npm run build
 if errorlevel 1 (
     echo ERROR: build failed
@@ -25,7 +34,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Restarting server...
+echo [4/4] Restarting server...
 taskkill /F /IM node.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
 start "AI Stock Dashboard" /D "C:\ai-stock-dashboard" cmd /c "node dist\index.cjs > server.log 2>&1"
