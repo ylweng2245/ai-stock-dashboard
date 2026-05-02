@@ -413,13 +413,19 @@ export default function FundamentalAnalysis() {
     queryKey: ["/api/fundamentals", activeSymbol, activeMarket],
     queryFn: () =>
       apiRequest("GET", `/api/fundamentals/${activeSymbol}?market=${activeMarket}`)
-        .then((r) => r.json()),
+        .then((r) => r.json())
+        .then((json) => {
+          if (json && json.error) throw new Error(json.error);
+          return json as FundamentalResult;
+        }),
     enabled: !!activeSymbol && !isExcluded,
     staleTime: 6 * 60 * 60_000,     // 6h client-side stale (server TTL is 7 days)
     placeholderData: (prev) => prev,
+    retry: 1,
   });
 
-  const isLoading = data === undefined && !isExcluded;
+  // isLoading: only show skeleton while genuinely fetching (not on error)
+  const isLoading = data === undefined && !isExcluded && !isError;
 
   const resyncMutation = useMutation({
     mutationFn: () =>

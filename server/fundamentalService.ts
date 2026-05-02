@@ -17,6 +17,9 @@
  */
 
 import { execSync } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { storage } from "./storage";
 import type { InsertFundamentalData } from "@shared/schema";
 
@@ -187,17 +190,43 @@ result = {
 print(json.dumps(result))
 `;
 
+/** Detect python command: tries python3 first, then python */
+function getPythonCmd(): string {
+  for (const cmd of ["python3", "python"]) {
+    try {
+      const v = execSync(`${cmd} --version`, { timeout: 5000, encoding: "utf8" });
+      if (v.toLowerCase().includes("python")) return cmd;
+    } catch { /* not found */ }
+  }
+  throw new Error("Python not found. Install Python 3 and run: pip install yfinance");
+}
+
 function callYfinance(symbol: string, market: "TW" | "US"): any {
   const suffix = market === "TW" ? ".TW" : "";
   const ySymbol = symbol + suffix;
-  // Write script to a temp file to avoid shell escaping issues
-  const tmpScript = `/tmp/yfinance_fetch_${symbol}.py`;
-  require("fs").writeFileSync(tmpScript, PYTHON_SCRIPT);
-  const raw = execSync(`python3 "${tmpScript}" "${ySymbol}"`, {
-    timeout: 45_000,
-    encoding: "utf8",
-  });
-  return JSON.parse(raw.trim());
+  // Use os.tmpdir() for cross-platform temp path (works on Windows + Linux)
+  const tmpScript = path.join(os.tmpdir(), `yfinance_fetch_${symbol}.py`);
+  fs.writeFileSync(tmpScript, PYTHON_SCRIPT);
+  const python = getPythonCmd();
+  let raw: string;
+  try {
+    raw = execSync(`"${python}" "${tmpScript}" "${ySymbol}"`, {
+      timeout: 60_000,
+      encoding: "utf8",
+    });
+  } catch (e: any) {
+    // Include stderr in the error message for easier debugging
+    const stderr = e.stderr ? String(e.stderr).trim() : "";
+    if (stderr.includes("ModuleNotFoundError") || stderr.includes("No module named")) {
+      throw new Error(`yfinance not installed. Run: ${python} -m pip install yfinance pandas`);
+    }
+    throw new Error(`yfinance subprocess failed for ${ySymbol}: ${stderr || e.message}`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) {
+    throw new Error(`yfinance returned unexpected output for ${ySymbol}: ${trimmed.slice(0, 200)}`);
+  }
+  return JSON.parse(trimmed);
 }
 
 // ---------------------------------------------------------------------------
