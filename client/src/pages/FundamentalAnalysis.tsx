@@ -108,15 +108,15 @@ function pctStr(v: number | null): string {
 function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: string }) {
   if (bars.length === 0) return null;
   const rows = buildRevenueRows(bars);
-  // Table: oldest at top, newest at bottom (same as chart direction)
-  const tableRows = rows;
+  // Table: newest at top, oldest at bottom
+  const tableRows = [...rows].reverse();
 
   // Axis domains
   const pctVals = rows.flatMap(r => [r.qoq, r.yoy]).filter(v => v !== null) as number[];
   const pctMin = pctVals.length ? Math.floor(Math.min(...pctVals) / 10) * 10 - 10 : -50;
   const pctMax = pctVals.length ? Math.ceil(Math.max(...pctVals) / 10) * 10 + 10 : 150;
 
-  const barColor = "rgba(100,160,255,0.65)";
+  const barColor = "rgba(28,184,190,0.75)";
 
   return (
     <Card className="border border-white/[0.08] rounded-[18px]" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.98), rgba(7,12,20,.98))" }}>
@@ -164,7 +164,7 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
         {/* Legend */}
         <div className="flex items-center gap-4 mt-1 mb-3 px-1">
           <span className="flex items-center gap-1.5 text-[10px] text-[#8ea1b6]">
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: barColor, display: "inline-block" }} />
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(28,184,190,0.75)", display: "inline-block" }} />
             營收
           </span>
           <span className="flex items-center gap-1.5 text-[10px] text-[#8ea1b6]">
@@ -208,15 +208,15 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
 function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoint[]; currency: string }) {
   if (bars.length === 0) return null;
   const rows = buildProfitRows(bars, eps);
-  // Table: oldest at top, newest at bottom
-  const tableRows = rows;
+  // Table: newest at top, oldest at bottom
+  const tableRows = [...rows].reverse();
 
   const pctVals = rows.flatMap(r => [r.grossMargin, r.netMargin]).filter(v => v !== null) as number[];
   const pctMin = pctVals.length ? Math.floor(Math.min(...pctVals) / 10) * 10 - 5 : -20;
   const pctMax = pctVals.length ? Math.ceil(Math.max(...pctVals) / 10) * 10 + 5 : 80;
 
-  // EPS bar color: positive=red, negative=green
-  const epsBarColor = (val: number | null) => val !== null && val < 0 ? "#10b981" : "#ef4444";
+  // EPS bar color: positive=teal, negative=green
+  const epsBarColor = (val: number | null) => val !== null && val < 0 ? "#10b981" : "#1cb8be";
 
   return (
     <Card className="border border-white/[0.08] rounded-[18px]" style={{ background: "linear-gradient(180deg, rgba(11,20,32,.98), rgba(7,12,20,.98))" }}>
@@ -269,7 +269,7 @@ function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoi
         {/* Legend */}
         <div className="flex items-center gap-4 mt-1 mb-3 px-1">
           <span className="flex items-center gap-1.5 text-[10px] text-[#8ea1b6]">
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: "#ef4444", opacity: 0.75, display: "inline-block" }} />
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: "#1cb8be", opacity: 0.75, display: "inline-block" }} />
             EPS
           </span>
           <span className="flex items-center gap-1.5 text-[10px] text-[#8ea1b6]">
