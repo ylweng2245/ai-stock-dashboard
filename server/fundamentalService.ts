@@ -964,10 +964,10 @@ function scheduleDailyRefresh(market: "TW" | "US", utcHour: number, utcMinute: n
 
 /**
  * Call once at server startup to register daily auto-refresh jobs.
- *   - TW: 08:30 CST = UTC 00:30
- *   - US: 08:30 EST = UTC 13:30
+ *   - TW: 08:00 CST (1hr before 09:00 open) = UTC 00:00
+ *   - US: 08:30 EST (1hr before 09:30 open) = UTC 13:30
  */
 export function scheduleAutoRefresh(): void {
-  scheduleDailyRefresh("TW", 0, 30);   // 08:30 CST
-  scheduleDailyRefresh("US", 13, 30);  // 08:30 EST
+  scheduleDailyRefresh("TW", 0, 0);    // 08:00 CST (台股 09:00 開盤前1小時)
+  scheduleDailyRefresh("US", 13, 30);  // 08:30 EST (美股 09:30 開盤前1小時)
 }
