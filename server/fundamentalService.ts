@@ -122,7 +122,7 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
   let quarterlyIncome: any[] = [];
   try {
     const period1 = new Date();
-    period1.setFullYear(period1.getFullYear() - 2); // last 2 years
+    period1.setFullYear(period1.getFullYear() - 3); // last 3 years (12 quarters)
     const ts = await yf.fundamentalsTimeSeries(ySymbol, {
       period1: period1.toISOString().slice(0, 10),
       type: "quarterly",
@@ -139,7 +139,7 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
       }))
       .filter((q: any) => q.totalRevenue != null)
       .sort((a: any, b: any) => b.date.localeCompare(a.date))
-      .slice(0, 8);
+      .slice(0, 12);
   } catch (e: any) {
     console.warn(`[fundamentalService] fundamentalsTimeSeries failed for ${ySymbol}:`, e.message);
     // Fallback: use incomeStatementHistoryQuarterly (older data, may be incomplete)
@@ -157,7 +157,7 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
           netIncome:       q.netIncome       ?? null,
         }))
         .filter((q: any) => q.totalRevenue != null)
-        .slice(0, 8);
+        .slice(0, 12);
     } catch { /* ignore */ }
   }
 
@@ -219,7 +219,7 @@ async function fetchFromYahooFinance(symbol: string, market: "TW" | "US"): Promi
   };
 
   // EPS history
-  const epsRows = eh.slice(0, 8).map((row: any) => ({
+  const epsRows = eh.slice(0, 12).map((row: any) => ({
     quarter:         row.quarter instanceof Date ? row.quarter.toISOString().slice(0,10) : String(row.quarter ?? ""),
     epsActual:       row.epsActual      ?? 0,
     epsEstimate:     row.epsEstimate    ?? 0,
