@@ -935,19 +935,41 @@ function triggerBackgroundRefresh(symbol: string, market: "TW" | "US"): void {
     .then((raw) => {
       const now = Date.now();
       const baseCalendar = raw.calendar ?? {};
+
+      // Preserve cron quarterly data — Yahoo only has 4-5 quarters
+      const existing = storage.getFundamental(symbol, market);
+      let quarterlyIncomeJson: string;
+      let epsHistoryJson: string;
+      if (existing) {
+        quarterlyIncomeJson = existing.quarterlyIncomeJson;
+        epsHistoryJson      = existing.epsHistoryJson;
+      } else {
+        quarterlyIncomeJson = JSON.stringify(raw.quarterlyIncome ?? []);
+        epsHistoryJson      = JSON.stringify(raw.epsHistory ?? []);
+      }
+
+      // Merge calendar: keep existing finnhub* keys
+      let mergedCalendar = { ...baseCalendar };
+      if (existing) {
+        let prevCal: any = {};
+        try { prevCal = JSON.parse(existing.calendarJson || "{}"); } catch { /* */ }
+        const finnhubKeys = Object.keys(prevCal).filter(k => k.startsWith("finnhub"));
+        for (const k of finnhubKeys) mergedCalendar[k] = prevCal[k];
+      }
+
       const row: InsertFundamentalData = {
         symbol, market,
-        infoJson:            JSON.stringify(raw.info           ?? {}),
-        quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
-        epsHistoryJson:      JSON.stringify(raw.epsHistory     ?? []),
-        calendarJson:        JSON.stringify(baseCalendar),
+        infoJson:            JSON.stringify(raw.info ?? {}),
+        quarterlyIncomeJson,
+        epsHistoryJson,
+        calendarJson:        JSON.stringify(mergedCalendar),
         fetchedAt: now,
         updatedAt: now,
       };
       storage.upsertFundamental(row);
       console.log(`[fundamentalService] bg refresh done: ${symbol} (${market})`);
       // After storing, enrich with Finnhub calendar
-      enrichCalendarWithFinnhub(symbol, market, baseCalendar);
+      enrichCalendarWithFinnhub(symbol, market, mergedCalendar);
     })
     .catch((e) => console.error(`[fundamentalService] bg refresh failed: ${symbol}:`, e.message))
     .finally(() => _bgRefreshInFlight.delete(key));
@@ -994,19 +1016,46 @@ export async function getOrFetchFundamentals(
 
   const now = Date.now();
   const baseCalendar = raw.calendar ?? {};
+
+  // Preserve cron-supplied quarterly data if it exists — Yahoo only returns 4-5 quarters
+  // and would overwrite the 12-quarter history that cron provides.
+  // quarterlyIncomeJson / epsHistoryJson are ONLY written when the DB is empty (first fetch).
+  const existing = storage.getFundamental(symbol, market);
+  let quarterlyIncomeJson: string;
+  let epsHistoryJson: string;
+  if (existing) {
+    // Keep whatever cron (or a previous fetch) already stored
+    quarterlyIncomeJson = existing.quarterlyIncomeJson;
+    epsHistoryJson      = existing.epsHistoryJson;
+  } else {
+    // First-ever fetch — use Yahoo as bootstrap
+    quarterlyIncomeJson = JSON.stringify(raw.quarterlyIncome ?? []);
+    epsHistoryJson      = JSON.stringify(raw.epsHistory     ?? []);
+  }
+
+  // Merge calendar: keep existing Finnhub keys, overlay fresh Yahoo calendar fields
+  let mergedCalendar = { ...baseCalendar };
+  if (existing) {
+    let prevCal: any = {};
+    try { prevCal = JSON.parse(existing.calendarJson || "{}"); } catch { /* */ }
+    // Preserve finnhub* keys that were already enriched
+    const finnhubKeys = Object.keys(prevCal).filter(k => k.startsWith("finnhub"));
+    for (const k of finnhubKeys) mergedCalendar[k] = prevCal[k];
+  }
+
   const row: InsertFundamentalData = {
     symbol,
     market,
-    infoJson:            JSON.stringify(raw.info           ?? {}),
-    quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
-    epsHistoryJson:      JSON.stringify(raw.epsHistory     ?? []),
-    calendarJson:        JSON.stringify(baseCalendar),
+    infoJson:            JSON.stringify(raw.info ?? {}),
+    quarterlyIncomeJson,
+    epsHistoryJson,
+    calendarJson:        JSON.stringify(mergedCalendar),
     fetchedAt: now,
     updatedAt: now,
   };
   storage.upsertFundamental(row);
   // Enrich calendar with Finnhub in background (non-blocking)
-  enrichCalendarWithFinnhub(symbol, market, baseCalendar);
+  enrichCalendarWithFinnhub(symbol, market, mergedCalendar);
 
   return assembleFundamentalResult(symbol, market, row);
 }
