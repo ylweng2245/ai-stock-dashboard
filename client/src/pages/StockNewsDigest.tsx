@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import {
-  RefreshCw, Clock, TrendingUp, TrendingDown, Minus,
-  ExternalLink, Newspaper, AlertCircle, Loader2, X,
+  Clock, TrendingUp, TrendingDown, Minus,
+  ExternalLink, Newspaper, AlertCircle, X,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
 
@@ -403,37 +402,33 @@ function DigestTimelineItem({
 function StockDigestCard({ stock }: { stock: StockDigestData }) {
   return (
     <article className="flex flex-col rounded-[18px] border border-[#66c6df]/20 bg-gradient-to-b from-[rgba(17,29,48,0.97)] to-[rgba(12,22,36,0.98)] shadow-[0_12px_40px_rgba(0,0,0,0.32)]">
-      {/* Card Header */}
-      <div className="flex items-start justify-between gap-3 px-6 py-5 pb-4">
-        <div className="flex items-center gap-4">
-          <div className={cn(
-            "w-12 h-12 shrink-0 rounded-[14px] bg-[#66c6df]/12 flex items-center justify-center text-[#9fe7f8] font-bold tracking-wide",
-            stock.symbol.length <= 4 ? "text-[14px]" : "text-[11px]"
-          )}>
-            {stock.symbol}
-          </div>
-          <div>
-            <h4 className="text-[22px] font-bold leading-tight">{stock.name}</h4>
-            {stock.sectorTag && <p className="text-[12px] text-muted-foreground mt-0.5">{stock.sectorTag}</p>}
-          </div>
+      {/* Card Header — compact strip */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-white/6">
+        <div className={cn(
+          "px-2.5 py-1 rounded-lg bg-[#66c6df]/12 text-[#9fe7f8] font-bold tracking-wide shrink-0",
+          stock.symbol.length <= 4 ? "text-[13px]" : "text-[11px]"
+        )}>
+          {stock.symbol}
         </div>
+        <h4 className="text-[22px] font-bold leading-tight flex-1 min-w-0 truncate">{stock.name}</h4>
+        {stock.sectorTag && (
+          <span className="text-[11px] text-muted-foreground shrink-0 hidden sm:block">{stock.sectorTag}</span>
+        )}
         {stock.digests[0]?.priceClose != null && (
-          <div className="shrink-0 text-right">
-            <div className="text-[16px] font-bold">${stock.digests[0].priceClose.toFixed(2)}</div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[16px] font-bold">${stock.digests[0].priceClose.toFixed(2)}</span>
             {stock.digests[0].priceChangePct != null && (
-              <div className={cn("text-[13px] font-semibold",
+              <span className={cn("text-[13px] font-semibold",
                 stock.digests[0].priceChangePct > 0 ? "text-gain"
                   : stock.digests[0].priceChangePct < 0 ? "text-loss"
                   : "text-muted-foreground"
               )}>
                 {stock.digests[0].priceChangePct > 0 ? "+" : ""}{stock.digests[0].priceChangePct.toFixed(2)}%
-              </div>
+              </span>
             )}
           </div>
         )}
       </div>
-
-      <div className="h-px bg-white/6 mx-6" />
 
       {/* Timeline */}
       <div className="overflow-y-auto px-6 py-5" style={{ maxHeight: 700 }}>
@@ -464,7 +459,6 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function StockNewsDigest() {
-  const queryClient = useQueryClient();
   const { activeSymbol } = useActiveSymbol();
 
   const { data, isLoading, isError } = useQuery<PageData>({
@@ -472,13 +466,6 @@ export default function StockNewsDigest() {
     queryFn: () => apiRequest("GET", "/api/news-digest/stocks").then((r) => r.json()),
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/news-digest/update").then((r) => r.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/news-digest/stocks"] });
-    },
   });
 
   const stocks = data?.stocks ?? [];
@@ -502,47 +489,15 @@ export default function StockNewsDigest() {
                 多空觀點左右對照，點擊來源標籤查看原始新聞。
               </p>
             </div>
-            <div className="flex items-center gap-2.5 shrink-0">
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/8 bg-white/2 text-[12px] text-muted-foreground">
-                <Clock className="w-3.5 h-3.5" />
-                {data?.lastUpdated ? `最後更新 ${formatLastUpdated(data.lastUpdated)}` : "尚未更新"}
-              </div>
-              <Button
-                size="sm"
-                onClick={() => updateMutation.mutate()}
-                disabled={updateMutation.isPending}
-                className="gap-1.5 bg-gradient-to-b from-[#1f9dc3] to-[#187e9e] hover:from-[#2ab0d8] hover:to-[#1a8fb3] border-[#66c6df]/25 text-white font-semibold"
-              >
-                {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                {updateMutation.isPending ? "更新中…" : "更新新聞彙總"}
-              </Button>
+            <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/8 bg-white/2 text-[12px] text-muted-foreground shrink-0">
+              <Clock className="w-3.5 h-3.5" />
+              {data?.lastUpdated ? `最後更新 ${formatLastUpdated(data.lastUpdated)}` : "尚未更新"} · 每日 Cron 自動更新
             </div>
           </div>
 
-          {updateMutation.isError && (
-            <div className="mb-4 flex items-center gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-[13px]">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              更新失敗：{(updateMutation.error as any)?.message ?? "未知錯誤"}
-            </div>
-          )}
 
-          {/* Stats bar */}
-          {stats && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-              {[
-                { label: "自選股票數", value: stats.totalStocks, sub: "依 watchlist 順序排列" },
-                { label: "今日已更新", value: `${stats.updatedToday} / ${stats.totalStocks}`, sub: stats.updatedToday < stats.totalStocks ? `${stats.totalStocks - stats.updatedToday} 檔待刷新` : "全部已更新" },
-                { label: "歷史天數", value: stats.historyDays, sub: "可保留最多 180 天" },
-                { label: "最大來源數", value: stats.maxSourceCount, sub: "當前卡片最高來源數" },
-              ].map((s) => (
-                <div key={s.label} className="p-4 rounded-xl border border-white/6 bg-white/[0.02]">
-                  <div className="text-[11px] text-muted-foreground mb-1">{s.label}</div>
-                  <div className="text-[22px] font-bold">{s.value}</div>
-                  <div className="text-[11px] text-muted-foreground/60 mt-0.5">{s.sub}</div>
-                </div>
-              ))}
-            </div>
-          )}
+
+
 
           {isLoading && (
             <div className="rounded-[18px] border border-white/8 bg-white/[0.02] animate-pulse" style={{ minHeight: 500 }} />
