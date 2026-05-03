@@ -587,9 +587,24 @@ export class DatabaseStorage implements IStorage {
    * Partial update — used by Yahoo fetcher (resync / bg-refresh / scheduled refresh).
    * Updates ONLY infoJson + calendarJson + fetchedAt/updatedAt.
    * Never touches quarterlyIncomeJson or epsHistoryJson (cron owns those).
+   * Preserves all existing finnhub* keys in calendarJson (Finnhub owns those).
    * If no row exists yet, does a full insert with empty quarterly/eps data.
    */
-  updateYahooData(symbol: string, market: string, infoJson: string, calendarJson: string, now: number): void {
+  updateYahooData(symbol: string, market: string, infoJson: string, yahooCalendarJson: string, now: number): void {
+    // Merge: start with existing calendar, overlay Yahoo fields, keep finnhub* keys
+    const existing = this.getFundamental(symbol, market);
+    let mergedCalendar: any = {};
+    if (existing) {
+      try { mergedCalendar = JSON.parse(existing.calendarJson || "{}"); } catch { /* */ }
+    }
+    let yahooFields: any = {};
+    try { yahooFields = JSON.parse(yahooCalendarJson || "{}"); } catch { /* */ }
+    // Overlay Yahoo fields (non-finnhub), preserve existing finnhub* keys
+    for (const [k, v] of Object.entries(yahooFields)) {
+      if (!k.startsWith("finnhub")) mergedCalendar[k] = v;
+    }
+    const calendarJson = JSON.stringify(mergedCalendar);
+
     sqlite.prepare(`
       INSERT INTO fundamental_data (symbol, market, info_json, quarterly_income_json, eps_history_json, calendar_json, fetched_at, updated_at)
       VALUES (?, ?, ?, '', '', ?, ?, ?)

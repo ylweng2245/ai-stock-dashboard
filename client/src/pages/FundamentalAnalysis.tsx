@@ -703,13 +703,13 @@ export default function FundamentalAnalysis() {
           <AnalysisSymbolSidebarMobile symbolFilter={(item) => !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(item.symbol)} />
           <Button
             variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            size="sm"
+            className="h-7 px-2 gap-1.5 text-muted-foreground hover:text-foreground text-[11px]"
             onClick={handleResync}
             disabled={resyncing}
-            title="重新整理基本資訊"
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", resyncing && "animate-spin")} />
+            <RefreshCw className={cn("h-3 w-3", resyncing && "animate-spin")} />
+            {resyncing ? "更新中..." : "重新整理"}
           </Button>
         </div>
       </div>
