@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import {
   RefreshCw, Clock, TrendingUp, TrendingDown, Minus,
-  ExternalLink, ChevronDown, ChevronUp, Newspaper,
+  ExternalLink, Newspaper,
   AlertCircle, Loader2, BookOpen, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ interface DigestEntry {
   priceClose: number | null;
   priceChangePct: number | null;
   summaryText: string;
-  aiTakeaway?: string; // removed in v5.2, kept for DB compatibility
+  aiTakeaway?: string;
   sentimentLabel: string;
   sourceCount: number;
   status: string;
@@ -53,15 +53,81 @@ interface PageData {
   lastUpdated: number | null;
 }
 
-// LiveQuote / QuotesData interfaces retained for potential future use
-interface LiveQuote {
-  symbol: string;
-  price: number;
-  changePercent: number;
+// ─── Text Parser ──────────────────────────────────────────────────────────────
+
+interface QuestionBlock {
+  title: string;       // e.g. "問題 1：GLP-1 收入可持續性"
+  bulls: string;       // bull argument text
+  bears: string;       // bear argument text
+  bullSources: string; // e.g. "[6, 9]"
+  bearSources: string;
 }
 
-interface QuotesData {
-  quotes: LiveQuote[];
+function parseSummaryText(raw: string): QuestionBlock[] {
+  if (!raw) return [];
+
+  // Normalise: collapse multiple spaces/newlines into single space
+  const text = raw.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
+
+  // Split on **問題 N：... pattern. We look for 🐂 and 🐻 anchors to split bulls/bears.
+  // Strategy: find each 問題 block by scanning between question markers.
+  const questionPattern = /\*\*問題\s*\d+[：:][^*]*\*\*/g;
+  const matches = [...text.matchAll(questionPattern)];
+
+  if (matches.length === 0) {
+    // Fallback: maybe no "問題" structure, just return as single unnamed block
+    const { bulls, bears, bullSources, bearSources } = extractBullsBears(text);
+    if (bulls || bears) {
+      return [{ title: "", bulls, bears, bullSources, bearSources }];
+    }
+    return [];
+  }
+
+  const blocks: QuestionBlock[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const startIdx = (match.index ?? 0) + match[0].length;
+    const endIdx = matches[i + 1]?.index ?? text.length;
+    const title = match[0].replace(/\*\*/g, "").trim();
+    const chunk = text.slice(startIdx, endIdx);
+    const { bulls, bears, bullSources, bearSources } = extractBullsBears(chunk);
+    blocks.push({ title, bulls, bears, bullSources, bearSources });
+  }
+  return blocks;
+}
+
+function extractBullsBears(chunk: string): { bulls: string; bears: string; bullSources: string; bearSources: string } {
+  // Anchors for bulls: 🐂 or **多頭觀點** (with optional : after)
+  // Anchors for bears: 🐻 or **空頭觀點**
+  const bullMatch = chunk.match(/(?:🐂\s*\*\*多頭觀點[：:]?\*\*|🐂\s*多頭觀點[：:]?|\*\*多頭觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s);
+  const bearMatch = chunk.match(/(?:🐻\s*\*\*空頭觀點[：:]?\*\*|🐻\s*空頭觀點[：:]?|\*\*空頭觀點[：:]\*\*)(.*?)(?=$)/s);
+
+  const cleanBull = bullMatch ? cleanSegment(bullMatch[1]) : "";
+  const cleanBear = bearMatch ? cleanSegment(bearMatch[1]) : "";
+
+  const { text: bullText, sources: bullSources } = extractSources(cleanBull);
+  const { text: bearText, sources: bearSources } = extractSources(cleanBear);
+
+  return { bulls: bullText, bears: bearText, bullSources, bearSources };
+}
+
+function cleanSegment(s: string): string {
+  return s
+    .replace(/\*\*/g, "")
+    .replace(/^\s*[：:]\s*/, "")
+    .trim();
+}
+
+function extractSources(text: string): { text: string; sources: string } {
+  // Match "- 來源：[N, M]" at the end or inline
+  const sourceMatch = text.match(/[-–]\s*來源[：:]\s*(\[[^\]]+\])\s*$/);
+  if (sourceMatch) {
+    return {
+      text: text.slice(0, sourceMatch.index).trim(),
+      sources: sourceMatch[1],
+    };
+  }
+  return { text: text.trim(), sources: "" };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,19 +152,9 @@ function formatLastUpdated(ms: number | null): string {
   }) + " ET";
 }
 
-function tickerInitials(symbol: string): string {
-  return symbol.slice(0, 2).toUpperCase();
-}
-
 // ─── Source Drawer ────────────────────────────────────────────────────────────
 
-function SourceDrawer({
-  digestId,
-  onClose,
-}: {
-  digestId: number;
-  onClose: () => void;
-}) {
+function SourceDrawer({ digestId, onClose }: { digestId: number; onClose: () => void }) {
   const { data: sources, isLoading } = useQuery<DigestSource[]>({
     queryKey: ["/api/news-digest/sources", digestId],
     queryFn: () => apiRequest("GET", `/api/news-digest/${digestId}/sources`).then((r) => r.json()),
@@ -109,25 +165,22 @@ function SourceDrawer({
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className="relative z-10 w-full max-w-lg max-h-[80vh] flex flex-col rounded-t-2xl sm:rounded-2xl bg-[#0d1726] border border-white/10 shadow-2xl">
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
           <span className="font-semibold text-sm text-foreground">原始新聞來源</span>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
-        {/* Body */}
         <div className="overflow-y-auto flex-1 px-5 py-3 space-y-3">
           {isLoading && (
             <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              載入中…
+              <Loader2 className="w-4 h-4 animate-spin" />載入中…
             </div>
           )}
           {!isLoading && (!sources || sources.length === 0) && (
             <p className="text-center text-muted-foreground text-sm py-8">無來源記錄</p>
           )}
-          {sources?.map((src, i) => (
+          {sources?.map((src) => (
             <a
               key={src.id}
               href={src.articleUrl || "#"}
@@ -141,9 +194,7 @@ function SourceDrawer({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                   <span className="text-[11px] font-semibold text-[#66c6df]">{src.sourceName || src.sourceDomain}</span>
-                  {src.publishedAt && (
-                    <span className="text-[10px] text-muted-foreground">{src.publishedAt}</span>
-                  )}
+                  {src.publishedAt && <span className="text-[10px] text-muted-foreground">{src.publishedAt}</span>}
                 </div>
                 <p className="text-[13px] text-foreground/90 line-clamp-2 leading-snug group-hover:text-foreground transition-colors">
                   {src.articleTitle || "（無標題）"}
@@ -161,7 +212,96 @@ function SourceDrawer({
   );
 }
 
-// ─── Digest Timeline Item ─────────────────────────────────────────────────────
+// ─── Bulls/Bears Column ────────────────────────────────────────────────────────
+
+function BullBearColumn({
+  side,
+  blocks,
+  digestId,
+  sourceCount,
+}: {
+  side: "bull" | "bear";
+  blocks: QuestionBlock[];
+  digestId: number;
+  sourceCount: number;
+}) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const isBull = side === "bull";
+
+  return (
+    <div
+      className={cn(
+        "flex-1 min-w-0 rounded-xl p-4 flex flex-col gap-3",
+        isBull
+          ? "bg-[rgba(239,68,68,0.04)] border border-[rgba(239,68,68,0.12)]"
+          : "bg-[rgba(16,185,129,0.04)] border border-[rgba(16,185,129,0.12)]"
+      )}
+    >
+      {/* Column header */}
+      <div className={cn(
+        "flex items-center gap-2 pb-2 border-b",
+        isBull ? "border-[rgba(239,68,68,0.15)]" : "border-[rgba(16,185,129,0.15)]"
+      )}>
+        <span className="text-base">{isBull ? "🐂" : "🐻"}</span>
+        <span className={cn(
+          "text-[13px] font-bold tracking-wide",
+          isBull ? "text-[#ef4444]" : "text-[#10b981]"
+        )}>
+          {isBull ? "多頭觀點" : "空頭觀點"}
+        </span>
+      </div>
+
+      {/* Question blocks */}
+      <div className="flex flex-col gap-4 flex-1">
+        {blocks.length === 0 && (
+          <p className="text-[13px] text-muted-foreground/50 italic">無資料</p>
+        )}
+        {blocks.map((blk, i) => {
+          const content = isBull ? blk.bulls : blk.bears;
+          const sources = isBull ? blk.bullSources : blk.bearSources;
+          if (!content) return null;
+          return (
+            <div key={i} className="flex flex-col gap-1.5">
+              {blk.title && (
+                <div className={cn(
+                  "text-[11px] font-bold uppercase tracking-wider opacity-60",
+                  isBull ? "text-[#ef4444]" : "text-[#10b981]"
+                )}>
+                  {blk.title}
+                </div>
+              )}
+              <p className="text-[13px] text-foreground/85 leading-relaxed">
+                {content}
+                {sources && (
+                  <span className="ml-1.5 text-[11px] text-muted-foreground">
+                    — 來源 {sources}
+                  </span>
+                )}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Sources link — only in bull column to avoid duplication */}
+      {isBull && sourceCount > 0 && (
+        <>
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-[#66c6df] transition-colors mt-auto pt-2 border-t border-white/6"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            查看 {sourceCount} 個原始來源
+            <ExternalLink className="w-3 h-3" />
+          </button>
+          {drawerOpen && <SourceDrawer digestId={digestId} onClose={() => setDrawerOpen(false)} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Single Digest Timeline Item ──────────────────────────────────────────────
 
 function DigestTimelineItem({
   entry,
@@ -170,22 +310,15 @@ function DigestTimelineItem({
   entry: DigestEntry;
   isFirst: boolean;
 }) {
-  const [drawerOpen, setDrawerOpen] = useState(false);
-
   const changePct = entry.priceChangePct;
   const isUp = changePct != null && changePct > 0;
   const isDown = changePct != null && changePct < 0;
 
-  const sentimentColor =
-    entry.sentimentLabel === "positive"
-      ? "text-gain"
-      : entry.sentimentLabel === "negative"
-      ? "text-loss"
-      : "text-muted-foreground";
+  const blocks = parseSummaryText(entry.summaryText);
 
   if (entry.status === "error") {
     return (
-      <div className="relative pl-5">
+      <div className="relative pl-6">
         <div className="absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full bg-[#162338] border-2 border-destructive/60" />
         <div className="text-[13px] text-destructive/80 flex items-center gap-1.5">
           <AlertCircle className="w-3.5 h-3.5" />
@@ -196,145 +329,107 @@ function DigestTimelineItem({
   }
 
   return (
-    <div className="relative pl-5">
+    <div className="relative pl-6">
       {/* Timeline dot */}
       <div
         className={cn(
-          "absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full border-2",
+          "absolute left-0 top-2 w-2.5 h-2.5 rounded-full border-2",
           isFirst
             ? "bg-[#66c6df] border-[#66c6df] shadow-[0_0_6px_rgba(102,198,223,0.6)]"
             : "bg-[#163042] border-[#66c6df]/50"
         )}
       />
 
-      {/* Date + time */}
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[14px] font-bold text-foreground/90">{formatDate(entry.digestDate)}</span>
+      {/* Date + time + price row */}
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <span className="text-[15px] font-bold text-foreground/90">{formatDate(entry.digestDate)}</span>
         {entry.generatedAt > 0 && (
           <span className="text-[11px] text-muted-foreground">{formatTime(entry.generatedAt)}</span>
         )}
+        {entry.priceClose != null && (
+          <>
+            <span className="text-[14px] font-bold">${entry.priceClose.toFixed(2)}</span>
+            {changePct != null && (
+              <span className={cn("flex items-center gap-0.5 text-[13px] font-semibold", isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground")}>
+                {isUp ? <TrendingUp className="w-3.5 h-3.5" /> : isDown ? <TrendingDown className="w-3.5 h-3.5" /> : <Minus className="w-3 h-3" />}
+                {isUp ? "+" : ""}{changePct.toFixed(2)}%
+              </span>
+            )}
+          </>
+        )}
+        {entry.sourceCount > 0 && (
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#66c6df]/10 text-[#b4eaf7] font-semibold border border-[#66c6df]/15">
+            {entry.sourceCount} 個來源
+          </span>
+        )}
       </div>
 
-      {/* Price row */}
-      {entry.priceClose != null && (
-        <div className="flex items-center gap-2 flex-wrap mb-2">
-          <span className="text-[15px] font-bold">${entry.priceClose.toFixed(2)}</span>
-          {changePct != null && (
-            <span className={cn("flex items-center gap-0.5 text-[13px] font-semibold", isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground")}>
-              {isUp ? <TrendingUp className="w-3.5 h-3.5" /> : isDown ? <TrendingDown className="w-3.5 h-3.5" /> : <Minus className="w-3 h-3" />}
-              {isUp ? "+" : ""}{changePct.toFixed(2)}%
-            </span>
-          )}
-          {entry.sourceCount > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#66c6df]/10 text-[#b4eaf7] font-semibold border border-[#66c6df]/15">
-              {entry.sourceCount} 個來源
-            </span>
-          )}
+      {/* Bulls / Bears split */}
+      {blocks.length > 0 ? (
+        <div className="flex gap-3">
+          <BullBearColumn side="bull" blocks={blocks} digestId={entry.id} sourceCount={entry.sourceCount} />
+          <BullBearColumn side="bear" blocks={blocks} digestId={entry.id} sourceCount={0} />
         </div>
-      )}
-
-      {/* Summary text */}
-      {entry.summaryText && (
-        <p className="text-[14px] text-foreground/80 leading-relaxed mb-2">
-          {entry.summaryText}
-        </p>
-      )}
-
-      {/* Sources */}
-      {entry.sourceCount > 0 && (
-        <button
-          onClick={() => setDrawerOpen(true)}
-          className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-[#66c6df] transition-colors mt-1"
-        >
-          <BookOpen className="w-3.5 h-3.5" />
-          查看 {entry.sourceCount} 個原始來源
-          <ExternalLink className="w-3 h-3" />
-        </button>
-      )}
-
-      {drawerOpen && (
-        <SourceDrawer digestId={entry.id} onClose={() => setDrawerOpen(false)} />
-      )}
+      ) : entry.summaryText ? (
+        <p className="text-[13px] text-foreground/80 leading-relaxed">{entry.summaryText}</p>
+      ) : null}
     </div>
   );
 }
 
-// ─── Stock Digest Card ────────────────────────────────────────────────────────
+// ─── Full-Width Stock Card ────────────────────────────────────────────────────
 
-function StockDigestCard({
-  stock,
-  onScrollTo,
-  isActive,
-}: {
-  stock: StockDigestData;
-  onScrollTo?: () => void;
-  isActive?: boolean;
-}) {
-  const latestDigest = stock.digests[0];
-
-  const latestChangePct = latestDigest?.priceChangePct;
-  const isUp = latestChangePct != null && latestChangePct > 0;
-  const isDown = latestChangePct != null && latestChangePct < 0;
-
+function StockDigestCard({ stock }: { stock: StockDigestData }) {
   return (
-    <article
-      className={cn(
-        "flex flex-col rounded-[18px] border bg-gradient-to-b from-[rgba(17,29,48,0.95)] to-[rgba(12,22,36,0.96)] shadow-[0_10px_30px_rgba(0,0,0,0.28)]",
-        isActive ? "border-[#66c6df]/30" : "border-white/8"
-      )}
-      style={{ minHeight: 560 }}
-    >
+    <article className="flex flex-col rounded-[18px] border border-[#66c6df]/20 bg-gradient-to-b from-[rgba(17,29,48,0.97)] to-[rgba(12,22,36,0.98)] shadow-[0_12px_40px_rgba(0,0,0,0.32)]">
       {/* Card Header */}
-      <div className="flex items-start justify-between gap-3 p-5 pb-3">
-        <div className="flex items-start gap-3">
+      <div className="flex items-start justify-between gap-3 px-6 py-5 pb-4">
+        <div className="flex items-center gap-4">
           <div className={cn(
-            "w-11 h-11 shrink-0 rounded-[14px] bg-[#66c6df]/12 flex items-center justify-center text-[#9fe7f8] font-bold tracking-wide",
-            stock.symbol.length <= 4 ? "text-[13px]" : "text-[11px]"
+            "w-12 h-12 shrink-0 rounded-[14px] bg-[#66c6df]/12 flex items-center justify-center text-[#9fe7f8] font-bold tracking-wide",
+            stock.symbol.length <= 4 ? "text-[14px]" : "text-[11px]"
           )}>
             {stock.symbol}
           </div>
           <div>
-            <h4 className="text-[20px] font-bold leading-tight">
-              {stock.name}
-            </h4>
-            {stock.sectorTag && (
-              <p className="text-[12px] text-muted-foreground mt-0.5">{stock.sectorTag}</p>
-            )}
+            <h4 className="text-[22px] font-bold leading-tight">{stock.name}</h4>
+            {stock.sectorTag && <p className="text-[12px] text-muted-foreground mt-0.5">{stock.sectorTag}</p>}
           </div>
         </div>
-        {/* Latest price badge */}
-        {latestDigest?.priceClose != null && (
+        {/* Latest price */}
+        {stock.digests[0]?.priceClose != null && (
           <div className="shrink-0 text-right">
-            <div className="text-[15px] font-bold">${latestDigest.priceClose.toFixed(2)}</div>
-            {latestChangePct != null && (
-              <div className={cn("text-[12px] font-semibold", isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground")}>
-                {isUp ? "+" : ""}{latestChangePct.toFixed(2)}%
+            <div className="text-[16px] font-bold">${stock.digests[0].priceClose.toFixed(2)}</div>
+            {stock.digests[0].priceChangePct != null && (
+              <div className={cn("text-[13px] font-semibold",
+                stock.digests[0].priceChangePct > 0 ? "text-gain"
+                  : stock.digests[0].priceChangePct < 0 ? "text-loss"
+                  : "text-muted-foreground"
+              )}>
+                {stock.digests[0].priceChangePct > 0 ? "+" : ""}{stock.digests[0].priceChangePct.toFixed(2)}%
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Divider */}
-      <div className="h-px bg-white/6 mx-5" />
+      <div className="h-px bg-white/6 mx-6" />
 
-      {/* Timeline */}
-      <div className="flex-1 overflow-y-auto px-5 py-4" style={{ maxHeight: 460 }}>
-        {/* Timeline track */}
+      {/* Timeline — scrollable */}
+      <div className="overflow-y-auto px-6 py-5" style={{ maxHeight: 700 }}>
         <div
-          className="relative pl-1 space-y-5"
+          className="relative space-y-8"
           style={{
             backgroundImage: "linear-gradient(180deg, rgba(102,198,223,0.35) 0%, rgba(102,198,223,0.04) 100%)",
             backgroundSize: "2px 100%",
             backgroundRepeat: "no-repeat",
-            backgroundPosition: "4px 0",
+            backgroundPosition: "8px 0",
           }}
         >
           {stock.digests.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-10 gap-2 text-muted-foreground">
+            <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
               <Newspaper className="w-8 h-8 opacity-30" />
               <p className="text-[13px]">尚未建立今日新聞彙總</p>
-              <p className="text-[12px] opacity-60">點擊右上方「更新新聞彙總」即可產生</p>
             </div>
           )}
           {stock.digests.map((entry, i) => (
@@ -345,12 +440,58 @@ function StockDigestCard({
     </article>
   );
 }
+
+// ─── Stock Switcher ───────────────────────────────────────────────────────────
+
+function StockSwitcher({
+  stocks,
+  activeSymbol,
+  onChange,
+}: {
+  stocks: StockDigestData[];
+  activeSymbol: string;
+  onChange: (symbol: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {stocks.map((s) => {
+        const latest = s.digests[0];
+        const pct = latest?.priceChangePct;
+        const isUp = pct != null && pct > 0;
+        const isDown = pct != null && pct < 0;
+        const isActive = s.symbol === activeSymbol;
+        return (
+          <button
+            key={s.symbol}
+            onClick={() => onChange(s.symbol)}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold border transition-all",
+              isActive
+                ? "bg-[#1cb8be]/15 border-[#1cb8be]/40 text-[#66c6df]"
+                : "bg-white/[0.02] border-white/8 text-muted-foreground hover:border-white/16 hover:text-foreground"
+            )}
+          >
+            <span>{s.symbol}</span>
+            {pct != null && (
+              <span className={cn(
+                "text-[10px]",
+                isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground"
+              )}>
+                {isUp ? "+" : ""}{pct.toFixed(1)}%
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function StockNewsDigest() {
   const queryClient = useQueryClient();
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
-  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const { data, isLoading, isError } = useQuery<PageData>({
     queryKey: ["/api/news-digest/stocks"],
@@ -359,8 +500,6 @@ export default function StockNewsDigest() {
     refetchOnWindowFocus: false,
   });
 
-  // Note: live quotes are now fetched inside AnalysisSymbolSidebarDesktop (shared component)
-
   const updateMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/news-digest/update").then((r) => r.json()),
     onSuccess: () => {
@@ -368,29 +507,29 @@ export default function StockNewsDigest() {
     },
   });
 
-  const handleScrollTo = useCallback((symbol: string) => {
-    setActiveSymbol(symbol);
-    const el = cardRefs.current[symbol];
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, []);
-
   const stocks = data?.stocks ?? [];
   const stats = data?.stats;
+
+  // Default to first stock
+  const resolvedSymbol = activeSymbol ?? stocks[0]?.symbol ?? null;
+  const activeStock = stocks.find((s) => s.symbol === resolvedSymbol) ?? null;
+
+  const handleChange = useCallback((symbol: string) => {
+    setActiveSymbol(symbol);
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
-        <div className="px-6 py-6 max-w-[1400px] mx-auto">
+        <div className="px-6 py-6 max-w-[1300px] mx-auto">
 
           {/* Topbar */}
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-5">
             <div>
               <h2 className="text-[32px] font-bold tracking-tight">美股每日新聞彙總</h2>
-              <p className="text-[14px] text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
-                僅針對美股自選個股，依自選順序顯示。每張卡片保留該股票的歷史新聞摘要時間軸，可向下捲動回看過去彙總，並保留原始來源連結。
+              <p className="text-[14px] text-muted-foreground mt-1.5 leading-relaxed">
+                多空觀點左右對照，切換個股查看歷史時間軸。
               </p>
             </div>
             <div className="flex items-center gap-2.5 shrink-0">
@@ -404,11 +543,7 @@ export default function StockNewsDigest() {
                 disabled={updateMutation.isPending}
                 className="gap-1.5 bg-gradient-to-b from-[#1f9dc3] to-[#187e9e] hover:from-[#2ab0d8] hover:to-[#1a8fb3] border-[#66c6df]/25 text-white font-semibold"
               >
-                {updateMutation.isPending ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-3.5 h-3.5" />
-                )}
+                {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                 {updateMutation.isPending ? "更新中…" : "更新新聞彙總"}
               </Button>
             </div>
@@ -440,13 +575,9 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Loading skeleton */}
+          {/* Loading */}
           {isLoading && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {[1, 2, 3, 4].map((i) => (
-                <div key={i} className="rounded-[18px] border border-white/8 bg-white/[0.02] animate-pulse" style={{ minHeight: 400 }} />
-              ))}
-            </div>
+            <div className="rounded-[18px] border border-white/8 bg-white/[0.02] animate-pulse" style={{ minHeight: 500 }} />
           )}
 
           {/* Error state */}
@@ -466,27 +597,23 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Cards grid */}
+          {/* Stock switcher + full-width card */}
           {!isLoading && stocks.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {stocks.map((stock) => (
-                <div
-                  key={stock.symbol}
-                  ref={(el) => { cardRefs.current[stock.symbol] = el; }}
-                >
-                  <StockDigestCard
-                    stock={stock}
-                    isActive={activeSymbol === stock.symbol}
-                    onScrollTo={() => handleScrollTo(stock.symbol)}
-                  />
-                </div>
-              ))}
+            <div className="flex flex-col gap-4">
+              {/* Switcher */}
+              <StockSwitcher
+                stocks={stocks}
+                activeSymbol={resolvedSymbol ?? ""}
+                onChange={handleChange}
+              />
+              {/* Card */}
+              {activeStock && <StockDigestCard stock={activeStock} />}
             </div>
           )}
         </div>
       </div>
 
-      {/* Right sidebar — shared component (shows all markets + live price/pct/holdings) */}
+      {/* Right sidebar */}
       <AnalysisSymbolSidebarDesktop />
     </div>
   );
