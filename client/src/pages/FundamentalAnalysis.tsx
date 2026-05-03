@@ -582,14 +582,20 @@ export default function FundamentalAnalysis() {
   const [resyncing, setResyncing] = useState(false);
 
   const handleResync = async () => {
-    if (resyncing) return;
+    if (resyncing || !watchlist) return;
     setResyncing(true);
     try {
-      await apiRequest("POST", `/api/fundamentals/${activeSymbol}/resync?market=${activeMarket}`);
-      // Invalidate query so UI re-fetches fresh data
+      // Resync all non-excluded watchlist symbols sequentially
+      const targets = watchlist.filter((w) => !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(w.symbol));
+      for (const w of targets) {
+        try {
+          await apiRequest("POST", `/api/fundamentals/${w.symbol}/resync?market=${w.market}`);
+        } catch (e) {
+          console.error(`Resync failed for ${w.symbol}:`, e);
+        }
+      }
+      // Invalidate current symbol so UI refreshes immediately
       await qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
-    } catch (e) {
-      console.error("Resync failed:", e);
     } finally {
       setResyncing(false);
     }
@@ -709,7 +715,7 @@ export default function FundamentalAnalysis() {
             disabled={resyncing}
           >
             <RefreshCw className={cn("h-3 w-3", resyncing && "animate-spin")} />
-            {resyncing ? "更新中..." : "重新整理"}
+            {resyncing ? "更新中..." : "全部重新整理"}
           </Button>
         </div>
       </div>
