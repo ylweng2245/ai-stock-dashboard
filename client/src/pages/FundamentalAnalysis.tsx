@@ -57,11 +57,13 @@ function sortQuartersAsc(bars: QuarterlyBar[]): QuarterlyBar[] {
 
 /** Build chart data with YoY and QoQ computed from quarterlyBars */
 function buildRevenueRows(bars: QuarterlyBar[]) {
-  // Sort oldest→newest, take last 8 for chart
-  const arr = sortQuartersAsc(bars).slice(-8);
-  return arr.map((b, i) => {
-    const prev = arr[i - 1];   // previous quarter (QoQ)
-    const yoy  = arr[i - 4];   // same quarter last year (YoY)
+  // Sort oldest→newest — use ALL bars for YoY lookup, then slice last 8 to display
+  const all = sortQuartersAsc(bars);
+  const display = all.slice(-8);
+  return display.map((b) => {
+    const allIdx = all.indexOf(b);
+    const prev = all[allIdx - 1];   // previous quarter (QoQ)
+    const yoy  = all[allIdx - 4];   // same quarter last year (YoY)
     const qoq = prev && prev.revenue > 0
       ? +((b.revenue - prev.revenue) / prev.revenue * 100).toFixed(2)
       : null;
@@ -177,22 +179,22 @@ function RevenueCard({ bars, currency }: { bars: QuarterlyBar[]; currency: strin
           </span>
         </div>
         {/* Table */}
-        <table className="w-full text-[11px] border-collapse">
+        <table className="w-full text-[12.5px] border-collapse">
           <thead>
             <tr className="border-b border-white/[0.1]">
-              <th className="text-left text-[#8ea1b6] font-medium pb-1.5 pr-2">年/季</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5 pr-2">營收</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5 pr-2">QoQ</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5">YoY</th>
+              <th className="text-left text-[#8ea1b6] font-normal pb-2 pr-2">年/季</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2 pr-2">營收</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2 pr-2">QoQ</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2">YoY</th>
             </tr>
           </thead>
           <tbody>
             {tableRows.map((r, i) => (
               <tr key={i} className="border-b border-white/[0.05]">
-                <td className="py-1.5 pr-2 text-[#dce7f5] font-medium tabular-nums">{r.quarter}</td>
-                <td className="py-1.5 pr-2 text-right tabular-nums text-[#e6eef8]">{fmtRev(r.revenue, currency)}</td>
-                <td className={cn("py-1.5 pr-2 text-right tabular-nums font-semibold", pctColor(r.qoq))}>{pctStr(r.qoq)}</td>
-                <td className={cn("py-1.5 text-right tabular-nums font-semibold", pctColor(r.yoy))}>{pctStr(r.yoy)}</td>
+                <td className="py-2 pr-2 text-white font-normal tabular-nums">{r.quarter}</td>
+                <td className="py-2 pr-2 text-right tabular-nums text-white">{fmtRev(r.revenue, currency)}</td>
+                <td className={cn("py-2 pr-2 text-right tabular-nums font-normal", pctColor(r.qoq))}>{pctStr(r.qoq)}</td>
+                <td className={cn("py-2 text-right tabular-nums font-normal", pctColor(r.yoy))}>{pctStr(r.yoy)}</td>
               </tr>
             ))}
           </tbody>
@@ -282,24 +284,24 @@ function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoi
           </span>
         </div>
         {/* Table */}
-        <table className="w-full text-[11px] border-collapse">
+        <table className="w-full text-[12.5px] border-collapse">
           <thead>
             <tr className="border-b border-white/[0.1]">
-              <th className="text-left text-[#8ea1b6] font-medium pb-1.5 pr-2">年/季</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5 pr-2">毛利率</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5 pr-2">淨利率</th>
-              <th className="text-right text-[#8ea1b6] font-medium pb-1.5">EPS</th>
+              <th className="text-left text-[#8ea1b6] font-normal pb-2 pr-2">年/季</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2 pr-2">毛利率</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2 pr-2">淨利率</th>
+              <th className="text-right text-[#8ea1b6] font-normal pb-2">EPS</th>
             </tr>
           </thead>
           <tbody>
             {tableRows.map((r, i) => (
               <tr key={i} className="border-b border-white/[0.05]">
-                <td className="py-1.5 pr-2 text-[#dce7f5] font-medium tabular-nums">{r.quarter}</td>
-                <td className="py-1.5 pr-2 text-right tabular-nums text-[#e6eef8]">{r.grossMargin !== null ? `${r.grossMargin.toFixed(2)}%` : "—"}</td>
-                <td className={cn("py-1.5 pr-2 text-right tabular-nums font-semibold", r.netMargin !== null ? (r.netMargin >= 0 ? "text-[#ef4444]" : "text-[#10b981]") : "text-muted-foreground")}>
+                <td className="py-2 pr-2 text-white font-normal tabular-nums">{r.quarter}</td>
+                <td className="py-2 pr-2 text-right tabular-nums text-white">{r.grossMargin !== null ? `${r.grossMargin.toFixed(2)}%` : "—"}</td>
+                <td className={cn("py-2 pr-2 text-right tabular-nums font-normal", r.netMargin !== null ? (r.netMargin >= 0 ? "text-[#ef4444]" : "text-[#10b981]") : "text-muted-foreground")}>
                   {r.netMargin !== null ? `${r.netMargin.toFixed(2)}%` : "—"}
                 </td>
-                <td className={cn("py-1.5 text-right tabular-nums font-semibold", r.eps !== null ? (r.eps >= 0 ? "text-[#ef4444]" : "text-[#10b981]") : "text-muted-foreground")}>
+                <td className={cn("py-2 text-right tabular-nums font-normal", r.eps !== null ? (r.eps >= 0 ? "text-[#ef4444]" : "text-[#10b981]") : "text-muted-foreground")}>
                   {r.eps !== null ? r.eps.toFixed(2) : "—"}
                 </td>
               </tr>
