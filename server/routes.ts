@@ -1174,7 +1174,7 @@ export async function registerRoutes(
     }
     const now = Date.now();
     let saved = 0;
-    const toEnrich: { symbol: string; market: "TW" | "US"; baseCalendar: any }[] = [];
+    const toEnrich: { symbol: string; market: "TW" | "US" }[] = [];
 
     for (const item of items) {
       try {
@@ -1194,7 +1194,7 @@ export async function registerRoutes(
         });
         saved++;
         // Queue US stocks for Finnhub enrichment
-        if (mkt === "US") toEnrich.push({ symbol: sym, market: mkt, baseCalendar: calendar ?? {} });
+        if (mkt === "US") toEnrich.push({ symbol: sym, market: mkt });
       } catch (e: any) {
         console.error(`[fundamentals-sync] failed for ${item?.symbol}:`, e.message);
       }
@@ -1203,8 +1203,8 @@ export async function registerRoutes(
     res.json({ ok: true, saved });
 
     // Asynchronously enrich calendars with Finnhub data (non-blocking)
-    for (const { symbol, market, baseCalendar } of toEnrich) {
-      enrichCalendarWithFinnhub(symbol, market, baseCalendar);
+    for (const { symbol, market } of toEnrich) {
+      enrichCalendarWithFinnhub(symbol, market);
     }
   });
 

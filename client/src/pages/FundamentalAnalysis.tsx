@@ -7,7 +7,8 @@
  * - 資料來源：GET /api/fundamentals/:symbol?market=
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ComposedChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -578,6 +579,21 @@ function FundamentalSkeleton() {
 export default function FundamentalAnalysis() {
   const { activeSymbol, activeMarket } = useActiveSymbol();
   const qc = useQueryClient();
+  const [resyncing, setResyncing] = useState(false);
+
+  const handleResync = async () => {
+    if (resyncing) return;
+    setResyncing(true);
+    try {
+      await apiRequest("POST", `/api/fundamentals/${activeSymbol}/resync?market=${activeMarket}`);
+      // Invalidate query so UI re-fetches fresh data
+      await qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
+    } catch (e) {
+      console.error("Resync failed:", e);
+    } finally {
+      setResyncing(false);
+    }
+  };
 
   // Watchlist meta — use user-entered name (same pattern as TechnicalAnalysis)
   const { data: watchlist } = useQuery<{ id: number; symbol: string; name: string; market: "TW" | "US"; sortOrder: number }[]>({
@@ -685,7 +701,16 @@ export default function FundamentalAnalysis() {
         {/* Mobile symbol selector + resync button */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <AnalysisSymbolSidebarMobile symbolFilter={(item) => !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(item.symbol)} />
-
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={handleResync}
+            disabled={resyncing}
+            title="重新整理基本資訊"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", resyncing && "animate-spin")} />
+          </Button>
         </div>
       </div>
 

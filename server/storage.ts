@@ -561,6 +561,10 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  /**
+   * Full upsert — used ONLY by cron (/api/internal/fundamentals-sync).
+   * Writes all columns including quarterlyIncomeJson and epsHistoryJson.
+   */
   upsertFundamental(row: InsertFundamentalData): void {
     sqlite.prepare(`
       INSERT INTO fundamental_data (symbol, market, info_json, quarterly_income_json, eps_history_json, calendar_json, fetched_at, updated_at)
@@ -577,6 +581,40 @@ export class DatabaseStorage implements IStorage {
       row.infoJson, row.quarterlyIncomeJson, row.epsHistoryJson, row.calendarJson,
       row.fetchedAt, row.updatedAt
     );
+  }
+
+  /**
+   * Partial update — used by Yahoo fetcher (resync / bg-refresh / scheduled refresh).
+   * Updates ONLY infoJson + calendarJson + fetchedAt/updatedAt.
+   * Never touches quarterlyIncomeJson or epsHistoryJson (cron owns those).
+   * If no row exists yet, does a full insert with empty quarterly/eps data.
+   */
+  updateYahooData(symbol: string, market: string, infoJson: string, calendarJson: string, now: number): void {
+    sqlite.prepare(`
+      INSERT INTO fundamental_data (symbol, market, info_json, quarterly_income_json, eps_history_json, calendar_json, fetched_at, updated_at)
+      VALUES (?, ?, ?, '', '', ?, ?, ?)
+      ON CONFLICT(symbol, market) DO UPDATE SET
+        info_json     = excluded.info_json,
+        calendar_json = excluded.calendar_json,
+        fetched_at    = excluded.fetched_at,
+        updated_at    = excluded.updated_at
+    `).run(symbol, market, infoJson, calendarJson, now, now);
+  }
+
+  /**
+   * Finnhub calendar patch — merges finnhub* keys into calendarJson only.
+   * Never touches any other column.
+   */
+  patchCalendarFinnhub(symbol: string, market: string, finnhubFields: Record<string, any>): void {
+    const existing = this.getFundamental(symbol, market);
+    if (!existing) return;
+    let cal: any = {};
+    try { cal = JSON.parse(existing.calendarJson || "{}"); } catch { /* */ }
+    const merged = { ...cal, ...finnhubFields };
+    sqlite.prepare(`
+      UPDATE fundamental_data SET calendar_json = ?, updated_at = ?
+      WHERE symbol = ? AND market = ?
+    `).run(JSON.stringify(merged), Date.now(), symbol, market);
   }
 
   clearAllFundamentals(): void {
