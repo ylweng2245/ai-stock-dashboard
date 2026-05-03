@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { rm, readFile, cp, mkdir } from "fs/promises";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -60,7 +60,15 @@ async function buildAll() {
   });
 }
 
-buildAll().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function copyPythonAssets() {
+  await mkdir("dist/ml", { recursive: true });
+  await cp("server/ml", "dist/ml", { recursive: true });
+  console.log("copied server/ml → dist/ml");
+}
+
+buildAll()
+  .then(() => copyPythonAssets())
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
