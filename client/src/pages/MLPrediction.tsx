@@ -15,7 +15,6 @@ import {
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
-import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -455,8 +454,16 @@ export default function MLPrediction() {
         const err = await res.json().catch(() => ({ error: "Unknown error" }));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const result: PredictionResult = await res.json();
-      setPrediction(result);
+      const result = await res.json();
+      // Python subprocess may return { ok: false, error: '...' } with HTTP 200
+      if (result.ok === false) {
+        throw new Error(result.error ?? "預測執行失敗");
+      }
+      // Validate required fields before setting state
+      if (!result.medianPath || !Array.isArray(result.medianPath)) {
+        throw new Error(`回傳資料格式錯誤：${JSON.stringify(result).slice(0, 100)}`);
+      }
+      setPrediction(result as PredictionResult);
       setHasRun(true);
     } catch (e: any) {
       setRunError(e.message ?? "預測執行失敗");
@@ -466,10 +473,7 @@ export default function MLPrediction() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Main scrollable area */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="px-6 py-6 max-w-[1300px] mx-auto space-y-4">
+    <div className="px-6 py-6 max-w-[1100px] mx-auto space-y-4">
 
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
@@ -589,11 +593,6 @@ export default function MLPrediction() {
             </CardContent>
           </Card>
 
-        </div>
-      </div>
-
-      {/* Right sidebar */}
-      <AnalysisSymbolSidebarDesktop />
     </div>
   );
 }
