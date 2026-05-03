@@ -94,14 +94,14 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Timeout: 30 seconds
+    // Timeout: 90 seconds (Python cold start with sklearn/numpy can take 30-60s)
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         child.kill("SIGKILL");
-        resolve({ ok: false, error: "Python 預測程序逾時 (30s)" });
+        resolve({ ok: false, error: "Python 預測程序逾時 (90s)" });
       }
-    }, 30_000);
+    }, 90_000);
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBuf += chunk.toString("utf8");

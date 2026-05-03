@@ -561,6 +561,9 @@ export default function MLPrediction() {
                     <div key={i} className="h-12 bg-muted/20 rounded animate-pulse" />
                   ))}
                 </div>
+                <p className="text-xs text-muted-foreground text-center pt-1">
+                  首次執行需載入 Python 環境，約需 30–60 秒，請稍候…
+                </p>
               </CardContent>
             </Card>
           )}
