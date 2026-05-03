@@ -348,7 +348,7 @@ function computeGrowthPillar(
 
   // 1. 季度營收 YoY
   const revValues = quarters
-    .map((q: any) => q["totalRevenue"])
+    .map((q: any) => q["totalRevenue"] ?? q["revenue"])
     .filter((v: any): v is number => v != null && v > 0);
   let revYoY = info.revenueGrowth as number | null;
   if (revYoY == null && revValues.length >= 5) revYoY = yoyPct(revValues);

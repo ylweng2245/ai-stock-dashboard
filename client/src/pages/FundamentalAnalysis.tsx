@@ -7,8 +7,8 @@
  * - 資料來源：GET /api/fundamentals/:symbol?market=
  */
 
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ComposedChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
   Line, ReferenceLine, CartesianGrid,
@@ -16,7 +16,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { RefreshCw } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
@@ -574,16 +574,6 @@ export default function FundamentalAnalysis() {
   // isLoading: only show skeleton while genuinely fetching (not on error)
   const isLoading = data === undefined && !isExcluded && !isError;
 
-  const resyncMutation = useMutation({
-    mutationFn: () =>
-      apiRequest("POST", `/api/fundamentals/${activeSymbol}/resync?market=${activeMarket}`)
-        .then((r) => r.json()),
-    onSuccess: () => {
-      // invalidate + force refetch (staleTime:Infinity means invalidate alone won't re-fetch)
-      qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
-      qc.refetchQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
-    },
-  });
 
   // Excluded symbol message
   if (isExcluded) {
@@ -609,16 +599,7 @@ export default function FundamentalAnalysis() {
             無法載入 {activeSymbol} 基本面資料
           </p>
           <p className="text-[12px] text-[#8ea1b6]/60">{String(error ?? "未知錯誤")}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => resyncMutation.mutate()}
-            disabled={resyncMutation.isPending}
-            className="gap-2"
-          >
-            <RefreshCw className={cn("w-3.5 h-3.5", resyncMutation.isPending && "animate-spin")} />
-            重新抓取
-          </Button>
+
         </div>
       </div>
     );
@@ -665,17 +646,7 @@ export default function FundamentalAnalysis() {
         {/* Mobile symbol selector + resync button */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <AnalysisSymbolSidebarMobile symbolFilter={(item) => !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(item.symbol)} />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => resyncMutation.mutate()}
-            disabled={resyncMutation.isPending}
-            className="gap-1.5 text-xs"
-            title="強制重新抓取基本面資料"
-          >
-            <RefreshCw className={cn("w-3.5 h-3.5", resyncMutation.isPending && "animate-spin")} />
-            重新抓取
-          </Button>
+
         </div>
       </div>
 
