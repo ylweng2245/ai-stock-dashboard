@@ -16,7 +16,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, DatabaseZap } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
@@ -535,56 +535,6 @@ function FundamentalSkeleton() {
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
-/** 全部財務資料同步按鈕 — 觸發後台全量更新 */
-function SyncAllButton() {
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const { activeSymbol, activeMarket } = useActiveSymbol();
-  const qc = useQueryClient();
-
-  const handleClick = async () => {
-    if (status === "running") return;
-    setStatus("running");
-    try {
-      const res = await apiRequest("POST", "/api/fundamentals/sync-all");
-      const json = await res.json();
-      if (json.ok) {
-        // Server runs in background — wait ~8s then refetch current symbol
-        await new Promise((r) => setTimeout(r, 8000));
-        await qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
-        await qc.refetchQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
-        setStatus("done");
-        setTimeout(() => setStatus("idle"), 4000);
-      } else {
-        setStatus("error");
-        setTimeout(() => setStatus("idle"), 3000);
-      }
-    } catch {
-      setStatus("error");
-      setTimeout(() => setStatus("idle"), 3000);
-    }
-  };
-
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={handleClick}
-      disabled={status === "running"}
-      className={cn(
-        "gap-1.5 text-xs",
-        status === "done" && "border-emerald-500/50 text-emerald-400",
-        status === "error" && "border-red-500/50 text-red-400",
-      )}
-      title="觸發全部自選標的財務資料同步"
-    >
-      <DatabaseZap className={cn("w-3.5 h-3.5", status === "running" && "animate-pulse")} />
-      {status === "running" ? "同步中..."
-        : status === "done" ? "已啟動"
-        : status === "error" ? "失敗"
-        : "全部同步"}
-    </Button>
-  );
-}
 
 export default function FundamentalAnalysis() {
   const { activeSymbol, activeMarket } = useActiveSymbol();
@@ -715,7 +665,6 @@ export default function FundamentalAnalysis() {
         {/* Mobile symbol selector + resync button */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <AnalysisSymbolSidebarMobile symbolFilter={(item) => !EXCLUDED_FUNDAMENTAL_SYMBOLS.has(item.symbol)} />
-          <SyncAllButton />
           <Button
             variant="outline"
             size="sm"
