@@ -562,8 +562,25 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Full upsert — used ONLY by cron (/api/internal/fundamentals-sync).
-   * Writes all columns including quarterlyIncomeJson and epsHistoryJson.
+   * Cron update — used ONLY by /api/internal/fundamentals-sync.
+   * Writes ONLY quarterlyIncomeJson + epsHistoryJson.
+   * Never touches infoJson or calendarJson (Yahoo / Finnhub own those).
+   * If no row exists yet, inserts with empty info/calendar so Yahoo can fill later.
+   */
+  updateCronData(symbol: string, market: string, quarterlyIncomeJson: string, epsHistoryJson: string): void {
+    sqlite.prepare(`
+      INSERT INTO fundamental_data (symbol, market, info_json, quarterly_income_json, eps_history_json, calendar_json, fetched_at, updated_at)
+      VALUES (?, ?, '{}', ?, ?, '{}', 0, ?)
+      ON CONFLICT(symbol, market) DO UPDATE SET
+        quarterly_income_json = excluded.quarterly_income_json,
+        eps_history_json      = excluded.eps_history_json,
+        updated_at            = excluded.updated_at
+    `).run(symbol, market, quarterlyIncomeJson, epsHistoryJson, Date.now());
+  }
+
+  /**
+   * Full upsert — kept for potential future use / migrations.
+   * Prefer updateCronData / updateYahooData / patchCalendarFinnhub for normal operations.
    */
   upsertFundamental(row: InsertFundamentalData): void {
     sqlite.prepare(`

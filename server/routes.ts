@@ -8,7 +8,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
-import { enrichCalendarWithFinnhub } from "./fundamentalService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1172,40 +1171,27 @@ export async function registerRoutes(
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "Expected non-empty array" });
     }
-    const now = Date.now();
     let saved = 0;
-    const toEnrich: { symbol: string; market: "TW" | "US" }[] = [];
 
     for (const item of items) {
       try {
-        const { symbol, market, info, quarterlyIncome, epsHistory, calendar } = item;
+        const { symbol, market, quarterlyIncome, epsHistory } = item;
         if (!symbol || !market) continue;
         const sym = String(symbol).toUpperCase();
         const mkt = String(market).toUpperCase() as "TW" | "US";
-        storage.upsertFundamental({
-          symbol: sym,
-          market: mkt,
-          infoJson:            JSON.stringify(info            ?? {}),
-          quarterlyIncomeJson: JSON.stringify(quarterlyIncome ?? []),
-          epsHistoryJson:      JSON.stringify(epsHistory      ?? []),
-          calendarJson:        JSON.stringify(calendar        ?? {}),
-          fetchedAt: now,
-          updatedAt: now,
-        });
+        // updateCronData ONLY writes quarterly/eps — never touches info or calendar
+        storage.updateCronData(
+          sym, mkt,
+          JSON.stringify(quarterlyIncome ?? []),
+          JSON.stringify(epsHistory      ?? [])
+        );
         saved++;
-        // Queue US stocks for Finnhub enrichment
-        if (mkt === "US") toEnrich.push({ symbol: sym, market: mkt });
       } catch (e: any) {
         console.error(`[fundamentals-sync] failed for ${item?.symbol}:`, e.message);
       }
     }
     console.log(`[fundamentals-sync] saved ${saved}/${items.length} symbols`);
     res.json({ ok: true, saved });
-
-    // Asynchronously enrich calendars with Finnhub data (non-blocking)
-    for (const { symbol, market } of toEnrich) {
-      enrichCalendarWithFinnhub(symbol, market);
-    }
   });
 
   return httpServer;
