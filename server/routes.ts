@@ -64,6 +64,7 @@ import {
   PORTFOLIO_EXTRA,
   syncTodayTechnicalBarFromQuote,
   initializeOneYearHistoryPool,
+  backfillHistoryTo2Years,
 } from "./stockService";
 import { getOrFetchFundamentals } from "./fundamentalService";
 
@@ -1237,6 +1238,36 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────────────────
+  // V6.1: POST /api/history/backfill-2y  — backfill all watchlist symbols to 2 years
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/history/backfill-2y", async (_req, res) => {
+    try {
+      const allSymbols = [
+        ...WATCHLIST_STOCKS.map((s: any) => ({ symbol: s.symbol, market: s.market as "TW" | "US" })),
+        ...PORTFOLIO_EXTRA.map((s: any) => ({ symbol: s.symbol, market: s.market as "TW" | "US" })),
+      ];
+      const seen = new Set<string>();
+      const unique = allSymbols.filter(({ symbol, market }) => {
+        const key = `${symbol}:${market}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const results: Record<string, number> = {};
+      for (const { symbol, market } of unique) {
+        try {
+          const r = await backfillHistoryTo2Years(symbol, market);
+          results[`${symbol}:${market}`] = r.added;
+        } catch (e: any) {
+          results[`${symbol}:${market}`] = -99;
+        }
+      }
+      res.json({ ok: true, results });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   // V6.1: POST /api/prediction/run
   // ──────────────────────────────────────────────────────────────────
   app.post("/api/prediction/run", async (req, res) => {

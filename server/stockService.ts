@@ -1139,7 +1139,7 @@ export async function ensureHistoricalCoverage(
 }
 
 /**
- * Initialize the 1-year base history pool for a brand-new symbol.
+ * Initialize the 2-year base history pool for a brand-new symbol.
  * Called once when a symbol has no DB data.
  */
 export async function initializeOneYearHistoryPool(
@@ -1149,8 +1149,8 @@ export async function initializeOneYearHistoryPool(
   const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
   const todayStr = todayForMarket(market);
   const now = Date.now();
-  console.log(`[initializeOneYearHistoryPool] ${symbol}: fetching 1y base history...`);
-  const fetched = await fetchYahooHistory(symbol, "1y", suffix);
+  console.log(`[initializeOneYearHistoryPool] ${symbol}: fetching 2y base history...`);
+  const fetched = await fetchYahooHistory(symbol, "2y", suffix);
   // Exclude today — today's bar is always injected via injectTodayBar with live quote
   const barsForDB = fetched.bars.filter((b) => b.time < todayStr);
   if (barsForDB.length > 0) {
@@ -1164,6 +1164,50 @@ export async function initializeOneYearHistoryPool(
     await storage.upsertHistoricalPrices(rows);
     console.log(`[initializeOneYearHistoryPool] ${symbol}: stored ${rows.length} bars`);
   }
+}
+
+/**
+ * Backfill existing symbols to 2 years if they only have ~1 year.
+ * Uses INSERT OR IGNORE (upsertHistoricalPrices) so existing bars are never overwritten.
+ */
+export async function backfillHistoryTo2Years(
+  symbol: string,
+  market: "TW" | "US"
+): Promise<{ added: number }> {
+  const suffix = market === "TW" ? yahooTWSuffix(symbol) : "";
+  const todayStr = todayForMarket(market);
+  const now = Date.now();
+  // Check current earliest date in DB
+  const existing = await storage.getHistoricalPrices(symbol, market);
+  if (existing.length === 0) {
+    await initializeOneYearHistoryPool(symbol, market);
+    return { added: -1 };
+  }
+  const earliestInDB = existing.map(r => r.date).sort()[0];
+  const twoYearsAgo = new Date();
+  twoYearsAgo.setDate(twoYearsAgo.getDate() - 730);
+  const twoYearsAgoStr = twoYearsAgo.toISOString().slice(0, 10);
+  // If DB already covers ~700+ days, skip
+  if (earliestInDB <= twoYearsAgoStr) {
+    console.log(`[backfillHistoryTo2Years] ${symbol}: already has 2y coverage (earliest: ${earliestInDB})`);
+    return { added: 0 };
+  }
+  console.log(`[backfillHistoryTo2Years] ${symbol}: backfilling from ${twoYearsAgoStr} to ${earliestInDB}...`);
+  const fetched = await fetchYahooHistory(symbol, "2y", suffix);
+  const newBars = fetched.bars.filter((b) => b.time < todayStr && b.time < earliestInDB);
+  if (newBars.length > 0) {
+    const rows: InsertHistoricalPrice[] = newBars.map((b) => ({
+      symbol, market,
+      date: b.time,
+      open: b.open, high: b.high, low: b.low, close: b.close,
+      volume: b.volume,
+      updatedAt: now,
+    }));
+    await storage.upsertHistoricalPrices(rows);
+    console.log(`[backfillHistoryTo2Years] ${symbol}: added ${rows.length} bars`);
+    return { added: rows.length };
+  }
+  return { added: 0 };
 }
 
 /**

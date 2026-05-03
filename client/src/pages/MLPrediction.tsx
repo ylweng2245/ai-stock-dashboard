@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Brain, TrendingUp, TrendingDown, RefreshCw, Target, History, ChevronRight } from "lucide-react";
+import { Brain, TrendingUp, TrendingDown, RefreshCw, Target, History, ChevronRight, User, BarChart2 } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -12,6 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
+  Legend,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
@@ -33,6 +34,29 @@ interface PredictionResult {
   upperPath: PricePt[];
   lowerPath: PricePt[];
   modelName?: string;
+  meta?: {
+    trainSamples?: number;
+    trainWindowYears?: number;
+    featureVersion?: string;
+  };
+}
+
+interface HorizonSummary {
+  horizonDays: number;
+  expectedReturnPct: number | null;
+  downsideRiskPct: number | null;
+  upsidePotentialPct: number | null;
+}
+
+interface PositionState {
+  symbol: string;
+  market: string;
+  shares: number;
+  avgCost: number;
+  currentPrice: number | null;
+  positionValue: number | null;
+  unrealizedPct: number | null;
+  avgHoldingDays: number | null;
 }
 
 interface PersonalAdvice {
@@ -44,6 +68,14 @@ interface PersonalAdvice {
     | "avoid_new_entry";
   reasons: string[];
   confidence?: number;
+  positionState?: PositionState | null;
+  horizonPredictions?: HorizonSummary[];
+  analystFeatures?: {
+    hasConsensus: boolean;
+    upsideAvgRatio?: number | null;
+    avgScore?: number | null;
+    bullishRatio?: number | null;
+  };
 }
 
 interface PredictionHistoryItem {
@@ -54,6 +86,7 @@ interface PredictionHistoryItem {
   medianPath: PricePt[];
   upperPath: PricePt[];
   lowerPath: PricePt[];
+  modelName?: string;
   accuracy?: {
     mae: number;
     mape: number;
@@ -80,11 +113,19 @@ const ACTION_CONFIG: Record<
   avoid_new_entry:       { label: "避免新進場",     className: "text-amber-400 border-amber-400/40" },
 };
 
+// Distinct colors for up to 5 history lines
+const HISTORY_COLORS = ["#66c6df", "#f59e0b", "#a78bfa", "#fb923c", "#34d399"];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtPct(val: number): string {
-  const sign = val >= 0 ? "+" : "";
+function fmtPct(val: number, showPlus = true): string {
+  const sign = showPlus && val >= 0 ? "+" : "";
   return `${sign}${val.toFixed(2)}%`;
+}
+
+function fmtPrice(val: number | null | undefined): string {
+  if (val == null) return "—";
+  return val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function computeReturn(path: PricePt[]): number {
@@ -242,6 +283,32 @@ function PredictionChart({ result }: { result: PredictionResult }) {
             </p>
           </div>
         </div>
+
+        {/* Meta info row */}
+        {result.meta && (
+          <div className="flex items-center justify-center gap-4 mt-2 pt-2 border-t border-border/30">
+            {result.meta.trainSamples != null && (
+              <span className="text-[10px] text-muted-foreground">
+                訓練樣本 <span className="text-foreground">{result.meta.trainSamples}</span>
+              </span>
+            )}
+            {result.meta.trainWindowYears != null && (
+              <span className="text-[10px] text-muted-foreground">
+                訓練年數 <span className="text-foreground">{result.meta.trainWindowYears}y</span>
+              </span>
+            )}
+            {result.meta.featureVersion && (
+              <span className="text-[10px] text-muted-foreground">
+                特徵 <span className="text-foreground">{result.meta.featureVersion}</span>
+              </span>
+            )}
+            {result.modelName && (
+              <span className="text-[10px] text-muted-foreground">
+                模型 <span className="text-[#66c6df]">{result.modelName}</span>
+              </span>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -259,6 +326,8 @@ function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string
   });
 
   const cfg = data ? ACTION_CONFIG[data.primaryAction] : null;
+  const pos = data?.positionState;
+  const horizons = data?.horizonPredictions ?? [];
 
   return (
     <Card className="border-border">
@@ -268,7 +337,7 @@ function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string
           個人操作建議
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-4 pb-4">
+      <CardContent className="px-4 pb-4 space-y-4">
         {isLoading && (
           <div className="space-y-2">
             <div className="h-8 bg-muted/30 rounded-md animate-pulse" />
@@ -282,8 +351,9 @@ function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string
         )}
 
         {data && cfg && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
+          <>
+            {/* Primary action */}
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge
                 variant="outline"
                 className={cn("text-sm font-semibold px-3 py-1", cfg.className)}
@@ -296,6 +366,8 @@ function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string
                 </span>
               )}
             </div>
+
+            {/* Reasons */}
             {data.reasons.length > 0 && (
               <ul className="space-y-1">
                 {data.reasons.map((r, i) => (
@@ -306,12 +378,93 @@ function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string
                 ))}
               </ul>
             )}
-          </div>
+
+            {/* Horizon predictions table */}
+            {horizons.length > 0 && (
+              <div>
+                <p className="text-[11px] text-muted-foreground mb-1.5 flex items-center gap-1">
+                  <BarChart2 className="w-3 h-3" /> 各維度預期報酬
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {horizons.map((h) => (
+                    <div key={h.horizonDays} className="rounded-md border border-border/50 bg-muted/10 px-2 py-2 text-center">
+                      <p className="text-[10px] text-muted-foreground mb-0.5">{h.horizonDays}日</p>
+                      <p className={cn("text-xs font-bold tabular-nums",
+                        h.expectedReturnPct == null ? "text-muted-foreground" :
+                        h.expectedReturnPct >= 0 ? "text-[#ef4444]" : "text-[#10b981]"
+                      )}>
+                        {h.expectedReturnPct != null ? fmtPct(h.expectedReturnPct) : "—"}
+                      </p>
+                      {h.upsidePotentialPct != null && h.downsideRiskPct != null && (
+                        <p className="text-[9px] text-muted-foreground mt-0.5">
+                          <span className="text-[#ef4444]">{fmtPct(h.upsidePotentialPct)}</span>
+                          {" / "}
+                          <span className="text-[#10b981]">{fmtPct(h.downsideRiskPct)}</span>
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Position state */}
+            {pos && pos.shares > 0 && (
+              <div className="rounded-md border border-border/50 bg-muted/10 px-3 py-3">
+                <p className="text-[11px] text-muted-foreground mb-2 flex items-center gap-1">
+                  <User className="w-3 h-3" /> 持倉狀態
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">持股數</span>
+                    <span>{pos.shares.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">均攤成本</span>
+                    <span>${fmtPrice(pos.avgCost)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">現價</span>
+                    <span>${fmtPrice(pos.currentPrice)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">浮動盈虧</span>
+                    <span className={cn(
+                      "font-bold",
+                      pos.unrealizedPct == null ? "text-muted-foreground" :
+                      pos.unrealizedPct >= 0 ? "text-[#ef4444]" : "text-[#10b981]"
+                    )}>
+                      {pos.unrealizedPct != null ? fmtPct(pos.unrealizedPct) : "—"}
+                    </span>
+                  </div>
+                  {pos.positionValue != null && (
+                    <div className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">持倉市值</span>
+                      <span>${fmtPrice(pos.positionValue)}</span>
+                    </div>
+                  )}
+                  {pos.avgHoldingDays != null && (
+                    <div className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">平均持有</span>
+                      <span>{Math.round(pos.avgHoldingDays)} 天</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* No position hint */}
+            {(!pos || pos.shares <= 0) && (
+              <p className="text-[11px] text-muted-foreground">未持有此股票（無持倉資料）</p>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
   );
 }
+
+// ─── Prediction History with overlaid chart ───────────────────────────────────
 
 function PredictionHistorySection({
   symbol,
@@ -338,6 +491,30 @@ function PredictionHistorySection({
     retry: 1,
   });
 
+  // Build overlaid chart data: x-axis = date string, one key per run (capped at 5 most recent)
+  function buildOverlayData(items: PredictionHistoryItem[]) {
+    const recent = [...items].sort((a, b) => b.runAt.localeCompare(a.runAt)).slice(0, 5);
+    // Collect all dates
+    const dateSet = new Set<string>();
+    recent.forEach((item) => item.medianPath.forEach((p) => dateSet.add(p.date)));
+    const dates = Array.from(dateSet).sort();
+    return {
+      chartData: dates.map((date) => {
+        const row: Record<string, any> = { date: date.slice(5) };
+        recent.forEach((item, idx) => {
+          const pt = item.medianPath.find((p) => p.date === date);
+          if (pt) row[`run${idx}`] = pt.price;
+        });
+        return row;
+      }),
+      runs: recent,
+    };
+  }
+
+  const { chartData, runs } = data && data.length > 0
+    ? buildOverlayData(data)
+    : { chartData: [], runs: [] };
+
   return (
     <Card className="border-border">
       <CardHeader className="pb-2 pt-4 px-4">
@@ -361,7 +538,7 @@ function PredictionHistorySection({
       </CardHeader>
 
       {open && (
-        <CardContent className="px-4 pb-4">
+        <CardContent className="px-4 pb-4 space-y-4">
           {isLoading && (
             <div className="space-y-2">
               {[1, 2, 3].map((i) => (
@@ -378,9 +555,60 @@ function PredictionHistorySection({
             <p className="text-xs text-muted-foreground">尚無預測歷史紀錄。</p>
           )}
 
+          {/* Overlaid line chart */}
+          {chartData.length > 0 && (
+            <div>
+              <p className="text-[11px] text-muted-foreground mb-2">最近 {runs.length} 次預測路徑疊加</p>
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    interval={Math.max(1, Math.floor(chartData.length / 5))}
+                  />
+                  <YAxis
+                    domain={["auto", "auto"]}
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    width={60}
+                    tickFormatter={(v: number) => v.toLocaleString()}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "hsl(var(--card))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: "6px",
+                      fontSize: "11px",
+                    }}
+                    formatter={(v: number, name: string) => [v?.toLocaleString() ?? "—", name]}
+                  />
+                  <Legend
+                    wrapperStyle={{ fontSize: "10px", paddingTop: "4px" }}
+                    formatter={(value: string) => {
+                      const idx = parseInt(value.replace("run", ""), 10);
+                      return runs[idx]?.runAt ?? value;
+                    }}
+                  />
+                  {runs.map((run, idx) => (
+                    <Line
+                      key={`run${idx}`}
+                      type="monotone"
+                      dataKey={`run${idx}`}
+                      stroke={HISTORY_COLORS[idx % HISTORY_COLORS.length]}
+                      strokeWidth={idx === 0 ? 2 : 1.5}
+                      dot={false}
+                      strokeOpacity={idx === 0 ? 1 : 0.65}
+                      connectNulls
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Accuracy list */}
           {data && data.length > 0 && (
             <div className="space-y-2">
-              {data.map((item, idx) => {
+              {[...data].sort((a, b) => b.runAt.localeCompare(a.runAt)).map((item, idx) => {
                 const ret = computeReturn(item.medianPath);
                 return (
                   <div
@@ -391,6 +619,9 @@ function PredictionHistorySection({
                       <p className="text-xs font-medium">{item.runAt}</p>
                       <p className="text-[10px] text-muted-foreground">
                         {item.startDate} → {item.endDate}
+                        {item.modelName && (
+                          <span className="ml-1.5 text-[#66c6df]">{item.modelName}</span>
+                        )}
                       </p>
                     </div>
                     <div className="text-right">
@@ -405,7 +636,12 @@ function PredictionHistorySection({
                       {item.accuracy && (
                         <p className="text-[10px] text-muted-foreground">
                           MAE {item.accuracy.mae.toFixed(2)} ·{" "}
-                          {item.accuracy.directionCorrect ? "方向正確 ✓" : "方向錯誤 ✗"}
+                          MAPE {item.accuracy.mape.toFixed(1)}% ·{" "}
+                          {item.accuracy.directionCorrect ? (
+                            <span className="text-[#ef4444]">方向✓</span>
+                          ) : (
+                            <span className="text-[#10b981]">方向✗</span>
+                          )}
                         </p>
                       )}
                     </div>
