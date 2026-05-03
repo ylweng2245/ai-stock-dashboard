@@ -316,7 +316,9 @@ function ProfitCard({ bars, eps, currency }: { bars: QuarterlyBar[]; eps: EpsPoi
 // ---------------------------------------------------------------------------
 // ETF / Bond exclusion list (shared with sidebar filter in App.tsx)
 // ---------------------------------------------------------------------------
-export const EXCLUDED_FUNDAMENTAL_SYMBOLS = new Set(["0050", "00719B", "00891"]);
+export const EXCLUDED_FUNDAMENTAL_SYMBOLS = new Set([
+  "0050", "00891", "00881", "00981A", "00830", "00662", "00719B",
+]);
 
 // ---------------------------------------------------------------------------
 // Rating badge

@@ -500,7 +500,7 @@ function sliceFullYearBars(bars: CandleData[], range: string): CandleData[] {
 
 export default function TechnicalAnalysis() {
   const { activeSymbol, activeMarket } = useActiveSymbol();
-  const [range, setRange] = useState("3mo");
+  const [range, setRange] = useState("6mo");
   const queryClient = useQueryClient();
 
   // Watchlist meta
