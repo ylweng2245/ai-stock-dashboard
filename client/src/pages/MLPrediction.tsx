@@ -1,293 +1,599 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Brain, TrendingUp, TrendingDown, RefreshCw, Target, BarChart, ExternalLink } from "lucide-react";
+import { Brain, TrendingUp, TrendingDown, RefreshCw, Target, History, ChevronRight } from "lucide-react";
 import {
-  type CandleData,
-  simulateRFPrediction,
-  STOCK_META,
-} from "@/lib/stockData";
-import { cn } from "@/lib/utils";
-import {
-  BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, LineChart, Line,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
 } from "recharts";
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
-import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
+import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
+import { cn } from "@/lib/utils";
 
-interface WatchlistItem {
-  id: number;
-  symbol: string;
-  name: string;
-  market: "TW" | "US";
-  sortOrder: number;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface PricePt {
+  date: string;
+  price: number;
 }
 
-interface HistoryResponse {
-  bars: CandleData[];
-  fetchedAt: number;
-  source: string;
-  dataFrom: string;
-  dataTo: string;
+interface PredictionResult {
+  runAt: string;
+  horizonDays: number;
+  startDate: string;
+  endDate: string;
+  medianPath: PricePt[];
+  upperPath: PricePt[];
+  lowerPath: PricePt[];
+  modelName?: string;
 }
 
-export default function MLPrediction() {
-  // ─── Global symbol state (v3) ──────────────────────────────────────────────
-  const { activeSymbol, activeMarket } = useActiveSymbol();
-  const [isRunning, setIsRunning] = useState(false);
-  const [runKey, setRunKey] = useState(0);
+interface PersonalAdvice {
+  primaryAction:
+    | "hold"
+    | "add_on_dip"
+    | "take_profit_partial"
+    | "cut_loss"
+    | "avoid_new_entry";
+  reasons: string[];
+  confidence?: number;
+}
 
-  // Fetch live watchlist for meta
-  const { data: watchlist } = useQuery<WatchlistItem[]>({
-    queryKey: ["/api/watchlist"],
-    queryFn: () => apiRequest("GET", "/api/watchlist").then((r) => r.json()),
-    staleTime: 30_000,
-  });
-
-  const meta = useMemo(() => {
-    const wItem = watchlist?.find((w) => w.symbol === activeSymbol);
-    if (wItem) return { name: wItem.name, market: wItem.market };
-    return STOCK_META[activeSymbol] ?? { name: activeSymbol, market: activeMarket };
-  }, [watchlist, activeSymbol, activeMarket]);
-
-  const { data: histData, isLoading } = useQuery<HistoryResponse>({
-    queryKey: ["/api/history", activeSymbol, meta.market, "3mo"],
-    queryFn: () =>
-      apiRequest("GET", `/api/history/${activeSymbol}?market=${meta.market}&range=3mo`)
-        .then((r) => r.json()),
-    staleTime: 25 * 60_000,
-  });
-
-  const candleData: CandleData[] = histData?.bars ?? [];
-  const prediction = useMemo(
-    () => (candleData.length >= 30 ? simulateRFPrediction(candleData) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [candleData, runKey]
-  );
-
-  const handleRunPrediction = () => {
-    setIsRunning(true);
-    setTimeout(() => {
-      setRunKey((k) => k + 1);
-      setIsRunning(false);
-    }, 1200);
+interface PredictionHistoryItem {
+  runAt: string;
+  horizonDays: number;
+  startDate: string;
+  endDate: string;
+  medianPath: PricePt[];
+  upperPath: PricePt[];
+  lowerPath: PricePt[];
+  accuracy?: {
+    mae: number;
+    mape: number;
+    directionCorrect: boolean;
   };
+}
 
-  const forecastData = useMemo(() => {
-    if (!candleData.length || !prediction) return [];
-    const last30 = candleData.slice(-30);
-    const data = last30.map((d) => ({
-      date: d.time.slice(5),
-      price: d.close,
-      predicted: null as number | null,
-      upperBound: null as number | null,
-      lowerBound: null as number | null,
-    }));
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-    const lastPrice = last30[last30.length - 1].close;
-    const direction = prediction.prediction === "up" ? 1 : -1;
-    const dailyMove = lastPrice * 0.008 * direction;
+const HORIZONS = [
+  { days: 5, label: "5日" },
+  { days: 20, label: "20日" },
+  { days: 60, label: "60日" },
+] as const;
 
-    for (let i = 1; i <= 7; i++) {
-      const date = new Date();
-      date.setDate(date.getDate() + i);
-      if (date.getDay() === 0 || date.getDay() === 6) continue;
-      const predicted = lastPrice + dailyMove * i + (Math.random() - 0.5) * lastPrice * 0.005;
-      data.push({
-        date: `${date.getMonth() + 1}/${date.getDate()}`,
-        price: null as any,
-        predicted: +predicted.toFixed(2),
-        upperBound: +(predicted + lastPrice * 0.02).toFixed(2),
-        lowerBound: +(predicted - lastPrice * 0.02).toFixed(2),
-      });
-    }
-    return data;
-  }, [candleData, prediction]);
+const ACTION_CONFIG: Record<
+  NonNullable<PersonalAdvice["primaryAction"]>,
+  { label: string; className: string }
+> = {
+  hold:                  { label: "持有觀望",       className: "text-muted-foreground border-muted" },
+  add_on_dip:            { label: "逢低加碼",       className: "text-[#1cb8be] border-[#1cb8be]/40" },
+  take_profit_partial:   { label: "部分獲利了結",   className: "text-[#ef4444] border-[#ef4444]/40" },
+  cut_loss:              { label: "停損出場",       className: "text-[#10b981] border-[#10b981]/40" },
+  avoid_new_entry:       { label: "避免新進場",     className: "text-amber-400 border-amber-400/40" },
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtPct(val: number): string {
+  const sign = val >= 0 ? "+" : "";
+  return `${sign}${val.toFixed(2)}%`;
+}
+
+function computeReturn(path: PricePt[]): number {
+  if (path.length < 2) return 0;
+  const first = path[0].price;
+  const last = path[path.length - 1].price;
+  if (first === 0) return 0;
+  return ((last - first) / first) * 100;
+}
+
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function nDaysAgoStr(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Merge median/upper/lower paths into a single array for the chart
+function buildChartData(
+  median: PricePt[],
+  upper: PricePt[],
+  lower: PricePt[],
+): Array<{ date: string; median: number; upper?: number; lower?: number }> {
+  const upperMap = new Map(upper.map((p) => [p.date, p.price]));
+  const lowerMap = new Map(lower.map((p) => [p.date, p.price]));
+  return median.map((p) => ({
+    date: p.date.slice(5), // MM-DD
+    median: p.price,
+    upper: upperMap.get(p.date),
+    lower: lowerMap.get(p.date),
+  }));
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function PredictionChart({ result }: { result: PredictionResult }) {
+  const data = buildChartData(result.medianPath, result.upperPath, result.lowerPath);
+  const expectedReturn = computeReturn(result.medianPath);
+  const upside = computeReturn(result.upperPath);
+  const downside = computeReturn(result.lowerPath);
 
   return (
-    <div className="p-6 space-y-4" data-testid="prediction-page">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">ML 價格預測</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Random Forest 機器學習模型（基於真實歷史數據）</p>
+    <Card className="border-border">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-[#1cb8be]" />
+            預測走勢圖（{result.horizonDays}日）
+          </CardTitle>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>{result.startDate}</span>
+            <ChevronRight className="w-3 h-3" />
+            <span>{result.endDate}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {/* Mobile: symbol picker trigger */}
-          <AnalysisSymbolSidebarMobile />
+      </CardHeader>
+      <CardContent className="px-2 pb-3">
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+              interval={Math.floor(data.length / 6)}
+            />
+            <YAxis
+              domain={["auto", "auto"]}
+              tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+              width={65}
+              tickFormatter={(v: number) => v.toLocaleString()}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "hsl(var(--card))",
+                border: "1px solid hsl(var(--border))",
+                borderRadius: "8px",
+                fontSize: "12px",
+              }}
+              formatter={(v: number, name: string) => [
+                v?.toLocaleString() ?? "—",
+                name,
+              ]}
+            />
+            {/* Upper confidence band */}
+            <Line
+              type="monotone"
+              dataKey="upper"
+              stroke="#ef4444"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              dot={false}
+              name="上界"
+              strokeOpacity={0.5}
+              connectNulls
+            />
+            {/* Lower confidence band */}
+            <Line
+              type="monotone"
+              dataKey="lower"
+              stroke="#10b981"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              dot={false}
+              name="下界"
+              strokeOpacity={0.5}
+              connectNulls
+            />
+            {/* Median prediction path */}
+            <Line
+              type="monotone"
+              dataKey="median"
+              stroke="#1cb8be"
+              strokeWidth={2}
+              dot={false}
+              name="預測中位"
+              connectNulls
+            />
+            {/* Reference line at first price */}
+            {data[0] && (
+              <ReferenceLine
+                y={data[0].median}
+                stroke="hsl(var(--muted-foreground))"
+                strokeDasharray="3 3"
+                strokeOpacity={0.4}
+              />
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+
+        {/* Summary stats row */}
+        <div className="grid grid-cols-3 gap-3 mt-3 px-2">
+          <div className="text-center">
+            <p className="text-[10px] text-muted-foreground mb-0.5">預期報酬</p>
+            <p
+              className={cn(
+                "text-sm font-bold tabular-nums",
+                expectedReturn >= 0 ? "text-[#ef4444]" : "text-[#10b981]",
+              )}
+            >
+              {fmtPct(expectedReturn)}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-muted-foreground mb-0.5">上行潛力</p>
+            <p className="text-sm font-bold tabular-nums text-[#ef4444]">
+              {fmtPct(upside)}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-muted-foreground mb-0.5">下行風險</p>
+            <p className="text-sm font-bold tabular-nums text-[#10b981]">
+              {fmtPct(downside)}
+            </p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PersonalAdviceCard({ symbol, market }: { symbol: string; market: string }) {
+  const { data, isLoading, isError } = useQuery<PersonalAdvice>({
+    queryKey: ["/api/personal-advice", symbol, market],
+    queryFn: () =>
+      apiRequest("GET", `/api/personal-advice?symbol=${symbol}&market=${market}`).then(
+        (r) => r.json(),
+      ),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+
+  const cfg = data ? ACTION_CONFIG[data.primaryAction] : null;
+
+  return (
+    <Card className="border-border">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <Target className="w-4 h-4 text-[#1cb8be]" />
+          個人操作建議
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4">
+        {isLoading && (
+          <div className="space-y-2">
+            <div className="h-8 bg-muted/30 rounded-md animate-pulse" />
+            <div className="h-4 bg-muted/20 rounded animate-pulse w-3/4" />
+            <div className="h-4 bg-muted/20 rounded animate-pulse w-1/2" />
+          </div>
+        )}
+
+        {isError && (
+          <p className="text-xs text-muted-foreground">無法載入建議，請重試。</p>
+        )}
+
+        {data && cfg && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className={cn("text-sm font-semibold px-3 py-1", cfg.className)}
+              >
+                {cfg.label}
+              </Badge>
+              {data.confidence !== undefined && (
+                <span className="text-xs text-muted-foreground">
+                  信心度 {(data.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            {data.reasons.length > 0 && (
+              <ul className="space-y-1">
+                {data.reasons.map((r, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                    <ChevronRight className="w-3 h-3 mt-0.5 shrink-0 text-[#66c6df]" />
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PredictionHistorySection({
+  symbol,
+  market,
+  horizonDays,
+}: {
+  symbol: string;
+  market: string;
+  horizonDays: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const from = nDaysAgoStr(180);
+  const to = todayStr();
+
+  const { data, isLoading, isError } = useQuery<PredictionHistoryItem[]>({
+    queryKey: ["/api/prediction-history", symbol, market, horizonDays, from, to],
+    queryFn: () =>
+      apiRequest(
+        "GET",
+        `/api/prediction-history?symbol=${symbol}&market=${market}&horizon=${horizonDays}&from=${from}&to=${to}`,
+      ).then((r) => r.json()),
+    enabled: open,
+    staleTime: 10 * 60_000,
+    retry: 1,
+  });
+
+  return (
+    <Card className="border-border">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <History className="w-4 h-4 text-[#1cb8be]" />
+            預測歷史
+          </CardTitle>
           <Button
-            onClick={handleRunPrediction}
-            disabled={isRunning || isLoading || !prediction}
-            className="gap-2"
-            data-testid="run-prediction"
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs gap-1"
+            onClick={() => setOpen((v) => !v)}
           >
-            <RefreshCw className={cn("w-4 h-4", isRunning && "animate-spin")} />
-            {isRunning ? "運算中..." : "執行預測"}
+            {open ? "隱藏" : "顯示預測歷史"}
+            <ChevronRight
+              className={cn("w-3.5 h-3.5 transition-transform", open && "rotate-90")}
+            />
           </Button>
         </div>
-      </div>
+      </CardHeader>
 
-      {/* Data source notice */}
-      {histData && (
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground bg-muted/20 rounded px-3 py-1.5">
-          <ExternalLink className="w-3 h-3" />
-          訓練數據：{histData.dataFrom} 至 {histData.dataTo}（{candleData.length} 交易日），
-          來源：Yahoo Finance · 技術指標由本地計算
-        </div>
+      {open && (
+        <CardContent className="px-4 pb-4">
+          {isLoading && (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-14 bg-muted/20 rounded-md animate-pulse" />
+              ))}
+            </div>
+          )}
+
+          {isError && (
+            <p className="text-xs text-muted-foreground">無法載入歷史記錄。</p>
+          )}
+
+          {data && data.length === 0 && (
+            <p className="text-xs text-muted-foreground">尚無預測歷史紀錄。</p>
+          )}
+
+          {data && data.length > 0 && (
+            <div className="space-y-2">
+              {data.map((item, idx) => {
+                const ret = computeReturn(item.medianPath);
+                return (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2 bg-muted/10"
+                  >
+                    <div>
+                      <p className="text-xs font-medium">{item.runAt}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {item.startDate} → {item.endDate}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p
+                        className={cn(
+                          "text-xs font-bold tabular-nums",
+                          ret >= 0 ? "text-[#ef4444]" : "text-[#10b981]",
+                        )}
+                      >
+                        {fmtPct(ret)}
+                      </p>
+                      {item.accuracy && (
+                        <p className="text-[10px] text-muted-foreground">
+                          MAE {item.accuracy.mae.toFixed(2)} ·{" "}
+                          {item.accuracy.directionCorrect ? "方向正確 ✓" : "方向錯誤 ✗"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
       )}
+    </Card>
+  );
+}
 
-      {/* Prediction Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Brain className="w-4 h-4 text-primary" />
-              <span className="text-xs text-muted-foreground">預測方向</span>
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+export default function MLPrediction() {
+  const { activeSymbol, activeMarket } = useActiveSymbol();
+
+  const [horizonDays, setHorizonDays] = useState<5 | 20 | 60>(20);
+  const [isRunning, setIsRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [prediction, setPrediction] = useState<PredictionResult | null>(null);
+  const [hasRun, setHasRun] = useState(false);
+
+  // Reset prediction when symbol or market changes
+  const symbolKey = `${activeSymbol}:${activeMarket}`;
+  const [lastSymbolKey, setLastSymbolKey] = useState(symbolKey);
+  if (symbolKey !== lastSymbolKey) {
+    setLastSymbolKey(symbolKey);
+    setPrediction(null);
+    setHasRun(false);
+    setRunError(null);
+  }
+
+  const handleRunPrediction = async () => {
+    setIsRunning(true);
+    setRunError(null);
+    try {
+      const res = await apiRequest("POST", "/api/prediction/run", {
+        symbol: activeSymbol,
+        market: activeMarket,
+        horizonDays,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const result: PredictionResult = await res.json();
+      setPrediction(result);
+      setHasRun(true);
+    } catch (e: any) {
+      setRunError(e.message ?? "預測執行失敗");
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden">
+      {/* Main scrollable area */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-6 py-6 max-w-[1300px] mx-auto space-y-4">
+
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+            <div>
+              <h1 className="text-[28px] font-bold tracking-tight">股價走勢預測</h1>
+              <p className="text-[13px] text-muted-foreground mt-1">
+                Random Forest 模型 | 歷史資料訓練 | 多時間維度
+              </p>
             </div>
-            {isLoading || !prediction ? (
-              <Skeleton className="h-7 w-full" />
-            ) : (
-              <div className="flex items-center gap-2">
-                {prediction.prediction === "up" ? (
-                  <TrendingUp className="w-5 h-5 text-gain" />
-                ) : (
-                  <TrendingDown className="w-5 h-5 text-loss" />
-                )}
-                <span className={cn("text-lg font-bold", prediction.prediction === "up" ? "text-gain" : "text-loss")}>
-                  {prediction.prediction === "up" ? "看漲 ↑" : "看跌 ↓"}
-                </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge
+                variant="outline"
+                className="text-[11px] text-[#66c6df] border-[#66c6df]/30 bg-[#66c6df]/5"
+              >
+                <Brain className="w-3 h-3 mr-1" />
+                {activeSymbol} · {activeMarket}
+              </Badge>
+            </div>
+          </div>
+
+          {/* Controls: Horizon selector + Run button */}
+          <Card className="border-border">
+            <CardContent className="p-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">預測時間維度</p>
+                  <div className="flex gap-1.5">
+                    {HORIZONS.map(({ days, label }) => (
+                      <Button
+                        key={days}
+                        variant={horizonDays === days ? "default" : "outline"}
+                        size="sm"
+                        className={cn(
+                          "h-8 px-3 text-xs",
+                          horizonDays === days &&
+                            "bg-[#1cb8be] hover:bg-[#1cb8be]/90 text-white border-transparent",
+                        )}
+                        onClick={() => setHorizonDays(days as 5 | 20 | 60)}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="ml-auto">
+                  <Button
+                    onClick={handleRunPrediction}
+                    disabled={isRunning}
+                    className="gap-2 bg-[#1cb8be] hover:bg-[#1cb8be]/90 text-white"
+                    data-testid="run-prediction"
+                  >
+                    {isRunning ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Brain className="w-4 h-4" />
+                    )}
+                    {isRunning ? "運算中…" : "執行預測"}
+                  </Button>
+                </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
 
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Target className="w-4 h-4 text-primary" />
-              <span className="text-xs text-muted-foreground">信心度</span>
-            </div>
-            {isLoading || !prediction ? (
-              <Skeleton className="h-7 w-full" />
-            ) : (
-              <div className="space-y-1.5">
-                <span className="text-lg font-bold tabular-nums">{(prediction.confidence * 100).toFixed(1)}%</span>
-                <Progress value={prediction.confidence * 100} className="h-1.5" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              {runError && (
+                <p className="mt-2 text-xs text-destructive">{runError}</p>
+              )}
+            </CardContent>
+          </Card>
 
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <BarChart className="w-4 h-4 text-primary" />
-              <span className="text-xs text-muted-foreground">預測區間 (7日)</span>
+          {/* Empty state before first run */}
+          {!hasRun && !isRunning && (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+              <Brain className="w-12 h-12 opacity-20" />
+              <p className="text-sm">選擇時間維度後，點擊「執行預測」開始分析</p>
             </div>
-            {isLoading || !prediction ? (
-              <Skeleton className="h-7 w-full" />
-            ) : (
-              <div className="text-sm tabular-nums">
-                <span className="text-gain font-medium">{meta.market === "TW" ? "NT" : "$"}{prediction.predictedRange.high.toLocaleString()}</span>
-                <span className="text-muted-foreground mx-1.5">—</span>
-                <span className="text-loss font-medium">{meta.market === "TW" ? "NT" : "$"}{prediction.predictedRange.low.toLocaleString()}</span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          )}
 
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Brain className="w-4 h-4 text-primary" />
-              <span className="text-xs text-muted-foreground">模型資訊</span>
-            </div>
-            <div className="space-y-0.5 text-xs text-muted-foreground">
-              <div>演算法: Random Forest</div>
-              <div>特徵數: 8</div>
-              <div>訓練期: {candleData.length || "..."} 交易日</div>
-            </div>
-          </CardContent>
-        </Card>
+          {/* Loading skeleton */}
+          {isRunning && (
+            <Card className="border-border">
+              <CardContent className="p-4 space-y-3">
+                <div className="h-5 bg-muted/30 rounded animate-pulse w-1/3" />
+                <div className="h-[240px] bg-muted/20 rounded-md animate-pulse" />
+                <div className="grid grid-cols-3 gap-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-12 bg-muted/20 rounded animate-pulse" />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Prediction result */}
+          {prediction && !isRunning && (
+            <>
+              <PredictionChart result={prediction} />
+              <PersonalAdviceCard symbol={activeSymbol} market={activeMarket} />
+            </>
+          )}
+
+          {/* Prediction history (always shown after first interaction, lazy loaded) */}
+          {hasRun && (
+            <PredictionHistorySection
+              symbol={activeSymbol}
+              market={activeMarket}
+              horizonDays={horizonDays}
+            />
+          )}
+
+          {/* Disclaimer */}
+          <Card className="border-border bg-muted/5">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                ⚠️ 免責聲明：此 ML 預測模型以歷史收盤資料訓練，採 Random Forest 動量模型模擬。
+                預測結果僅供參考，不構成投資建議。機器學習模型容易過擬合，
+                實際投資決策請綜合基本面、市場環境與個人風險承受度。
+              </p>
+            </CardContent>
+          </Card>
+
+        </div>
       </div>
 
-      {/* Feature Importance Chart */}
-      <Card className="border-border">
-        <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-semibold">特徵重要性 (Feature Importance)</CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          {isLoading || !prediction ? (
-            <Skeleton className="w-full h-[280px] rounded-md" />
-          ) : (
-            <ResponsiveContainer width="100%" height={280}>
-              <RechartsBarChart
-                data={prediction.featureImportance}
-                layout="vertical"
-                margin={{ top: 5, right: 30, left: 100, bottom: 5 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} horizontal={false} />
-                <XAxis type="number" domain={[0, 0.25]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
-                <YAxis type="category" dataKey="feature" tick={{ fontSize: 11, fill: "hsl(var(--foreground))" }} width={100} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }}
-                  formatter={(value: number) => [`${(value * 100).toFixed(1)}%`, "重要性"]}
-                />
-                <Bar dataKey="importance" radius={[0, 4, 4, 0]}>
-                  {prediction.featureImportance.map((_, index) => (
-                    <Cell key={index} fill={`hsl(${185 + index * 15}, 75%, ${50 - index * 3}%)`} />
-                  ))}
-                </Bar>
-              </RechartsBarChart>
-            </ResponsiveContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Forecast Chart */}
-      <Card className="border-border">
-        <CardHeader className="pb-2 pt-4 px-4">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-semibold">價格預測走勢 (7日)</CardTitle>
-            <Badge variant="outline" className="text-[10px]">虛線為預測區間</Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          {isLoading || !prediction ? (
-            <Skeleton className="w-full h-[280px] rounded-md" />
-          ) : (
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={forecastData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} interval={3} />
-                <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} width={65} tickFormatter={(v) => v.toLocaleString()} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }}
-                  formatter={(v: any, name: string) => [typeof v === "number" ? v.toLocaleString() : v, name]}
-                />
-                <Line type="monotone" dataKey="price" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} name="實際價格" connectNulls={false} />
-                <Line type="monotone" dataKey="predicted" stroke="#f59e0b" strokeWidth={2} strokeDasharray="6 3" dot={false} name="預測價格" connectNulls={false} />
-                <Line type="monotone" dataKey="upperBound" stroke="#f59e0b" strokeWidth={1} strokeDasharray="2 2" dot={false} name="上界" opacity={0.4} connectNulls={false} />
-                <Line type="monotone" dataKey="lowerBound" stroke="#f59e0b" strokeWidth={1} strokeDasharray="2 2" dot={false} name="下界" opacity={0.4} connectNulls={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="border-border bg-primary/5">
-        <CardContent className="p-4">
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            ⚠️ 免責聲明：此 ML 預測模型以真實歷史收盤數據（Yahoo Finance）計算技術指標，
-            採 Random Forest 動量模型模擬。預測僅供參考，不構成投資建議。
-            機器學習策略容易過擬合，實際投資決策請綜合基本面、市場環境與個人風險承受度。
-          </p>
-        </CardContent>
-      </Card>
+      {/* Right sidebar */}
+      <AnalysisSymbolSidebarDesktop />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -195,3 +195,29 @@ export const fundamentalData = sqliteTable("fundamental_data", {
 export const insertFundamentalDataSchema = createInsertSchema(fundamentalData).omit({ id: true });
 export type InsertFundamentalData = z.infer<typeof insertFundamentalDataSchema>;
 export type FundamentalDataRow = typeof fundamentalData.$inferSelect;
+
+// ── Model Predictions ────────────────────────────────────────────────────────
+// One row per prediction run. Never overwritten — history is append-only.
+export const modelPredictions = sqliteTable('modelpredictions', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  symbol: text('symbol').notNull(),
+  market: text('market').notNull(),                   // 'TW' | 'US'
+  modelName: text('model_name').notNull(),             // e.g. 'RF_v1'
+  horizonDays: integer('horizon_days').notNull(),      // 5 | 20 | 60
+  runAt: text('run_at').notNull(),                     // YYYY-MM-DD (market tz)
+  startDate: text('start_date').notNull(),             // prediction start date
+  endDate: text('end_date').notNull(),                 // prediction end date
+  medianPathJson: text('median_path').notNull(),       // JSON: [{date,price}]
+  lowerPathJson: text('lower_path'),                   // confidence interval lower
+  upperPathJson: text('upper_path'),                   // confidence interval upper
+  metaJson: text('meta_json'),                         // featureVersion, trainWindowYears, etc.
+  createdAt: integer('created_at').notNull(),
+}, (t) => ({
+  idxSymbolHorizonRunAt: index('idx_modelpred_symbol_mkt_horizon_runat').on(
+    t.symbol, t.market, t.horizonDays, t.runAt,
+  ),
+}));
+
+export const insertModelPredictionSchema = createInsertSchema(modelPredictions).omit({ id: true });
+export type InsertModelPrediction = z.infer<typeof insertModelPredictionSchema>;
+export type ModelPrediction = typeof modelPredictions.$inferSelect;

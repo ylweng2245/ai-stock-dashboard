@@ -10,6 +10,7 @@ import {
   type WatchlistSectorTag, watchlistSectorTags,
   type AnalystTarget, type InsertAnalystTarget, analystTargets,
   type FundamentalDataRow, type InsertFundamentalData, fundamentalData,
+  type ModelPrediction, type InsertModelPrediction, modelPredictions,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -89,6 +90,27 @@ try {
   // Already exists — ignore
 }
 
+// modelpredictions table (V6.1 — append-only prediction history)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS modelpredictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL,
+    run_at TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    median_path TEXT NOT NULL,
+    lower_path TEXT,
+    upper_path TEXT,
+    meta_json TEXT,
+    created_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_modelpred_symbol_mkt_horizon_runat
+    ON modelpredictions (symbol, market, horizon_days, run_at)`);
+} catch { /* ignore */ }
+
 export const db = drizzle(sqlite);
 
 export interface IStorage {
@@ -141,6 +163,21 @@ export interface IStorage {
   upsertFundamental(row: InsertFundamentalData): void;
   getAllFundamentals(): FundamentalDataRow[];
   clearAllFundamentals(): void;
+
+  // Model Predictions (V6.1) — append-only, never overwrite
+  insertModelPrediction(row: InsertModelPrediction): void;
+  getModelPredictions(
+    symbol: string,
+    market: string,
+    horizonDays: number,
+    fromDate: string,
+    toDate: string,
+  ): ModelPrediction[];
+  getLatestModelPrediction(
+    symbol: string,
+    market: string,
+    horizonDays: number,
+  ): ModelPrediction | undefined;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -685,6 +722,94 @@ export class DatabaseStorage implements IStorage {
       fetchedAt:            raw.fetched_at,
       updatedAt:            raw.updated_at,
     }));
+  }
+
+  // ─── Model Predictions (V6.1) ────────────────────────────────────────────────────
+
+  /** Always INSERT a new row — never UPDATE (history is append-only). */
+  insertModelPrediction(row: InsertModelPrediction): void {
+    sqlite.prepare(`
+      INSERT INTO modelpredictions
+        (symbol, market, model_name, horizon_days, run_at, start_date, end_date,
+         median_path, lower_path, upper_path, meta_json, created_at)
+      VALUES
+        (@symbol, @market, @modelName, @horizonDays, @runAt, @startDate, @endDate,
+         @medianPathJson, @lowerPathJson, @upperPathJson, @metaJson, @createdAt)
+    `).run({
+      symbol:         row.symbol,
+      market:         row.market,
+      modelName:      row.modelName,
+      horizonDays:    row.horizonDays,
+      runAt:          row.runAt,
+      startDate:      row.startDate,
+      endDate:        row.endDate,
+      medianPathJson: row.medianPathJson,
+      lowerPathJson:  row.lowerPathJson ?? null,
+      upperPathJson:  row.upperPathJson ?? null,
+      metaJson:       row.metaJson ?? null,
+      createdAt:      row.createdAt,
+    });
+  }
+
+  /** Query prediction runs within a date window, newest first. */
+  getModelPredictions(
+    symbol: string,
+    market: string,
+    horizonDays: number,
+    fromDate: string,
+    toDate: string,
+  ): ModelPrediction[] {
+    const rows = sqlite.prepare(`
+      SELECT * FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND horizon_days = ?
+        AND run_at >= ? AND run_at <= ?
+      ORDER BY run_at DESC
+    `).all(symbol, market, horizonDays, fromDate, toDate) as any[];
+    return rows.map(r => ({
+      id:              r.id,
+      symbol:          r.symbol,
+      market:          r.market,
+      modelName:       r.model_name,
+      horizonDays:     r.horizon_days,
+      runAt:           r.run_at,
+      startDate:       r.start_date,
+      endDate:         r.end_date,
+      medianPathJson:  r.median_path,
+      lowerPathJson:   r.lower_path ?? null,
+      upperPathJson:   r.upper_path ?? null,
+      metaJson:        r.meta_json ?? null,
+      createdAt:       r.created_at,
+    }));
+  }
+
+  /** Get the most recent prediction for a symbol + horizon. */
+  getLatestModelPrediction(
+    symbol: string,
+    market: string,
+    horizonDays: number,
+  ): ModelPrediction | undefined {
+    const r = sqlite.prepare(`
+      SELECT * FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND horizon_days = ?
+      ORDER BY run_at DESC, created_at DESC
+      LIMIT 1
+    `).get(symbol, market, horizonDays) as any;
+    if (!r) return undefined;
+    return {
+      id:              r.id,
+      symbol:          r.symbol,
+      market:          r.market,
+      modelName:       r.model_name,
+      horizonDays:     r.horizon_days,
+      runAt:           r.run_at,
+      startDate:       r.start_date,
+      endDate:         r.end_date,
+      medianPathJson:  r.median_path,
+      lowerPathJson:   r.lower_path ?? null,
+      upperPathJson:   r.upper_path ?? null,
+      metaJson:        r.meta_json ?? null,
+      createdAt:       r.created_at,
+    };
   }
 }
 

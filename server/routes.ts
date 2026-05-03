@@ -8,6 +8,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, type DigestSyncItem } from "./newsDigestService";
+import { runPrediction } from "./mlPredictionService";
+import { buildPersonalPositionState, generatePersonalAdvice, DEFAULT_STRATEGY } from "./personalAdviceService";
+import { buildAnalystConsensusFeatures } from "./analystConsensusService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1231,6 +1234,150 @@ export async function registerRoutes(
     }
     console.log(`[news-digest-sync] saved ${saved}/${items.length}`);
     res.json({ ok: true, saved, errors });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1: POST /api/prediction/run
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/prediction/run", async (req, res) => {
+    const { symbol, market, horizonDays } = req.body as {
+      symbol?: string; market?: string; horizonDays?: number;
+    };
+    if (!symbol || !market)
+      return res.status(400).json({ error: "symbol and market are required" });
+    if (!horizonDays || ![5, 20, 60].includes(horizonDays))
+      return res.status(400).json({ error: "horizonDays must be 5, 20, or 60" });
+    try {
+      // Get current price from latest historical bar
+      const recentBars = await storage.getHistoricalPricesByRange(
+        symbol.toUpperCase(), market.toUpperCase(),
+        new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10),
+        new Date().toISOString().slice(0, 10),
+      );
+      const currentPrice = recentBars.length > 0
+        ? recentBars.sort((a, b) => b.date.localeCompare(a.date))[0].close
+        : 0;
+      const result = await runPrediction({
+        symbol: symbol.toUpperCase(),
+        market: market.toUpperCase() as "TW" | "US",
+        horizonDays: horizonDays as 5 | 20 | 60,
+        currentPrice,
+        saveToDb: true,
+      });
+      res.json(result);
+    } catch (e: any) {
+      console.error(`[prediction/run] ${symbol} h=${horizonDays}:`, e.message);
+      res.status(500).json({ ok: false, error: e.message ?? "Prediction failed" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1: GET /api/prediction-history
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/prediction-history", async (req, res) => {
+    const symbol     = (req.query.symbol  as string ?? "").toUpperCase();
+    const market     = (req.query.market  as string ?? "").toUpperCase();
+    const horizonDays = parseInt(req.query.horizon as string ?? "", 10);
+    const from       = req.query.from as string;
+    const to         = req.query.to   as string;
+
+    if (!symbol || !market) return res.status(400).json({ error: "symbol and market are required" });
+    if (isNaN(horizonDays) || ![5, 20, 60].includes(horizonDays))
+      return res.status(400).json({ error: "horizon must be 5, 20, or 60" });
+    if (!from || !to) return res.status(400).json({ error: "from and to are required" });
+
+    try {
+      const rows = storage.getModelPredictions(symbol, market, horizonDays, from, to);
+      const todayISO = new Date().toISOString().slice(0, 10);
+
+      const results = await Promise.all(rows.map(async (row) => {
+        const medianPath: {date:string;price:number}[] = row.medianPathJson ? JSON.parse(row.medianPathJson) : [];
+        const lowerPath:  {date:string;price:number}[] = row.lowerPathJson  ? JSON.parse(row.lowerPathJson)  : [];
+        const upperPath:  {date:string;price:number}[] = row.upperPathJson  ? JSON.parse(row.upperPathJson)  : [];
+
+        const item: any = { runAt: row.runAt, horizonDays: row.horizonDays, startDate: row.startDate, endDate: row.endDate, medianPath, upperPath, lowerPath, modelName: row.modelName };
+
+        // Compute accuracy if prediction window is in the past
+        if (row.endDate <= todayISO && medianPath.length >= 2) {
+          try {
+            const actual = await storage.getHistoricalPricesByRange(symbol, market, row.startDate, row.endDate);
+            if (actual.length >= 2) {
+              const actualMap = new Map(actual.map(p => [p.date, p.close]));
+              let sumAbsErr = 0, sumAbsPctErr = 0, count = 0;
+              for (const pt of medianPath) {
+                const a = actualMap.get(pt.date);
+                if (a !== undefined && a > 0) {
+                  const e = Math.abs(pt.price - a);
+                  sumAbsErr += e; sumAbsPctErr += e / a; count++;
+                }
+              }
+              if (count > 0) {
+                const predUp   = medianPath[medianPath.length-1].price > medianPath[0].price;
+                const actualUp = actual[actual.length-1].close > actual[0].close;
+                item.accuracy = { mae: sumAbsErr/count, mape: (sumAbsPctErr/count)*100, directionCorrect: predUp === actualUp };
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+        return item;
+      }));
+      res.json(results);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1: GET /api/personal-advice
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/personal-advice", async (req, res) => {
+    const symbol = (req.query.symbol as string ?? "").toUpperCase();
+    const market = (req.query.market as string ?? "") as "TW" | "US";
+    if (!symbol || !market) return res.status(400).json({ error: "symbol and market are required" });
+
+    try {
+      // Current price from recent history
+      const recentBars = await storage.getHistoricalPricesByRange(
+        symbol, market,
+        new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10),
+        new Date().toISOString().slice(0, 10),
+      );
+      const currentPrice = recentBars.length > 0
+        ? recentBars.sort((a, b) => b.date.localeCompare(a.date))[0].close
+        : null;
+
+      // Latest prediction for each horizon
+      const horizonPredictions = [5, 20, 60].map((h) => {
+        const latest = storage.getLatestModelPrediction(symbol, market, h);
+        if (!latest) return null;
+        const median: {date:string;price:number}[] = latest.medianPathJson ? JSON.parse(latest.medianPathJson) : [];
+        const lower:  {date:string;price:number}[] = latest.lowerPathJson  ? JSON.parse(latest.lowerPathJson)  : [];
+        const upper:  {date:string;price:number}[] = latest.upperPathJson  ? JSON.parse(latest.upperPathJson)  : [];
+        if (median.length < 2) return null;
+        const pct = (path: {price:number}[]) => path.length < 2 ? null : (path[path.length-1].price - path[0].price) / path[0].price * 100;
+        return {
+          horizonDays: h,
+          expectedReturnPct:  pct(median),
+          downsideRiskPct:    pct(lower),
+          upsidePotentialPct: pct(upper),
+          upProbability: null,
+        };
+      }).filter(Boolean) as any[];
+
+      // Analyst consensus features
+      const analystFeatures = await buildAnalystConsensusFeatures(symbol, market, currentPrice ?? 0);
+
+      // Personal position state
+      const positionState = await buildPersonalPositionState(symbol, market, currentPrice);
+
+      // Generate advice
+      const advice = generatePersonalAdvice(symbol, market, currentPrice, horizonPredictions, analystFeatures, DEFAULT_STRATEGY, positionState);
+
+      res.json({ ...advice, positionState, horizonPredictions, analystFeatures });
+    } catch (e: any) {
+      console.error(`[personal-advice] ${symbol}:`, e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   return httpServer;
