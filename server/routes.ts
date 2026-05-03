@@ -7,7 +7,7 @@ import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type Ins
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
-import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
+import { generateAllDigests, saveDigestData, type DigestSyncItem } from "./newsDigestService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1192,6 +1192,33 @@ export async function registerRoutes(
     }
     console.log(`[fundamentals-sync] saved ${saved}/${items.length} symbols`);
     res.json({ ok: true, saved });
+  });
+
+  /**
+   * POST /api/internal/news-digest-sync
+   * Called by Perplexity cron (news_digest_cron.py) to write daily news digests into the DB.
+   * Requires X-Sync-Secret header matching INTERNAL_SYNC_SECRET env var.
+   *
+   * Body: Array of DigestSyncItem
+   */
+  app.post("/api/internal/news-digest-sync", (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const items = req.body as DigestSyncItem[];
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Expected non-empty array" });
+    }
+    let saved = 0;
+    const errors: string[] = [];
+    for (const item of items) {
+      const result = saveDigestData(item);
+      if (result.success) saved++;
+      else errors.push(`${item.ticker}: ${result.error}`);
+    }
+    console.log(`[news-digest-sync] saved ${saved}/${items.length}`);
+    res.json({ ok: true, saved, errors });
   });
 
   return httpServer;
