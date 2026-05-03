@@ -780,16 +780,26 @@ export async function fetchFinnhubCalendar(
       }
     }
 
-    // 2. Basic financials for dividend dates
-    const metricUrl = `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all&token=${FINNHUB_API_KEY}`;
-    const metricRes = await fetch(metricUrl, { signal: AbortSignal.timeout(8000) });
+    // 2. Dividend calendar — pick the nearest future (or most recent past ≤90d) ex-dividend date
+    const past    = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const divUrl  = `https://finnhub.io/api/v1/stock/dividend?symbol=${encodeURIComponent(ticker)}&from=${past}&to=${future}&token=${FINNHUB_API_KEY}`;
+    const divRes  = await fetch(divUrl, { signal: AbortSignal.timeout(8000) });
     let exDividendDate: string | undefined;
     let nextDividendDate: string | undefined;
-    if (metricRes.ok) {
-      const metricData = await metricRes.json() as any;
-      const m = metricData?.metric ?? {};
-      exDividendDate   = m.exDividendDate   ? String(m.exDividendDate).slice(0, 10)   : undefined;
-      nextDividendDate = m.nextDividendDate ? String(m.nextDividendDate).slice(0, 10) : undefined;
+    if (divRes.ok) {
+      const divData = await divRes.json() as any[];
+      if (Array.isArray(divData) && divData.length > 0) {
+        // Sort by date ascending
+        const sorted = [...divData]
+          .filter((d: any) => d.date)
+          .sort((a: any, b: any) => a.date.localeCompare(b.date));
+        // Nearest future ex-div → nextDividendDate
+        const upcoming = sorted.filter((d: any) => d.date >= today);
+        if (upcoming.length > 0) nextDividendDate = String(upcoming[0].date).slice(0, 10);
+        // Most recent past ex-div → exDividendDate
+        const past90 = sorted.filter((d: any) => d.date < today);
+        if (past90.length > 0) exDividendDate = String(past90[past90.length - 1].date).slice(0, 10);
+      }
     }
 
     return { earningsDate, hour, epsEstimate, revenueEstimate, exDividendDate, nextDividendDate };
