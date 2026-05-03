@@ -751,7 +751,7 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY ?? "";
 export async function fetchFinnhubCalendar(
   ticker: string,   // US symbol (e.g. "LLY"); TW symbols are not supported
   market: "TW" | "US"
-): Promise<{ earningsDate?: string; hour?: string; epsEstimate?: number; revenueEstimate?: number; exDividendDate?: string; nextDividendDate?: string } | null> {
+): Promise<{ earningsDate?: string; hour?: string; epsEstimate?: number; revenueEstimate?: number } | null> {
   if (!FINNHUB_API_KEY || market === "TW") return null;
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -780,29 +780,7 @@ export async function fetchFinnhubCalendar(
       }
     }
 
-    // 2. Dividend calendar — pick the nearest future (or most recent past ≤90d) ex-dividend date
-    const past    = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-    const divUrl  = `https://finnhub.io/api/v1/stock/dividend?symbol=${encodeURIComponent(ticker)}&from=${past}&to=${future}&token=${FINNHUB_API_KEY}`;
-    const divRes  = await fetch(divUrl, { signal: AbortSignal.timeout(8000) });
-    let exDividendDate: string | undefined;
-    let nextDividendDate: string | undefined;
-    if (divRes.ok) {
-      const divData = await divRes.json() as any[];
-      if (Array.isArray(divData) && divData.length > 0) {
-        // Sort by date ascending
-        const sorted = [...divData]
-          .filter((d: any) => d.date)
-          .sort((a: any, b: any) => a.date.localeCompare(b.date));
-        // Nearest future ex-div → nextDividendDate
-        const upcoming = sorted.filter((d: any) => d.date >= today);
-        if (upcoming.length > 0) nextDividendDate = String(upcoming[0].date).slice(0, 10);
-        // Most recent past ex-div → exDividendDate
-        const past90 = sorted.filter((d: any) => d.date < today);
-        if (past90.length > 0) exDividendDate = String(past90[past90.length - 1].date).slice(0, 10);
-      }
-    }
-
-    return { earningsDate, hour, epsEstimate, revenueEstimate, exDividendDate, nextDividendDate };
+    return { earningsDate, hour, epsEstimate, revenueEstimate };
   } catch (e: any) {
     console.warn(`[finnhubCalendar] ${ticker}: ${e.message}`);
     return null;
@@ -849,11 +827,9 @@ function buildFinancialEvents(calendar: any): FinancialEvent[] {
     addEvent(calendar?.earningsDate, "earnings", "財報日 Earnings");
   }
 
-  // Dividend: prefer Finnhub nextDividendDate, then exDividendDate
-  const divDate = calendar?.finnhubNextDividendDate ?? calendar?.finnhubExDividendDate ?? calendar?.exDividendDate;
-  const divLabel = calendar?.finnhubNextDividendDate ? "除息日（下次）" :
-                   calendar?.finnhubExDividendDate    ? "除息日 Ex-Div"  : "除息日 Dividend";
-  addEvent(divDate, "dividend", divLabel);
+  // Dividend: Yahoo exDividendDate is the primary source (already parsed in fetchFromYahooFinance)
+  const divDate = calendar?.exDividendDate ?? null;
+  addEvent(divDate, "dividend", "除息日 Ex-Div");
 
   events.sort((a, b) => a.daysFromNow - b.daysFromNow);
   return events;
@@ -935,12 +911,10 @@ export function enrichCalendarWithFinnhub(symbol: string, market: "TW" | "US", b
       if (!fin) return;
       const enriched = {
         ...baseCalendar,
-        ...(fin.earningsDate     && { finnhubEarningsDate:    fin.earningsDate }),
-        ...(fin.hour             && { finnhubHour:            fin.hour }),
-        ...(fin.epsEstimate      != null && { finnhubEpsEstimate:     fin.epsEstimate }),
-        ...(fin.revenueEstimate  != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
-        ...(fin.exDividendDate   && { finnhubExDividendDate:  fin.exDividendDate }),
-        ...(fin.nextDividendDate && { finnhubNextDividendDate: fin.nextDividendDate }),
+        ...(fin.earningsDate    && { finnhubEarningsDate:    fin.earningsDate }),
+        ...(fin.hour            && { finnhubHour:            fin.hour }),
+        ...(fin.epsEstimate     != null && { finnhubEpsEstimate:    fin.epsEstimate }),
+        ...(fin.revenueEstimate != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
       };
       const existing = storage.getFundamental(symbol, market);
       if (existing) {
@@ -1190,12 +1164,10 @@ async function runFinnhubCalendarRefresh(): Promise<void> {
 
       const enriched = {
         ...cal,
-        ...(fin.earningsDate      && { finnhubEarningsDate:    fin.earningsDate }),
-        ...(fin.hour              && { finnhubHour:            fin.hour }),
-        ...(fin.epsEstimate       != null && { finnhubEpsEstimate:     fin.epsEstimate }),
-        ...(fin.revenueEstimate   != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
-        ...(fin.exDividendDate    && { finnhubExDividendDate:  fin.exDividendDate }),
-        ...(fin.nextDividendDate  && { finnhubNextDividendDate: fin.nextDividendDate }),
+        ...(fin.earningsDate    && { finnhubEarningsDate:    fin.earningsDate }),
+        ...(fin.hour            && { finnhubHour:            fin.hour }),
+        ...(fin.epsEstimate     != null && { finnhubEpsEstimate:    fin.epsEstimate }),
+        ...(fin.revenueEstimate != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
       };
 
       const { id: _id, ...rest } = existing as any;
