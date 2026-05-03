@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
-import { enrichCalendarWithFinnhub } from "./fundamentalService";
+import { enrichCalendarWithFinnhub, fetchFinnhubCalendar } from "./fundamentalService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1129,6 +1129,17 @@ export async function registerRoutes(
    * POST /api/fundamentals/:symbol/resync?market=US
    * Force re-fetch from yfinance regardless of TTL.
    */
+  // Temporary debug: GET /api/debug/finnhub/:symbol
+  app.get("/api/debug/finnhub/:symbol", async (req, res) => {
+    const symbol = (req.params.symbol ?? "").toUpperCase();
+    try {
+      const result = await fetchFinnhubCalendar(symbol, "US");
+      res.json({ symbol, result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/fundamentals/:symbol/resync", async (req, res) => {
     const symbol  = (req.params.symbol ?? "").toUpperCase();
     const market  = (req.query.market as string ?? "US").toUpperCase() as "TW" | "US";
