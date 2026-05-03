@@ -264,7 +264,7 @@ function BullBearColumn({
           return (
             <div key={i} className="flex flex-col gap-1.5">
               {blk.title && (
-                <div className="text-[14px] font-bold text-foreground leading-snug">
+                <div className="text-[14px] font-bold text-[#66c6df] leading-snug">
                   {blk.title}
                 </div>
               )}
