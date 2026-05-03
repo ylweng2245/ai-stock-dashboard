@@ -1141,4 +1141,78 @@ function scheduleDailyRefresh(market: "TW" | "US", utcHour: number, utcMinute: n
 export function scheduleAutoRefresh(): void {
   scheduleDailyRefresh("TW", 0, 0);    // 08:00 CST (台股 09:00 開盤前1小時)
   scheduleDailyRefresh("US", 13, 30);  // 08:30 EST (美股 09:30 開盤前1小時)
+  scheduleFinnhubCalendarRefresh(14, 0); // 22:00 CST — after US close, refresh all calendars
+}
+
+// ---------------------------------------------------------------------------
+// Finnhub calendar daily scheduler
+// Runs once a day to update earningsDate/hour/dividend for all US stocks in
+// the watchlist, independent of the fundamentals Cron job.
+// ---------------------------------------------------------------------------
+
+async function runFinnhubCalendarRefresh(): Promise<void> {
+  if (!process.env.FINNHUB_API_KEY) {
+    console.log("[finnhubScheduler] FINNHUB_API_KEY not set, skipping");
+    return;
+  }
+
+  let watchlist: { symbol: string; market: string }[] = [];
+  try {
+    watchlist = await storage.getWatchlist();
+  } catch (e: any) {
+    console.error("[finnhubScheduler] Failed to load watchlist:", e.message);
+    return;
+  }
+
+  const usStocks = watchlist.filter((w) => w.market === "US");
+  console.log(`[finnhubScheduler] Refreshing Finnhub calendars for ${usStocks.length} US stocks`);
+
+  for (const item of usStocks) {
+    try {
+      const fin = await fetchFinnhubCalendar(item.symbol, "US");
+      if (!fin) continue;
+
+      const existing = storage.getFundamental(item.symbol, "US");
+      if (!existing) continue; // no fundamental record yet — skip
+
+      let cal: any = {};
+      try { cal = JSON.parse(existing.calendarJson || "{}"); } catch { /* */ }
+
+      const enriched = {
+        ...cal,
+        ...(fin.earningsDate      && { finnhubEarningsDate:    fin.earningsDate }),
+        ...(fin.hour              && { finnhubHour:            fin.hour }),
+        ...(fin.epsEstimate       != null && { finnhubEpsEstimate:     fin.epsEstimate }),
+        ...(fin.revenueEstimate   != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
+        ...(fin.exDividendDate    && { finnhubExDividendDate:  fin.exDividendDate }),
+        ...(fin.nextDividendDate  && { finnhubNextDividendDate: fin.nextDividendDate }),
+      };
+
+      const { id: _id, ...rest } = existing as any;
+      storage.upsertFundamental({ ...rest, calendarJson: JSON.stringify(enriched), updatedAt: Date.now() });
+      console.log(`[finnhubScheduler] ${item.symbol}: earningsDate=${fin.earningsDate} hour=${fin.hour ?? "-"} nextDiv=${fin.nextDividendDate ?? "-"}`);
+    } catch (e: any) {
+      console.error(`[finnhubScheduler] ${item.symbol} failed:`, e.message);
+    }
+    // 1.5s between calls to respect Finnhub free-tier rate limit (60 req/min)
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  console.log("[finnhubScheduler] Calendar refresh complete");
+}
+
+function scheduleFinnhubCalendarRefresh(utcHour: number, utcMinute: number): void {
+  const label = `Finnhub calendar refresh (UTC ${String(utcHour).padStart(2,"0")}:${String(utcMinute).padStart(2,"0")})`;
+
+  function scheduleNext() {
+    const delay = msUntilNextUTC(utcHour, utcMinute);
+    const fireAt = new Date(Date.now() + delay).toISOString();
+    console.log(`[finnhubScheduler] ${label} scheduled at ${fireAt}`);
+    setTimeout(async () => {
+      await runFinnhubCalendarRefresh();
+      scheduleNext(); // reschedule for tomorrow
+    }, delay);
+  }
+
+  scheduleNext();
 }
