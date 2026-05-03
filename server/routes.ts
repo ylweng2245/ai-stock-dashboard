@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
+import { fetchFinnhubCalendar } from "./fundamentalService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1173,13 +1174,17 @@ export async function registerRoutes(
     }
     const now = Date.now();
     let saved = 0;
+    const toEnrich: { symbol: string; market: "TW" | "US"; baseCalendar: any }[] = [];
+
     for (const item of items) {
       try {
         const { symbol, market, info, quarterlyIncome, epsHistory, calendar } = item;
         if (!symbol || !market) continue;
+        const sym = String(symbol).toUpperCase();
+        const mkt = String(market).toUpperCase() as "TW" | "US";
         storage.upsertFundamental({
-          symbol: String(symbol).toUpperCase(),
-          market: String(market).toUpperCase() as "TW" | "US",
+          symbol: sym,
+          market: mkt,
           infoJson:            JSON.stringify(info            ?? {}),
           quarterlyIncomeJson: JSON.stringify(quarterlyIncome ?? []),
           epsHistoryJson:      JSON.stringify(epsHistory      ?? []),
@@ -1188,12 +1193,47 @@ export async function registerRoutes(
           updatedAt: now,
         });
         saved++;
+        // Queue US stocks for Finnhub enrichment
+        if (mkt === "US") toEnrich.push({ symbol: sym, market: mkt, baseCalendar: calendar ?? {} });
       } catch (e: any) {
         console.error(`[fundamentals-sync] failed for ${item?.symbol}:`, e.message);
       }
     }
     console.log(`[fundamentals-sync] saved ${saved}/${items.length} symbols`);
     res.json({ ok: true, saved });
+
+    // Asynchronously enrich calendars with Finnhub data (don't block response)
+    if (toEnrich.length > 0 && process.env.FINNHUB_API_KEY) {
+      setImmediate(async () => {
+        for (const { symbol, market, baseCalendar } of toEnrich) {
+          try {
+            const fin = await fetchFinnhubCalendar(symbol, market);
+            if (!fin) continue;
+            const enriched = {
+              ...baseCalendar,
+              ...(fin.earningsDate    && { finnhubEarningsDate:    fin.earningsDate }),
+              ...(fin.hour            && { finnhubHour:            fin.hour }),
+              ...(fin.epsEstimate     != null && { finnhubEpsEstimate:     fin.epsEstimate }),
+              ...(fin.revenueEstimate != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
+              ...(fin.exDividendDate  && { finnhubExDividendDate:  fin.exDividendDate }),
+              ...(fin.nextDividendDate && { finnhubNextDividendDate: fin.nextDividendDate }),
+            };
+            const existing = storage.getFundamental(symbol, market);
+            if (existing) {
+              const { id: _id, ...existingWithoutId } = existing as any;
+              storage.upsertFundamental({
+                ...existingWithoutId,
+                calendarJson: JSON.stringify(enriched),
+                updatedAt: Date.now(),
+              });
+              console.log(`[finnhubCalendar] ${symbol}: earningsDate=${fin.earningsDate} hour=${fin.hour} nextDiv=${fin.nextDividendDate}`);
+            }
+          } catch (e: any) {
+            console.warn(`[finnhubCalendar] ${symbol}: ${e.message}`);
+          }
+        }
+      });
+    }
   });
 
   return httpServer;

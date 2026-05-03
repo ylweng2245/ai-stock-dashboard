@@ -64,6 +64,10 @@ export interface FinancialEvent {
   type: "earnings" | "dividend" | "fiscalYearEnd";
   label: string;
   daysFromNow: number;
+  // Earnings-specific (from Finnhub)
+  hour?: "bmo" | "amc" | "dmh";  // before-market-open / after-market-close / during-market-hours
+  epsEstimate?: number | null;
+  revenueEstimate?: number | null;
 }
 
 export interface SummaryRow {
@@ -738,24 +742,108 @@ function buildSummaryRows(pillars: PillarCard[], info: any, industry: string): S
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Finnhub calendar fetch
+// ---------------------------------------------------------------------------
+
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY ?? "";
+
+export async function fetchFinnhubCalendar(
+  ticker: string,   // US symbol (e.g. "LLY"); TW symbols are not supported
+  market: "TW" | "US"
+): Promise<{ earningsDate?: string; hour?: string; epsEstimate?: number; revenueEstimate?: number; exDividendDate?: string; nextDividendDate?: string } | null> {
+  if (!FINNHUB_API_KEY || market === "TW") return null;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const future = new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10);
+
+    // 1. Earnings calendar
+    const earningsUrl = `https://finnhub.io/api/v1/calendar/earnings?from=${today}&to=${future}&symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_API_KEY}`;
+    const earningsRes = await fetch(earningsUrl, { signal: AbortSignal.timeout(8000) });
+    let earningsDate: string | undefined;
+    let hour: string | undefined;
+    let epsEstimate: number | undefined;
+    let revenueEstimate: number | undefined;
+    if (earningsRes.ok) {
+      const earningsData = await earningsRes.json() as any;
+      const items: any[] = earningsData?.earningsCalendar ?? [];
+      // Pick the nearest future earnings event
+      const upcoming = items
+        .filter((e: any) => e.date >= today)
+        .sort((a: any, b: any) => a.date.localeCompare(b.date));
+      if (upcoming.length > 0) {
+        const ev = upcoming[0];
+        earningsDate   = ev.date;
+        hour           = ev.hour ?? undefined;          // "bmo" | "amc" | "dmh"
+        epsEstimate    = ev.epsEstimate   != null ? Number(ev.epsEstimate)   : undefined;
+        revenueEstimate = ev.revenueEstimate != null ? Number(ev.revenueEstimate) : undefined;
+      }
+    }
+
+    // 2. Basic financials for dividend dates
+    const metricUrl = `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all&token=${FINNHUB_API_KEY}`;
+    const metricRes = await fetch(metricUrl, { signal: AbortSignal.timeout(8000) });
+    let exDividendDate: string | undefined;
+    let nextDividendDate: string | undefined;
+    if (metricRes.ok) {
+      const metricData = await metricRes.json() as any;
+      const m = metricData?.metric ?? {};
+      exDividendDate   = m.exDividendDate   ? String(m.exDividendDate).slice(0, 10)   : undefined;
+      nextDividendDate = m.nextDividendDate ? String(m.nextDividendDate).slice(0, 10) : undefined;
+    }
+
+    return { earningsDate, hour, epsEstimate, revenueEstimate, exDividendDate, nextDividendDate };
+  } catch (e: any) {
+    console.warn(`[finnhubCalendar] ${ticker}: ${e.message}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build financial events from stored calendar + optional Finnhub data
+// ---------------------------------------------------------------------------
+
 function buildFinancialEvents(calendar: any): FinancialEvent[] {
   const events: FinancialEvent[] = [];
   const now = Date.now();
 
-  function addEvent(dateStr: string | null | undefined, type: FinancialEvent["type"], label: string) {
+  function addEvent(
+    dateStr: string | null | undefined,
+    type: FinancialEvent["type"],
+    label: string,
+    extra: Partial<FinancialEvent> = {}
+  ) {
     if (!dateStr) return;
     try {
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return;
       const daysFromNow = Math.round((d.getTime() - now) / 86400000);
-      if (daysFromNow < -30) return; // skip events >30 days in the past
-      if (daysFromNow > 365) return; // skip events >1 year away
-      events.push({ date: dateStr, type, label, daysFromNow });
+      if (daysFromNow < -30) return;
+      if (daysFromNow > 365) return;
+      events.push({ date: dateStr, type, label, daysFromNow, ...extra });
     } catch { /* ignore */ }
   }
 
-  addEvent(calendar?.earningsDate, "earnings", "財報發布日 Earnings");
-  addEvent(calendar?.exDividendDate, "dividend", "除息日 Dividend");
+  // Finnhub-sourced earnings (richer)
+  if (calendar?.finnhubEarningsDate) {
+    const hourLabel: Record<string, string> = { bmo: " 盤前", amc: " 盤後", dmh: " 盤中" };
+    const h = calendar.finnhubHour as string | undefined;
+    const label = `財報日 Earnings${h ? (hourLabel[h] ?? "") : ""}`;
+    addEvent(calendar.finnhubEarningsDate, "earnings", label, {
+      hour: h as any,
+      epsEstimate: calendar.finnhubEpsEstimate ?? null,
+      revenueEstimate: calendar.finnhubRevenueEstimate ?? null,
+    });
+  } else {
+    // Fallback to estimates-derived date
+    addEvent(calendar?.earningsDate, "earnings", "財報日 Earnings");
+  }
+
+  // Dividend: prefer Finnhub nextDividendDate, then exDividendDate
+  const divDate = calendar?.finnhubNextDividendDate ?? calendar?.finnhubExDividendDate ?? calendar?.exDividendDate;
+  const divLabel = calendar?.finnhubNextDividendDate ? "除息日（下次）" :
+                   calendar?.finnhubExDividendDate    ? "除息日 Ex-Div"  : "除息日 Dividend";
+  addEvent(divDate, "dividend", divLabel);
 
   events.sort((a, b) => a.daysFromNow - b.daysFromNow);
   return events;

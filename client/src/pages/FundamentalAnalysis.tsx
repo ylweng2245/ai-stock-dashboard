@@ -486,10 +486,17 @@ function EventsTimeline({ events }: { events: FinancialEvent[] }) {
     return `T+${days}`;
   }
 
-  const typeLabel: Record<string, string> = {
-    earnings:      "財報日",
-    dividend:      "除息日",
-    fiscalYearEnd: "年度結束",
+  function fmtRevenue(v: number | null | undefined): string {
+    if (v == null) return "";
+    if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+    if (v >= 1e6) return `$${(v / 1e6).toFixed(0)}M`;
+    return `$${v.toLocaleString()}`;
+  }
+
+  const HOUR_BADGE: Record<string, { label: string; color: string }> = {
+    bmo: { label: "盤前",  color: "rgba(251,191,36,.18)" },
+    amc: { label: "盤後",  color: "rgba(99,179,237,.18)" },
+    dmh: { label: "盤中",  color: "rgba(167,139,250,.18)" },
   };
 
   return (
@@ -500,15 +507,45 @@ function EventsTimeline({ events }: { events: FinancialEvent[] }) {
           <p className="text-[13px] text-[#8ea1b6]/50 py-2">近期無重要財務事件</p>
         ) : (
           <div className="space-y-1.5">
-            {events.slice(0, 4).map((ev, i) => (
-              <div key={i} className="grid grid-cols-[90px_1fr_52px] gap-2 items-center px-2.5 py-2 border border-white/[0.06] rounded-[10px] bg-white/[0.02]">
-                <div className="text-[12px] font-bold text-[#dce7f5]">{ev.date}</div>
-                <div className="text-[12px] text-[#8ea1b6]">{typeLabel[ev.type] ?? ev.label}</div>
-                <div className="text-right text-[12px] font-bold" style={{ color: ev.daysFromNow <= 7 ? "#fb7185" : "#8ea1b6" }}>
-                  {daysLabel(ev.daysFromNow)}
+            {events.slice(0, 5).map((ev, i) => {
+              const hourBadge = ev.hour ? HOUR_BADGE[ev.hour] : null;
+              const isUrgent = ev.daysFromNow >= 0 && ev.daysFromNow <= 14;
+              return (
+                <div key={i} className="px-2.5 py-2 border border-white/[0.06] rounded-[10px] bg-white/[0.02] space-y-1">
+                  {/* Row 1: date | label + badge | T+N */}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] font-bold tabular-nums" style={{ color: isUrgent ? "#fb7185" : "#dce7f5", minWidth: 88 }}>
+                      {ev.date}
+                    </span>
+                    <span className="flex-1 text-[12px] text-[#8ea1b6] truncate">{ev.label}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {hourBadge && (
+                        <span
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                          style={{ background: hourBadge.color, color: "#e6eef8" }}
+                        >
+                          {hourBadge.label}
+                        </span>
+                      )}
+                      <span className="text-[12px] font-bold" style={{ color: isUrgent ? "#fb7185" : "#8ea1b6" }}>
+                        {daysLabel(ev.daysFromNow)}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Row 2: EPS + Revenue estimates (earnings only) */}
+                  {ev.type === "earnings" && (ev.epsEstimate != null || ev.revenueEstimate != null) && (
+                    <div className="flex gap-3 text-[10.5px] text-[#7a90a8]">
+                      {ev.epsEstimate != null && (
+                        <span>EPS 預估 <span className="text-[#b8cde0] font-semibold">${ev.epsEstimate.toFixed(2)}</span></span>
+                      )}
+                      {ev.revenueEstimate != null && (
+                        <span>營收預估 <span className="text-[#b8cde0] font-semibold">{fmtRevenue(ev.revenueEstimate)}</span></span>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </CardContent>

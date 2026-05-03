@@ -41,6 +41,10 @@ export interface FinancialEvent {
   type: "earnings" | "dividend" | "fiscalYearEnd";
   label: string;
   daysFromNow: number;
+  // Earnings-specific (from Finnhub)
+  hour?: "bmo" | "amc" | "dmh";  // before-market-open / after-market-close / during-market-hours
+  epsEstimate?: number | null;
+  revenueEstimate?: number | null;
 }
 
 export interface SummaryRow {
