@@ -1,92 +1,80 @@
 /**
- * newsDigestService.ts  v5.2
- * Step 1: Fetch real news from Finnhub + Marketaux (parallel, deduplicated, max 5).
- * Step 2: Feed articles to Claude for zh-TW summary + sentiment (no aiTakeaway).
+ * newsDigestService.ts  v6.0
+ *
+ * Replaced Claude API with Perplexity Finance `finance_ticker_sentiment`.
+ * Zero LLM API cost — uses the same external-tool CLI as stockService.ts.
+ *
+ * Data flow:
+ *   finance_ticker_sentiment → parse bulls/bears + sources → DB
+ *
+ * Schedule:
+ *   scheduleNewsDigestRefresh() — runs daily at UTC 13:00 (CST 21:00)
+ *   for all US watchlist stocks, 2s gap between calls (rate limit buffer).
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import { execSync } from "child_process";
 import { storage } from "./storage";
 
-const anthropic = new Anthropic();
+// ─── external-tool helper ────────────────────────────────────────────────────
 
-const FINNHUB_API_KEY   = process.env.FINNHUB_API_KEY   ?? "";
-const MARKETAUX_API_KEY = process.env.MARKETAUX_API_KEY ?? "";
+function callExternalTool(sourceId: string, toolName: string, args: Record<string, any>): any {
+  const params  = JSON.stringify({ source_id: sourceId, tool_name: toolName, arguments: args });
+  const escaped = params.replace(/'/g, "'\\''");
+  const raw     = execSync(`external-tool call '${escaped}'`, { timeout: 40_000 }).toString();
+  return JSON.parse(raw);
+}
 
-// Today's date in ET (US Eastern Time)
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ParsedSource {
+  sourceName:   string;
+  articleTitle: string;
+  articleUrl:   string;
+  publishedAt:  string;
+  sourceDomain: string;
+}
+
+interface DigestResult {
+  ticker:  string;
+  success: boolean;
+  error?:  string;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Today's date in ET (US Eastern Time) */
 function todayET(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
-// Unix timestamps for a date range
-function unixRange(daysBack: number): { from: number; to: number } {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - daysBack * 86400;
-  return { from, to };
-}
-
-interface RawSource {
-  sourceName: string;
-  articleTitle: string;
-  articleUrl: string;
-  publishedAt: string;
-  sourceDomain: string;
-}
-
-interface FinnhubArticle {
-  headline: string;
-  summary: string;
-  url: string;
-  source: string;
-  datetime: number; // unix timestamp
-}
-
-interface MarketauxArticle {
-  title: string;
-  description: string;
-  url: string;
-  source: string;
-  published_at: string; // ISO 8601
-}
-
-interface DigestResult {
-  ticker: string;
-  success: boolean;
-  error?: string;
-}
-
 /** Extract domain from URL */
 function extractDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return ""; }
 }
 
 /** Map domain to friendly source name */
 function domainToSourceName(domain: string): string {
   const map: Record<string, string> = {
-    "reuters.com": "Reuters",
-    "cnbc.com": "CNBC",
-    "bloomberg.com": "Bloomberg",
-    "wsj.com": "WSJ",
-    "ft.com": "FT",
-    "marketwatch.com": "MarketWatch",
-    "barrons.com": "Barron's",
-    "yahoo.com": "Yahoo Finance",
-    "finance.yahoo.com": "Yahoo Finance",
-    "seekingalpha.com": "Seeking Alpha",
-    "thestreet.com": "TheStreet",
-    "benzinga.com": "Benzinga",
-    "fool.com": "Motley Fool",
-    "investopedia.com": "Investopedia",
-    "techcrunch.com": "TechCrunch",
-    "theinformation.com": "The Information",
-    "spacenews.com": "SpaceNews",
-    "spaceflightnow.com": "SpaceflightNow",
-    "businessinsider.com": "Business Insider",
-    "fortune.com": "Fortune",
-    "forbes.com": "Forbes",
+    "reuters.com":        "Reuters",
+    "cnbc.com":           "CNBC",
+    "bloomberg.com":      "Bloomberg",
+    "wsj.com":            "WSJ",
+    "ft.com":             "FT",
+    "marketwatch.com":    "MarketWatch",
+    "barrons.com":        "Barron's",
+    "yahoo.com":          "Yahoo Finance",
+    "finance.yahoo.com":  "Yahoo Finance",
+    "seekingalpha.com":   "Seeking Alpha",
+    "thestreet.com":      "TheStreet",
+    "benzinga.com":       "Benzinga",
+    "fool.com":           "Motley Fool",
+    "simplywall.st":      "Simply Wall St",
+    "marketbeat.com":     "MarketBeat",
+    "marketscreener.com": "MarketScreener",
+    "investors.com":      "Investor's Business Daily",
+    "financhill.com":     "Financhill",
+    "ainvest.com":        "AInvest",
   };
   for (const [key, val] of Object.entries(map)) {
     if (domain.includes(key)) return val;
@@ -95,238 +83,90 @@ function domainToSourceName(domain: string): string {
   return seg.charAt(0).toUpperCase() + seg.slice(1);
 }
 
-// ─── Finnhub ────────────────────────────────────────────────────────────────
-
-async function fetchFinnhubNews(ticker: string): Promise<FinnhubArticle[]> {
-  if (!FINNHUB_API_KEY) {
-    throw new Error("FINNHUB_API_KEY 環境變數未設定");
-  }
-
-  async function query(daysBack: number): Promise<FinnhubArticle[]> {
-    const { from, to } = unixRange(daysBack);
-    const fromDate = new Date(from * 1000).toISOString().slice(0, 10);
-    const toDate   = new Date(to   * 1000).toISOString().slice(0, 10);
-    const url = `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`Finnhub HTTP ${res.status}`);
-    const data = await res.json() as FinnhubArticle[];
-    return data
-      .filter((a) => a.headline && a.url)
-      .sort((a, b) => b.datetime - a.datetime)
-      .slice(0, 10);
-  }
-
-  let articles = await query(1);
-  if (articles.length < 2) articles = await query(3);
-  return articles;
-}
-
-// ─── Marketaux ──────────────────────────────────────────────────────────────
-
-async function fetchMarketauxNews(ticker: string): Promise<FinnhubArticle[]> {
-  if (!MARKETAUX_API_KEY) return [];
-  try {
-    const url =
-      `https://api.marketaux.com/v1/news/all` +
-      `?symbols=${encodeURIComponent(ticker)}` +
-      `&filter_entities=true` +
-      `&language=en` +
-      `&api_token=${MARKETAUX_API_KEY}` +
-      `&limit=5`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) {
-      console.warn(`fetchMarketauxNews ${ticker}: HTTP ${res.status}`);
-      return [];
-    }
-    const data = await res.json() as { data?: MarketauxArticle[] };
-    return (data.data ?? [])
-      .filter((a) => a.title && a.url)
-      .map((a) => ({
-        headline: a.title,
-        summary:  a.description ?? "",
-        url:      a.url,
-        source:   a.source ?? "Marketaux",
-        datetime: Math.floor(new Date(a.published_at).getTime() / 1000),
-      }));
-  } catch (e: any) {
-    console.warn(`fetchMarketauxNews ${ticker}: ${e.message}`);
-    return [];
-  }
-}
-
-// ─── Relevance filter ──────────────────────────────────────────────────────
-
 /**
- * Keep only articles where headline or summary directly mentions
- * the ticker symbol or company name (case-insensitive).
- * If fewer than 2 articles pass the strict filter, fall back to the full list
- * so Claude can still produce a "no direct news" message.
+ * Parse the sources block from finance_ticker_sentiment content.
+ *
+ * Format example:
+ *   [0] Article Title (2026-05-01T09:56:08) - https://example.com/article
  */
-function filterByRelevance(
-  articles: FinnhubArticle[],
-  ticker: string,
-  companyName: string
-): FinnhubArticle[] {
-  const tickerLower  = ticker.toLowerCase();
-  // Use first word of company name as the key term (e.g. "Intel" from "Intel Corp")
-  const companyKey   = companyName.split(/[\s,.(]/)[0].toLowerCase();
+function parseSources(content: string): ParsedSource[] {
+  const lines   = content.split("\n");
+  const sources: ParsedSource[] = [];
 
-  const isRelevant = (a: FinnhubArticle): boolean => {
-    const text = `${a.headline} ${a.summary ?? ""}`.toLowerCase();
-    return text.includes(tickerLower) || (companyKey.length > 2 && text.includes(companyKey));
-  };
+  // Match lines like: [0] Title (date) - url
+  const sourceRegex = /^\[(\d+)\]\s+(.+?)\s+\((\d{4}-\d{2}-\d{2})[^)]*\)\s+-\s+(https?:\/\/\S+)/;
 
-  const filtered = articles.filter(isRelevant);
-  // Fall back to original list if too few pass (let Claude handle the "no news" case)
-  return filtered.length >= 1 ? filtered : articles;
-}
-
-// ─── Dedup + limit ──────────────────────────────────────────────────────────
-
-/**
- * Merge articles from multiple sources, remove duplicates
- * (identical URL or first-40-char headline match), sort newest first,
- * keep at most maxCount.
- */
-function deduplicateAndLimit(articles: FinnhubArticle[], maxCount: number): FinnhubArticle[] {
-  const seen   = new Set<string>();
-  const result: FinnhubArticle[] = [];
-  const sorted = [...articles].sort((a, b) => b.datetime - a.datetime);
-
-  for (const article of sorted) {
-    if (result.length >= maxCount) break;
-
-    if (seen.has(article.url)) continue;
-    seen.add(article.url);
-
-    const headlineKey = article.headline
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .slice(0, 40)
-      .trim();
-    if (headlineKey && seen.has(headlineKey)) continue;
-    if (headlineKey) seen.add(headlineKey);
-
-    result.push(article);
-  }
-  return result;
-}
-
-// ─── Claude summarization ───────────────────────────────────────────────────
-
-async function summarizeWithClaude(
-  ticker: string,
-  companyName: string,
-  articles: FinnhubArticle[],
-  priceClose?: number,
-  priceChangePct?: number
-): Promise<{
-  summaryText: string;
-  sentimentLabel: string;
-  sources: RawSource[];
-}> {
-  const dateStr   = todayET();
-  const priceInfo = priceClose != null
-    ? `$${priceClose.toFixed(2)}，漲跌幅: ${priceChangePct != null ? priceChangePct.toFixed(2) + "%" : "N/A"}`
-    : "";
-
-  const articleContext = articles.map((a, i) => {
-    const dt = new Date(a.datetime * 1000).toISOString().replace("T", " ").slice(0, 16);
-    return `[${i + 1}] 來源: ${a.source} | 時間: ${dt}\n標題: ${a.headline}\n摘要: ${a.summary ?? "（無摘要）"}\n網址: ${a.url}`;
-  }).join("\n\n");
-
-  const noNewsContext = `目前在近期查無 ${ticker} 的新聞文章。`;
-
-  const prompt = `你是專業的財經新聞分析師。以下是 ${ticker}（${companyName}）截至 ${dateStr} 的最新新聞${priceInfo ? `，當前股價 ${priceInfo}` : ""}。
-
-${articles.length > 0 ? articleContext : noNewsContext}
-
-重要規則：
-1. 只能根據以上提供的新聞內容進行摘要，不得引用或補充任何外部知識。
-2. 若提供的新聞中，直接報導 ${ticker}（${companyName}）的文章少於 2 篇，請在 summaryText 中明確說明「近期缺乏直接相關新聞」，並簡短說明現有內容，不可用間接相關的產業新聞湊數。
-3. sources 只列出你實際引用的文章，不得捏造來源。
-
-請以繁體中文輸出 JSON，格式如下（不要包含其他文字）：
-{
-  "summaryText": "150-250字的專業新聞摘要，涵蓋主要事件、業務影響與市場意義",
-  "sentimentLabel": "positive 或 negative 或 neutral 三選一",
-  "sources": [{"articleTitle": "...", "articleUrl": "...", "publishedAt": "YYYY-MM-DD HH:mm"}]
-}`;
-
-  const message = await anthropic.messages.create({
-    model:      "claude-sonnet-4-5",
-    max_tokens: 1024,
-    messages:   [{ role: "user", content: prompt }],
-  });
-
-  const textContent = message.content.find((c: any) => c.type === "text");
-  const raw = textContent ? (textContent as any).text : "";
-
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("Claude 回覆格式錯誤：無 JSON");
-
-  const parsed = JSON.parse(jsonMatch[0]);
-
-  const sources: RawSource[] = (parsed.sources ?? []).map((s: any) => {
-    const matched = articles.find(
-      (a) => a.url === s.articleUrl || a.headline === s.articleTitle
-    );
-    const url    = matched?.url ?? s.articleUrl ?? "";
+  for (const line of lines) {
+    const m = line.match(sourceRegex);
+    if (!m) continue;
+    const title  = m[2].trim();
+    const date   = m[3];           // YYYY-MM-DD
+    const url    = m[4].trim();
     const domain = extractDomain(url);
-    const dt     = matched
-      ? new Date(matched.datetime * 1000).toISOString().replace("T", " ").slice(0, 16)
-      : (s.publishedAt ?? "");
-    return {
-      sourceName:   matched ? domainToSourceName(extractDomain(matched.url)) : domainToSourceName(domain),
-      articleTitle: matched?.headline ?? s.articleTitle ?? "",
+    sources.push({
+      sourceName:   domainToSourceName(domain),
+      articleTitle: title,
       articleUrl:   url,
-      publishedAt:  dt,
+      publishedAt:  date,
       sourceDomain: domain,
-    };
-  }).filter((s: RawSource) => s.articleUrl);
-
-  return {
-    summaryText: parsed.summaryText ?? "",
-    sentimentLabel: ["positive", "negative", "neutral"].includes(parsed.sentimentLabel)
-      ? parsed.sentimentLabel
-      : "neutral",
-    sources,
-  };
+    });
+  }
+  return sources;
 }
 
-// ─── Public API ─────────────────────────────────────────────────────────────
+/**
+ * Derive sentiment from the bulls/bears text.
+ * Counts explicit bull 🐂 and bear 🐻 sections; more bears → negative.
+ * Falls back to keyword scanning.
+ */
+function deriveSentiment(content: string): "positive" | "negative" | "neutral" {
+  const bullCount = (content.match(/🐂|Bull Case/gi) ?? []).length;
+  const bearCount = (content.match(/🐻|Bear Case/gi) ?? []).length;
+  if (bullCount > bearCount) return "positive";
+  if (bearCount > bullCount) return "negative";
+  return "neutral";
+}
 
-/** Process a single ticker: Finnhub + Marketaux → dedup → Claude → DB */
+/**
+ * Extract just the analysis body (before the Sources: block).
+ * Keeps markdown formatting for display.
+ */
+function extractSummaryText(content: string): string {
+  // Cut at the Sources block (starts with "[0]" or "**Sources:**" or "Sources:")
+  const sourceBlockIndex = content.search(/\n\*?\*?Sources:\*?\*?\n|\n\[0\]/);
+  const body = sourceBlockIndex > 0 ? content.slice(0, sourceBlockIndex) : content;
+  return body.trim();
+}
+
+// ─── Main: generate digest for one ticker ────────────────────────────────────
+
 export async function generateDigestForTicker(
-  ticker: string,
-  companyName: string,
-  priceClose?: number,
+  ticker:         string,
+  companyName:    string,
+  priceClose?:    number,
   priceChangePct?: number
 ): Promise<DigestResult> {
   const digestDate = todayET();
+
   try {
-    // Step 1: fetch from both sources in parallel
-    const [finnhubResult, marketauxResult] = await Promise.allSettled([
-      fetchFinnhubNews(ticker),
-      fetchMarketauxNews(ticker),
-    ]);
-    const rawFinnhub   = finnhubResult.status   === "fulfilled" ? finnhubResult.value   : [];
-    const rawMarketaux = marketauxResult.status === "fulfilled" ? marketauxResult.value : [];
+    console.log(`[newsDigest] ${ticker}: calling finance_ticker_sentiment…`);
 
-    // Step 1b: merge, filter by relevance, deduplicate, limit to 5
-    const merged   = [...rawFinnhub, ...rawMarketaux];
-    const relevant = filterByRelevance(merged, ticker, companyName);
-    const articles = deduplicateAndLimit(relevant, 5);
-    console.log(
-      `[newsDigest] ${ticker}: Finnhub ${rawFinnhub.length}, Marketaux ${rawMarketaux.length}, ` +
-      `relevant: ${relevant.length}, after dedup: ${articles.length} articles`
-    );
+    const result  = callExternalTool("finance", "finance_ticker_sentiment", {
+      ticker_symbol: ticker,
+      query:         `${ticker} ${companyName} latest news and analysis`,
+      action:        `Fetching daily news sentiment for ${ticker}`,
+    });
 
-    // Step 2: summarize with Claude
-    const { summaryText, sentimentLabel, sources } =
-      await summarizeWithClaude(ticker, companyName, articles, priceClose, priceChangePct);
+    const content = (result?.content ?? "") as string;
+    if (!content) throw new Error("Empty response from finance_ticker_sentiment");
 
-    // Step 3: persist to DB (aiTakeaway fixed to "" for schema compatibility)
+    const summaryText     = extractSummaryText(content);
+    const sentimentLabel  = deriveSentiment(content);
+    const sources         = parseSources(content);
+
+    console.log(`[newsDigest] ${ticker}: ${sources.length} sources, sentiment=${sentimentLabel}`);
+
+    // Persist digest
     const digest = storage.upsertDigest({
       ticker,
       digestDate,
@@ -334,16 +174,16 @@ export async function generateDigestForTicker(
       priceClose:     priceClose     ?? null,
       priceChangePct: priceChangePct ?? null,
       summaryText,
-      aiTakeaway:     "",   // removed in v5.2, kept for DB compatibility
+      aiTakeaway:     "",   // kept for DB schema compatibility
       sentimentLabel,
       sourceCount:    sources.length,
       status:         "ok",
     });
 
     storage.replaceSourcesForDigest(digest.id, sources);
-
     console.log(`[newsDigest] ${ticker} OK — ${sources.length} sources saved`);
     return { ticker, success: true };
+
   } catch (e: any) {
     console.error(`[newsDigest] ${ticker} ERROR:`, e.message);
     try {
@@ -359,26 +199,58 @@ export async function generateDigestForTicker(
         sourceCount:    0,
         status:         "error",
       });
-    } catch {}
+    } catch { /* */ }
     return { ticker, success: false, error: e.message };
   }
 }
 
-/** Process all US watchlist tickers sequentially */
+// ─── Batch: all US watchlist stocks ──────────────────────────────────────────
+
 export async function generateAllDigests(): Promise<{
-  results: DigestResult[];
+  results:   DigestResult[];
   updatedAt: number;
 }> {
   const watchlistItems = await storage.getWatchlist();
-  const usItems = watchlistItems.filter((w) => w.market === "US");
+  const usItems        = watchlistItems.filter((w) => w.market === "US");
 
   const results: DigestResult[] = [];
   for (const item of usItems) {
     const result = await generateDigestForTicker(item.symbol, item.name);
     results.push(result);
-    // Respect Finnhub free-plan rate limit (60 req/min)
-    await new Promise((r) => setTimeout(r, 1200));
+    // 2s gap between calls — finance_ticker_sentiment has its own rate limits
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   return { results, updatedAt: Date.now() };
+}
+
+// ─── Daily scheduler (UTC 13:00 = CST 21:00) ─────────────────────────────────
+
+export function scheduleNewsDigestRefresh(): void {
+  function msUntilNextRun(): number {
+    const now  = new Date();
+    const next = new Date();
+    next.setUTCHours(13, 0, 0, 0);
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next.getTime() - now.getTime();
+  }
+
+  function scheduleNext(): void {
+    const ms = msUntilNextRun();
+    console.log(`[newsDigest] Next auto-refresh in ${(ms / 3600000).toFixed(1)}h (UTC 13:00)`);
+    setTimeout(async () => {
+      console.log("[newsDigest] Starting daily auto-refresh…");
+      try {
+        const { results } = await generateAllDigests();
+        const ok  = results.filter((r) => r.success).length;
+        const err = results.filter((r) => !r.success).length;
+        console.log(`[newsDigest] Daily refresh done — ${ok} OK, ${err} errors`);
+      } catch (e: any) {
+        console.error("[newsDigest] Daily refresh failed:", e.message);
+      }
+      scheduleNext();
+    }, ms);
+  }
+
+  scheduleNext();
 }
