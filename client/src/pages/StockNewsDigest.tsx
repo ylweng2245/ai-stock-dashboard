@@ -1,11 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import {
   RefreshCw, Clock, TrendingUp, TrendingDown, Minus,
-  ExternalLink, Newspaper,
-  AlertCircle, Loader2, BookOpen, X,
+  ExternalLink, Newspaper, AlertCircle, Loader2, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
@@ -41,6 +40,7 @@ interface DigestSource {
   articleUrl: string;
   publishedAt: string;
   sourceDomain: string;
+  sortOrder: number; // 0-indexed → displayed as [sortOrder+1]
 }
 
 interface PageData {
@@ -57,93 +57,95 @@ interface PageData {
 // ─── Text Parser ──────────────────────────────────────────────────────────────
 
 interface QuestionBlock {
-  title: string;       // e.g. "問題 1：GLP-1 收入可持續性"
-  bulls: string;       // bull argument text
-  bears: string;       // bear argument text
-  bullSources: string; // e.g. "[6, 9]"
-  bearSources: string;
+  title: string;
+  bulls: string;
+  bears: string;
+  bullSourceIds: number[]; // 1-indexed source numbers
+  bearSourceIds: number[];
+}
+
+/** Parse "[6, 9]" → [6, 9] */
+function parseSourceIds(raw: string): number[] {
+  if (!raw) return [];
+  return raw
+    .replace(/[\[\]]/g, "")
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !isNaN(n));
 }
 
 function parseSummaryText(raw: string): QuestionBlock[] {
   if (!raw) return [];
-
-  // Normalise: collapse multiple spaces/newlines into single space
   const text = raw.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 
-  // Split on **問題 N：... pattern. We look for 🐂 and 🐻 anchors to split bulls/bears.
-  // Strategy: find each 問題 block by scanning between question markers.
   const questionPattern = /\*\*問題\s*\d+[：:][^*]*\*\*/g;
   const matches = [...text.matchAll(questionPattern)];
 
   if (matches.length === 0) {
-    // Fallback: maybe no "問題" structure, just return as single unnamed block
     const { bulls, bears, bullSources, bearSources } = extractBullsBears(text);
     if (bulls || bears) {
-      return [{ title: "", bulls, bears, bullSources, bearSources }];
+      return [{
+        title: "",
+        bulls,
+        bears,
+        bullSourceIds: parseSourceIds(bullSources),
+        bearSourceIds: parseSourceIds(bearSources),
+      }];
     }
     return [];
   }
 
-  const blocks: QuestionBlock[] = [];
-  for (let i = 0; i < matches.length; i++) {
-    const match = matches[i];
+  return matches.map((match, i) => {
     const startIdx = (match.index ?? 0) + match[0].length;
     const endIdx = matches[i + 1]?.index ?? text.length;
     const title = match[0].replace(/\*\*/g, "").trim();
     const chunk = text.slice(startIdx, endIdx);
     const { bulls, bears, bullSources, bearSources } = extractBullsBears(chunk);
-    blocks.push({ title, bulls, bears, bullSources, bearSources });
-  }
-  return blocks;
+    return {
+      title,
+      bulls,
+      bears,
+      bullSourceIds: parseSourceIds(bullSources),
+      bearSourceIds: parseSourceIds(bearSources),
+    };
+  });
 }
 
-function extractBullsBears(chunk: string): { bulls: string; bears: string; bullSources: string; bearSources: string } {
-  // Anchors for bulls: 🐂 or **多頭觀點** (with optional : after)
-  // Anchors for bears: 🐻 or **空頭觀點**
-  const bullMatch = chunk.match(/(?:🐂\s*\*\*多頭觀點[：:]?\*\*|🐂\s*多頭觀點[：:]?|\*\*多頭觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s);
-  const bearMatch = chunk.match(/(?:🐻\s*\*\*空頭觀點[：:]?\*\*|🐻\s*空頭觀點[：:]?|\*\*空頭觀點[：:]\*\*)(.*?)(?=$)/s);
-
+function extractBullsBears(chunk: string) {
+  const bullMatch = chunk.match(
+    /(?:🐂\s*\*\*多頭觀點[：:]?\*\*|🐂\s*多頭觀點[：:]?|\*\*多頭觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
+  );
+  const bearMatch = chunk.match(
+    /(?:🐻\s*\*\*空頭觀點[：:]?\*\*|🐻\s*空頭觀點[：:]?|\*\*空頭觀點[：:]\*\*)(.*?)(?=$)/s
+  );
   const cleanBull = bullMatch ? cleanSegment(bullMatch[1]) : "";
   const cleanBear = bearMatch ? cleanSegment(bearMatch[1]) : "";
-
-  const { text: bullText, sources: bullSources } = extractSources(cleanBull);
-  const { text: bearText, sources: bearSources } = extractSources(cleanBear);
-
-  return { bulls: bullText, bears: bearText, bullSources, bearSources };
+  const { text: bulls, sources: bullSources } = extractSources(cleanBull);
+  const { text: bears, sources: bearSources } = extractSources(cleanBear);
+  return { bulls, bears, bullSources, bearSources };
 }
 
 function cleanSegment(s: string): string {
-  return s
-    .replace(/\*\*/g, "")
-    .replace(/^\s*[：:]\s*/, "")
-    .trim();
+  return s.replace(/\*\*/g, "").replace(/^\s*[：:]\s*/, "").trim();
 }
 
 function extractSources(text: string): { text: string; sources: string } {
-  // Match "- 來源：[N, M]" at the end or inline
-  const sourceMatch = text.match(/[-–]\s*來源[：:]\s*(\[[^\]]+\])\s*$/);
-  if (sourceMatch) {
-    return {
-      text: text.slice(0, sourceMatch.index).trim(),
-      sources: sourceMatch[1],
-    };
-  }
+  const m = text.match(/[-–]\s*來源[：:]\s*(\[[^\]]+\])\s*$/);
+  if (m) return { text: text.slice(0, m.index).trim(), sources: m[1] };
   return { text: text.trim(), sources: "" };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(dateStr: string): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
+  const [, m, d] = dateStr.split("-").map(Number);
   return `${m}月${d}日`;
 }
-
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("zh-TW", {
     hour: "2-digit", minute: "2-digit", timeZone: "America/New_York",
   }) + " ET";
 }
-
 function formatLastUpdated(ms: number | null): string {
   if (!ms) return "尚未更新";
   return new Date(ms).toLocaleString("zh-TW", {
@@ -153,63 +155,91 @@ function formatLastUpdated(ms: number | null): string {
   }) + " ET";
 }
 
-// ─── Source Drawer ────────────────────────────────────────────────────────────
+// ─── Inline Source Popover ────────────────────────────────────────────────────
 
-function SourceDrawer({ digestId, onClose }: { digestId: number; onClose: () => void }) {
-  const { data: sources, isLoading } = useQuery<DigestSource[]>({
-    queryKey: ["/api/news-digest/sources", digestId],
-    queryFn: () => apiRequest("GET", `/api/news-digest/${digestId}/sources`).then((r) => r.json()),
-    staleTime: 5 * 60 * 1000,
-  });
+function InlineSourcePopover({
+  sourceIds,    // 1-indexed numbers from text
+  allSources,   // full list for this digest (sortOrder 0-indexed)
+}: {
+  sourceIds: number[];
+  allSources: DigestSource[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  // Filter matching sources: sourceId 1 → sortOrder 0
+  const matched = allSources.filter((s) => sourceIds.includes(s.sortOrder + 1));
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  if (matched.length === 0) {
+    // No matched sources yet loaded — still show the label but not clickable
+    return (
+      <span className="ml-1.5 text-[11px] text-muted-foreground">
+        — 來源 [{sourceIds.join(", ")}]
+      </span>
+    );
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg max-h-[80vh] flex flex-col rounded-t-2xl sm:rounded-2xl bg-[#0d1726] border border-white/10 shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
-          <span className="font-semibold text-sm text-foreground">原始新聞來源</span>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="overflow-y-auto flex-1 px-5 py-3 space-y-3">
-          {isLoading && (
-            <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />載入中…
-            </div>
-          )}
-          {!isLoading && (!sources || sources.length === 0) && (
-            <p className="text-center text-muted-foreground text-sm py-8">無來源記錄</p>
-          )}
-          {sources?.map((src) => (
-            <a
-              key={src.id}
-              href={src.articleUrl || "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-start gap-3 p-3 rounded-xl border border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/12 transition-colors group"
-            >
-              <div className="w-8 h-8 shrink-0 rounded-full bg-[#163042] border border-white/10 flex items-center justify-center text-[11px] font-bold text-[#9fe7f8]">
-                {src.sourceName.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                  <span className="text-[11px] font-semibold text-[#66c6df]">{src.sourceName || src.sourceDomain}</span>
-                  {src.publishedAt && <span className="text-[10px] text-muted-foreground">{src.publishedAt}</span>}
+    <span ref={ref} className="relative inline-block ml-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "text-[11px] font-medium px-1.5 py-0.5 rounded border transition-colors",
+          open
+            ? "bg-[#66c6df]/15 border-[#66c6df]/40 text-[#9fe7f8]"
+            : "bg-white/4 border-white/10 text-muted-foreground hover:text-[#9fe7f8] hover:border-[#66c6df]/30"
+        )}
+      >
+        來源 [{sourceIds.join(", ")}]
+      </button>
+
+      {open && (
+        <div className="absolute z-50 bottom-full mb-2 left-0 w-80 rounded-xl bg-[#0d1726] border border-white/12 shadow-2xl shadow-black/60">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/8">
+            <span className="text-[11px] font-semibold text-foreground/80">原始來源</span>
+            <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex flex-col gap-1.5 p-2 max-h-60 overflow-y-auto">
+            {matched.map((src) => (
+              <a
+                key={src.id}
+                href={src.articleUrl || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-start gap-2.5 p-2 rounded-lg border border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/12 transition-colors group"
+              >
+                <div className="w-6 h-6 shrink-0 rounded-md bg-[#163042] border border-white/10 flex items-center justify-center text-[10px] font-bold text-[#9fe7f8]">
+                  {src.sortOrder + 1}
                 </div>
-                <p className="text-[13px] text-foreground/90 line-clamp-2 leading-snug group-hover:text-foreground transition-colors">
-                  {src.articleTitle || "（無標題）"}
-                </p>
-              </div>
-              <ExternalLink className="w-3.5 h-3.5 shrink-0 text-muted-foreground group-hover:text-[#66c6df] transition-colors mt-0.5" />
-            </a>
-          ))}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                    <span className="text-[10px] font-semibold text-[#66c6df]">{src.sourceName || src.sourceDomain}</span>
+                    {src.publishedAt && (
+                      <span className="text-[10px] text-muted-foreground">{src.publishedAt}</span>
+                    )}
+                  </div>
+                  <p className="text-[12px] text-foreground/85 line-clamp-2 leading-snug group-hover:text-foreground transition-colors">
+                    {src.articleTitle || "（無標題）"}
+                  </p>
+                </div>
+                <ExternalLink className="w-3 h-3 shrink-0 text-muted-foreground group-hover:text-[#66c6df] transition-colors mt-0.5" />
+              </a>
+            ))}
+          </div>
         </div>
-        <div className="px-5 py-3 border-t border-white/8">
-          <p className="text-[11px] text-muted-foreground">點擊各條新聞在新分頁開啟原始來源</p>
-        </div>
-      </div>
-    </div>
+      )}
+    </span>
   );
 }
 
@@ -218,15 +248,12 @@ function SourceDrawer({ digestId, onClose }: { digestId: number; onClose: () => 
 function BullBearColumn({
   side,
   blocks,
-  digestId,
-  sourceCount,
+  allSources,
 }: {
   side: "bull" | "bear";
   blocks: QuestionBlock[];
-  digestId: number;
-  sourceCount: number;
+  allSources: DigestSource[];
 }) {
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const isBull = side === "bull";
 
   return (
@@ -259,7 +286,7 @@ function BullBearColumn({
         )}
         {blocks.map((blk, i) => {
           const content = isBull ? blk.bulls : blk.bears;
-          const sources = isBull ? blk.bullSources : blk.bearSources;
+          const sourceIds = isBull ? blk.bullSourceIds : blk.bearSourceIds;
           if (!content) return null;
           return (
             <div key={i} className="flex flex-col gap-1.5">
@@ -270,31 +297,17 @@ function BullBearColumn({
               )}
               <p className="text-[13px] text-foreground/85 leading-relaxed">
                 {content}
-                {sources && (
-                  <span className="ml-1.5 text-[11px] text-muted-foreground">
-                    — 來源 {sources}
-                  </span>
+                {sourceIds.length > 0 && (
+                  <InlineSourcePopover
+                    sourceIds={sourceIds}
+                    allSources={allSources}
+                  />
                 )}
               </p>
             </div>
           );
         })}
       </div>
-
-      {/* Sources link — only in bull column to avoid duplication */}
-      {isBull && sourceCount > 0 && (
-        <>
-          <button
-            onClick={() => setDrawerOpen(true)}
-            className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-[#66c6df] transition-colors mt-auto pt-2 border-t border-white/6"
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            查看 {sourceCount} 個原始來源
-            <ExternalLink className="w-3 h-3" />
-          </button>
-          {drawerOpen && <SourceDrawer digestId={digestId} onClose={() => setDrawerOpen(false)} />}
-        </>
-      )}
     </div>
   );
 }
@@ -314,6 +327,15 @@ function DigestTimelineItem({
 
   const blocks = parseSummaryText(entry.summaryText);
 
+  // Load all sources for this digest once
+  const { data: allSources = [] } = useQuery<DigestSource[]>({
+    queryKey: ["/api/news-digest/sources", entry.id],
+    queryFn: () =>
+      apiRequest("GET", `/api/news-digest/${entry.id}/sources`).then((r) => r.json()),
+    staleTime: 10 * 60 * 1000,
+    enabled: entry.sourceCount > 0,
+  });
+
   if (entry.status === "error") {
     return (
       <div className="relative pl-6">
@@ -328,7 +350,6 @@ function DigestTimelineItem({
 
   return (
     <div className="relative pl-6">
-      {/* Timeline dot */}
       <div
         className={cn(
           "absolute left-0 top-2 w-2.5 h-2.5 rounded-full border-2",
@@ -338,7 +359,7 @@ function DigestTimelineItem({
         )}
       />
 
-      {/* Date + time + price row */}
+      {/* Date + price row */}
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <span className="text-[15px] font-bold text-foreground/90">{formatDate(entry.digestDate)}</span>
         {entry.generatedAt > 0 && (
@@ -348,7 +369,9 @@ function DigestTimelineItem({
           <>
             <span className="text-[14px] font-bold">${entry.priceClose.toFixed(2)}</span>
             {changePct != null && (
-              <span className={cn("flex items-center gap-0.5 text-[13px] font-semibold", isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground")}>
+              <span className={cn("flex items-center gap-0.5 text-[13px] font-semibold",
+                isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground"
+              )}>
                 {isUp ? <TrendingUp className="w-3.5 h-3.5" /> : isDown ? <TrendingDown className="w-3.5 h-3.5" /> : <Minus className="w-3 h-3" />}
                 {isUp ? "+" : ""}{changePct.toFixed(2)}%
               </span>
@@ -365,8 +388,8 @@ function DigestTimelineItem({
       {/* Bulls / Bears split */}
       {blocks.length > 0 ? (
         <div className="flex gap-3">
-          <BullBearColumn side="bull" blocks={blocks} digestId={entry.id} sourceCount={entry.sourceCount} />
-          <BullBearColumn side="bear" blocks={blocks} digestId={entry.id} sourceCount={0} />
+          <BullBearColumn side="bull" blocks={blocks} allSources={allSources} />
+          <BullBearColumn side="bear" blocks={blocks} allSources={allSources} />
         </div>
       ) : entry.summaryText ? (
         <p className="text-[13px] text-foreground/80 leading-relaxed">{entry.summaryText}</p>
@@ -375,7 +398,7 @@ function DigestTimelineItem({
   );
 }
 
-// ─── Full-Width Stock Card ────────────────────────────────────────────────────
+// ─── Full-Width Stock Card ─────────────────────────────────────────────────────
 
 function StockDigestCard({ stock }: { stock: StockDigestData }) {
   return (
@@ -394,7 +417,6 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
             {stock.sectorTag && <p className="text-[12px] text-muted-foreground mt-0.5">{stock.sectorTag}</p>}
           </div>
         </div>
-        {/* Latest price */}
         {stock.digests[0]?.priceClose != null && (
           <div className="shrink-0 text-right">
             <div className="text-[16px] font-bold">${stock.digests[0].priceClose.toFixed(2)}</div>
@@ -413,7 +435,7 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
 
       <div className="h-px bg-white/6 mx-6" />
 
-      {/* Timeline — scrollable */}
+      {/* Timeline */}
       <div className="overflow-y-auto px-6 py-5" style={{ maxHeight: 700 }}>
         <div
           className="relative space-y-8"
@@ -439,11 +461,10 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
   );
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+// ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function StockNewsDigest() {
   const queryClient = useQueryClient();
-  // Use shared ActiveSymbol context (same as TechnicalAnalysis page)
   const { activeSymbol } = useActiveSymbol();
 
   const { data, isLoading, isError } = useQuery<PageData>({
@@ -463,7 +484,6 @@ export default function StockNewsDigest() {
   const stocks = data?.stocks ?? [];
   const stats = data?.stats;
 
-  // Match active symbol from context; fallback to first US stock in digest list
   const activeStock =
     stocks.find((s) => s.symbol === activeSymbol) ??
     stocks[0] ??
@@ -471,7 +491,6 @@ export default function StockNewsDigest() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Main content */}
       <div className="flex-1 overflow-y-auto">
         <div className="px-6 py-6 max-w-[1300px] mx-auto">
 
@@ -480,7 +499,7 @@ export default function StockNewsDigest() {
             <div>
               <h2 className="text-[32px] font-bold tracking-tight">美股每日新聞彙總</h2>
               <p className="text-[14px] text-muted-foreground mt-1.5 leading-relaxed">
-                多空觀點左右對照，切換個股查看歷史時間軸。
+                多空觀點左右對照，點擊來源標籤查看原始新聞。
               </p>
             </div>
             <div className="flex items-center gap-2.5 shrink-0">
@@ -500,7 +519,6 @@ export default function StockNewsDigest() {
             </div>
           </div>
 
-          {/* Error from update */}
           {updateMutation.isError && (
             <div className="mb-4 flex items-center gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-[13px]">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -526,12 +544,10 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Loading */}
           {isLoading && (
             <div className="rounded-[18px] border border-white/8 bg-white/[0.02] animate-pulse" style={{ minHeight: 500 }} />
           )}
 
-          {/* Error state */}
           {isError && (
             <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
               <AlertCircle className="w-10 h-10 opacity-40" />
@@ -539,7 +555,6 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Empty state */}
           {!isLoading && !isError && stocks.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
               <Newspaper className="w-12 h-12 opacity-20" />
@@ -548,7 +563,6 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Full-width card for active stock */}
           {!isLoading && stocks.length > 0 && activeStock && (
             <StockDigestCard stock={activeStock} />
           )}
