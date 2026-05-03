@@ -763,7 +763,7 @@ function buildFinancialEvents(calendar: any): FinancialEvent[] {
 
 function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
   return quarters
-    .filter((q: any) => q["totalRevenue"] != null)
+    .filter((q: any) => (q["totalRevenue"] ?? q["revenue"]) != null)
     .map((q: any) => {
       // Convert date "YYYY-MM-DD" to quarter label "YYYYQn"
       const d = new Date(q.date);
@@ -772,7 +772,7 @@ function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
       const label = `${d.getFullYear()}Q${qn}`;
       return {
         quarter: label,
-        revenue:         q["totalRevenue"]    ?? 0,
+        revenue:         q["totalRevenue"]    ?? q["revenue"]         ?? 0,
         grossProfit:     q["grossProfit"]     ?? 0,
         operatingIncome: q["operatingIncome"] ?? 0,
         netIncome:       q["netIncome"]       ?? 0,
@@ -784,7 +784,8 @@ function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
 function buildEpsHistory(epsRows: any[]): EpsPoint[] {
   return epsRows
     .map((row: any, i: number) => {
-      const d = new Date(row.quarter || "");
+      // Support both `quarter` (Yahoo) and `date` (Perplexity cron) field names
+      const d = new Date(row.quarter || row.date || "");
       let label = `Q${i + 1}`;
       if (!isNaN(d.getTime())) {
         const m = d.getMonth() + 1;
