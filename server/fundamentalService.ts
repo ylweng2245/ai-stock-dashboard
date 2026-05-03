@@ -906,27 +906,64 @@ function isExpired(fetchedAt: number, _calendar?: any): boolean {
 
 // Track symbols currently being refreshed in background to avoid duplicate fetches
 const _bgRefreshInFlight = new Set<string>();
+// Track symbols currently having Finnhub calendar enriched
+const _bgCalendarInFlight = new Set<string>();
+
+/**
+ * Asynchronously fetch Finnhub calendar and merge it into the stored calendarJson.
+ * No-op for TW stocks or if already in-flight.
+ */
+export function enrichCalendarWithFinnhub(symbol: string, market: "TW" | "US", baseCalendar: any): void {
+  if (market === "TW") return;                         // Finnhub doesn't cover TW
+  if (!process.env.FINNHUB_API_KEY) return;            // key not configured
+  const key = `calendar:${symbol}`;
+  if (_bgCalendarInFlight.has(key)) return;            // already in-flight
+  _bgCalendarInFlight.add(key);
+
+  fetchFinnhubCalendar(symbol, market)
+    .then((fin) => {
+      if (!fin) return;
+      const enriched = {
+        ...baseCalendar,
+        ...(fin.earningsDate     && { finnhubEarningsDate:    fin.earningsDate }),
+        ...(fin.hour             && { finnhubHour:            fin.hour }),
+        ...(fin.epsEstimate      != null && { finnhubEpsEstimate:     fin.epsEstimate }),
+        ...(fin.revenueEstimate  != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
+        ...(fin.exDividendDate   && { finnhubExDividendDate:  fin.exDividendDate }),
+        ...(fin.nextDividendDate && { finnhubNextDividendDate: fin.nextDividendDate }),
+      };
+      const existing = storage.getFundamental(symbol, market);
+      if (existing) {
+        const { id: _id, ...rest } = existing as any;
+        storage.upsertFundamental({ ...rest, calendarJson: JSON.stringify(enriched), updatedAt: Date.now() });
+        console.log(`[finnhubCalendar] ${symbol}: earningsDate=${fin.earningsDate} hour=${fin.hour} nextDiv=${fin.nextDividendDate}`);
+      }
+    })
+    .catch((e) => console.warn(`[finnhubCalendar] ${symbol}: ${e.message}`))
+    .finally(() => _bgCalendarInFlight.delete(key));
+}
 
 function triggerBackgroundRefresh(symbol: string, market: "TW" | "US"): void {
   const key = `${symbol}:${market}`;
   if (_bgRefreshInFlight.has(key)) return; // already in progress
   _bgRefreshInFlight.add(key);
-  // Use a new call that bypasses the stale check (forceRefresh=true)
-  // but we need to call the inner fetch directly to avoid infinite recursion
   fetchFromYahooFinance(symbol, market)
     .then((raw) => {
       const now = Date.now();
+      const baseCalendar = raw.calendar ?? {};
       const row: InsertFundamentalData = {
         symbol, market,
         infoJson:            JSON.stringify(raw.info           ?? {}),
         quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
         epsHistoryJson:      JSON.stringify(raw.epsHistory     ?? []),
-        calendarJson:        JSON.stringify(raw.calendar       ?? {}),
+        calendarJson:        JSON.stringify(baseCalendar),
         fetchedAt: now,
         updatedAt: now,
       };
       storage.upsertFundamental(row);
       console.log(`[fundamentalService] bg refresh done: ${symbol} (${market})`);
+      // After storing, enrich with Finnhub calendar
+      enrichCalendarWithFinnhub(symbol, market, baseCalendar);
     })
     .catch((e) => console.error(`[fundamentalService] bg refresh failed: ${symbol}:`, e.message))
     .finally(() => _bgRefreshInFlight.delete(key));
@@ -945,9 +982,14 @@ export async function getOrFetchFundamentals(
       try { cal = JSON.parse(cached.calendarJson || "{}"); } catch { /* */ }
       if (!isExpired(cached.fetchedAt, cal)) {
         // Cache is fresh — return immediately
+        // If Finnhub calendar hasn't been fetched yet, enrich in background
+        if (market === "US" && !cal.finnhubEarningsDate) {
+          enrichCalendarWithFinnhub(symbol, market, cal);
+        }
         return assembleFundamentalResult(symbol, market, cached);
       }
       // Cache is stale — return existing data immediately, refresh in background
+      // (triggerBackgroundRefresh will also call enrichCalendarWithFinnhub after Yahoo fetch)
       console.log(`[fundamentalService] stale cache for ${symbol}, serving cached + bg refresh`);
       triggerBackgroundRefresh(symbol, market);
       return assembleFundamentalResult(symbol, market, cached);
@@ -955,31 +997,32 @@ export async function getOrFetchFundamentals(
   }
 
   // No cache at all (first fetch) or forceRefresh — fetch synchronously
-  // Fetch fresh
   console.log(`[fundamentalService] Fetching yahoo-finance2: ${symbol} (${market})`);
   let raw: any;
   try {
     raw = await fetchFromYahooFinance(symbol, market);
   } catch (e: any) {
     console.error(`[fundamentalService] fetch error for ${symbol}:`, e.message);
-    // Fall back to cached (possibly stale) data
     const cached = storage.getFundamental(symbol, market);
     if (cached) return assembleFundamentalResult(symbol, market, cached);
     throw new Error(`Failed to fetch fundamentals for ${symbol}: ${e.message}`);
   }
 
   const now = Date.now();
+  const baseCalendar = raw.calendar ?? {};
   const row: InsertFundamentalData = {
     symbol,
     market,
-    infoJson:            JSON.stringify(raw.info          ?? {}),
+    infoJson:            JSON.stringify(raw.info           ?? {}),
     quarterlyIncomeJson: JSON.stringify(raw.quarterlyIncome ?? []),
-    epsHistoryJson:      JSON.stringify(raw.epsHistory    ?? []),
-    calendarJson:        JSON.stringify(raw.calendar      ?? {}),
+    epsHistoryJson:      JSON.stringify(raw.epsHistory     ?? []),
+    calendarJson:        JSON.stringify(baseCalendar),
     fetchedAt: now,
     updatedAt: now,
   };
   storage.upsertFundamental(row);
+  // Enrich calendar with Finnhub in background (non-blocking)
+  enrichCalendarWithFinnhub(symbol, market, baseCalendar);
 
   return assembleFundamentalResult(symbol, market, row);
 }

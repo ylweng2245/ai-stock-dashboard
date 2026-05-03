@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, generateDigestForTicker } from "./newsDigestService";
-import { fetchFinnhubCalendar } from "./fundamentalService";
+import { enrichCalendarWithFinnhub } from "./fundamentalService";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1202,37 +1202,9 @@ export async function registerRoutes(
     console.log(`[fundamentals-sync] saved ${saved}/${items.length} symbols`);
     res.json({ ok: true, saved });
 
-    // Asynchronously enrich calendars with Finnhub data (don't block response)
-    if (toEnrich.length > 0 && process.env.FINNHUB_API_KEY) {
-      setImmediate(async () => {
-        for (const { symbol, market, baseCalendar } of toEnrich) {
-          try {
-            const fin = await fetchFinnhubCalendar(symbol, market);
-            if (!fin) continue;
-            const enriched = {
-              ...baseCalendar,
-              ...(fin.earningsDate    && { finnhubEarningsDate:    fin.earningsDate }),
-              ...(fin.hour            && { finnhubHour:            fin.hour }),
-              ...(fin.epsEstimate     != null && { finnhubEpsEstimate:     fin.epsEstimate }),
-              ...(fin.revenueEstimate != null && { finnhubRevenueEstimate: fin.revenueEstimate }),
-              ...(fin.exDividendDate  && { finnhubExDividendDate:  fin.exDividendDate }),
-              ...(fin.nextDividendDate && { finnhubNextDividendDate: fin.nextDividendDate }),
-            };
-            const existing = storage.getFundamental(symbol, market);
-            if (existing) {
-              const { id: _id, ...existingWithoutId } = existing as any;
-              storage.upsertFundamental({
-                ...existingWithoutId,
-                calendarJson: JSON.stringify(enriched),
-                updatedAt: Date.now(),
-              });
-              console.log(`[finnhubCalendar] ${symbol}: earningsDate=${fin.earningsDate} hour=${fin.hour} nextDiv=${fin.nextDividendDate}`);
-            }
-          } catch (e: any) {
-            console.warn(`[finnhubCalendar] ${symbol}: ${e.message}`);
-          }
-        }
-      });
+    // Asynchronously enrich calendars with Finnhub data (non-blocking)
+    for (const { symbol, market, baseCalendar } of toEnrich) {
+      enrichCalendarWithFinnhub(symbol, market, baseCalendar);
     }
   });
 
