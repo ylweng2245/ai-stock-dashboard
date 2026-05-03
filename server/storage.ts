@@ -429,6 +429,25 @@ export class DatabaseStorage implements IStorage {
       .all();
   }
 
+  /** Delete all digests (and their sources) with digest_date < cutoffDate ("YYYY-MM-DD") */
+  deleteDigestsBefore(cutoffDate: string): number {
+    // Get IDs to delete first (for cascading sources)
+    const toDelete = sqlite.prepare(
+      `SELECT id FROM daily_news_digest WHERE digest_date < ?`
+    ).all(cutoffDate) as { id: number }[];
+    if (toDelete.length === 0) return 0;
+    const ids = toDelete.map((r) => r.id);
+    // Delete sources first
+    sqlite.prepare(
+      `DELETE FROM daily_news_sources WHERE digest_id IN (${ids.map(() => "?").join(",")})`
+    ).run(...ids);
+    // Delete digests
+    const result = sqlite.prepare(
+      `DELETE FROM daily_news_digest WHERE id IN (${ids.map(() => "?").join(",")})`
+    ).run(...ids);
+    return result.changes;
+  }
+
   replaceSourcesForDigest(digestId: number, sources: Omit<InsertDailyNewsSource, "digestId">[]): void {
     db.delete(dailyNewsSources).where(eq(dailyNewsSources.digestId, digestId)).run();
     sources.forEach((s, i) => {

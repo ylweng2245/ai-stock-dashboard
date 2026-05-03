@@ -1003,6 +1003,18 @@ export async function registerRoutes(
     }
   });
 
+  /** DELETE /api/news-digest/before/:date — remove all digests before YYYY-MM-DD */
+  app.delete("/api/news-digest/before/:date", (req, res) => {
+    try {
+      const date = req.params.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+      const deleted = storage.deleteDigestsBefore(date);
+      res.json({ ok: true, deleted });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ──────────────────────────────────────────────────────────────────
   // GET /api/analyst-targets/:symbol?market=US|TW
   // ──────────────────────────────────────────────────────────────────

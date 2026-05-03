@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AnalysisSymbolSidebarDesktop } from "@/components/AnalysisSymbolSidebar";
+import { useActiveSymbol } from "@/context/ActiveSymbolContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -263,10 +264,7 @@ function BullBearColumn({
           return (
             <div key={i} className="flex flex-col gap-1.5">
               {blk.title && (
-                <div className={cn(
-                  "text-[11px] font-bold uppercase tracking-wider opacity-60",
-                  isBull ? "text-[#ef4444]" : "text-[#10b981]"
-                )}>
+                <div className="text-[14px] font-bold text-foreground leading-snug">
                   {blk.title}
                 </div>
               )}
@@ -441,57 +439,12 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
   );
 }
 
-// ─── Stock Switcher ───────────────────────────────────────────────────────────
-
-function StockSwitcher({
-  stocks,
-  activeSymbol,
-  onChange,
-}: {
-  stocks: StockDigestData[];
-  activeSymbol: string;
-  onChange: (symbol: string) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {stocks.map((s) => {
-        const latest = s.digests[0];
-        const pct = latest?.priceChangePct;
-        const isUp = pct != null && pct > 0;
-        const isDown = pct != null && pct < 0;
-        const isActive = s.symbol === activeSymbol;
-        return (
-          <button
-            key={s.symbol}
-            onClick={() => onChange(s.symbol)}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold border transition-all",
-              isActive
-                ? "bg-[#1cb8be]/15 border-[#1cb8be]/40 text-[#66c6df]"
-                : "bg-white/[0.02] border-white/8 text-muted-foreground hover:border-white/16 hover:text-foreground"
-            )}
-          >
-            <span>{s.symbol}</span>
-            {pct != null && (
-              <span className={cn(
-                "text-[10px]",
-                isUp ? "text-gain" : isDown ? "text-loss" : "text-muted-foreground"
-              )}>
-                {isUp ? "+" : ""}{pct.toFixed(1)}%
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function StockNewsDigest() {
   const queryClient = useQueryClient();
-  const [activeSymbol, setActiveSymbol] = useState<string | null>(null);
+  // Use shared ActiveSymbol context (same as TechnicalAnalysis page)
+  const { activeSymbol } = useActiveSymbol();
 
   const { data, isLoading, isError } = useQuery<PageData>({
     queryKey: ["/api/news-digest/stocks"],
@@ -510,13 +463,11 @@ export default function StockNewsDigest() {
   const stocks = data?.stocks ?? [];
   const stats = data?.stats;
 
-  // Default to first stock
-  const resolvedSymbol = activeSymbol ?? stocks[0]?.symbol ?? null;
-  const activeStock = stocks.find((s) => s.symbol === resolvedSymbol) ?? null;
-
-  const handleChange = useCallback((symbol: string) => {
-    setActiveSymbol(symbol);
-  }, []);
+  // Match active symbol from context; fallback to first US stock in digest list
+  const activeStock =
+    stocks.find((s) => s.symbol === activeSymbol) ??
+    stocks[0] ??
+    null;
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -597,24 +548,15 @@ export default function StockNewsDigest() {
             </div>
           )}
 
-          {/* Stock switcher + full-width card */}
-          {!isLoading && stocks.length > 0 && (
-            <div className="flex flex-col gap-4">
-              {/* Switcher */}
-              <StockSwitcher
-                stocks={stocks}
-                activeSymbol={resolvedSymbol ?? ""}
-                onChange={handleChange}
-              />
-              {/* Card */}
-              {activeStock && <StockDigestCard stock={activeStock} />}
-            </div>
+          {/* Full-width card for active stock */}
+          {!isLoading && stocks.length > 0 && activeStock && (
+            <StockDigestCard stock={activeStock} />
           )}
         </div>
       </div>
 
-      {/* Right sidebar */}
-      <AnalysisSymbolSidebarDesktop />
+      {/* Right sidebar — US stocks only */}
+      <AnalysisSymbolSidebarDesktop symbolFilter={(item) => item.market === "US"} />
     </div>
   );
 }
