@@ -536,6 +536,8 @@ function FundamentalSkeleton() {
 /** 全部財務資料同步按鈕 — 觸發後台全量更新 */
 function SyncAllButton() {
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const { activeSymbol, activeMarket } = useActiveSymbol();
+  const qc = useQueryClient();
 
   const handleClick = async () => {
     if (status === "running") return;
@@ -544,6 +546,10 @@ function SyncAllButton() {
       const res = await apiRequest("POST", "/api/fundamentals/sync-all");
       const json = await res.json();
       if (json.ok) {
+        // Server runs in background — wait ~8s then refetch current symbol
+        await new Promise((r) => setTimeout(r, 8000));
+        await qc.invalidateQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
+        await qc.refetchQueries({ queryKey: ["/api/fundamentals", activeSymbol, activeMarket] });
         setStatus("done");
         setTimeout(() => setStatus("idle"), 4000);
       } else {
