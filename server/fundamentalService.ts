@@ -835,17 +835,26 @@ function buildFinancialEvents(calendar: any): FinancialEvent[] {
   return events;
 }
 
+function quarterLabel(q: any, fallbackIndex?: number): string {
+  // Try date field first (YYYY-MM-DD)
+  const d = new Date(q.date || q.quarter || "");
+  if (!isNaN(d.getTime())) {
+    const m = d.getMonth() + 1;
+    return `${d.getFullYear()}Q${Math.ceil(m / 3)}`;
+  }
+  // Fall back to fiscalYear + fiscalQuarter stored by cron
+  if (q.fiscalYear != null && q.fiscalQuarter != null) {
+    return `${q.fiscalYear}Q${q.fiscalQuarter}`;
+  }
+  return fallbackIndex != null ? `Q${fallbackIndex + 1}` : "—";
+}
+
 function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
   return quarters
     .filter((q: any) => (q["totalRevenue"] ?? q["revenue"]) != null)
-    .map((q: any) => {
-      // Convert date "YYYY-MM-DD" to quarter label "YYYYQn"
-      const d = new Date(q.date);
-      const m = d.getMonth() + 1;
-      const qn = Math.ceil(m / 3);
-      const label = `${d.getFullYear()}Q${qn}`;
+    .map((q: any, i: number) => {
       return {
-        quarter: label,
+        quarter:         quarterLabel(q, i),
         revenue:         q["totalRevenue"]    ?? q["revenue"]         ?? 0,
         grossProfit:     q["grossProfit"]     ?? 0,
         operatingIncome: q["operatingIncome"] ?? 0,
@@ -858,16 +867,8 @@ function buildQuarterlyBars(quarters: any[]): QuarterlyBar[] {
 function buildEpsHistory(epsRows: any[]): EpsPoint[] {
   return epsRows
     .map((row: any, i: number) => {
-      // Support both `quarter` (Yahoo) and `date` (Perplexity cron) field names
-      const d = new Date(row.quarter || row.date || "");
-      let label = `Q${i + 1}`;
-      if (!isNaN(d.getTime())) {
-        const m = d.getMonth() + 1;
-        const qn = Math.ceil(m / 3);
-        label = `${d.getFullYear()}Q${qn}`;
-      }
       return {
-        quarter:  label,
+        quarter:  quarterLabel(row, i),
         actual:   row.epsActual   ?? 0,
         estimate: row.epsEstimate ?? 0,
         surprise: row.surprisePercent != null ? row.surprisePercent * 100 : 0,
