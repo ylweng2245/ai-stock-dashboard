@@ -926,7 +926,7 @@ export async function registerRoutes(
       }));
 
       // Stats
-      const todayDate = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      const todayDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Taipei" });
       const updatedToday = stocks.filter((s) =>
         s.digests.some((d) => d.digestDate === todayDate && d.status === "ok")
       ).length;

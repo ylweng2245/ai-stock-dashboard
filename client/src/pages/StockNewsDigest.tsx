@@ -142,16 +142,16 @@ function formatDate(dateStr: string): string {
 }
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString("zh-TW", {
-    hour: "2-digit", minute: "2-digit", timeZone: "America/New_York",
-  }) + " ET";
+    hour: "2-digit", minute: "2-digit", timeZone: "Asia/Taipei",
+  });
 }
 function formatLastUpdated(ms: number | null): string {
   if (!ms) return "尚未更新";
   return new Date(ms).toLocaleString("zh-TW", {
     month: "numeric", day: "numeric",
     hour: "2-digit", minute: "2-digit",
-    timeZone: "America/New_York",
-  }) + " ET";
+    timeZone: "Asia/Taipei",
+  });
 }
 
 // ─── Inline Source Popover ────────────────────────────────────────────────────
