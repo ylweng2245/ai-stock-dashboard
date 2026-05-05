@@ -77,7 +77,8 @@ function parseSummaryText(raw: string): QuestionBlock[] {
   if (!raw) return [];
   const text = raw.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 
-  const questionPattern = /\*\*問題\s*\d+[：:][^*]*\*\*/g;
+  // Match both Arabic numerals (問題 1) and Chinese numerals (問題一、問題二...)
+  const questionPattern = /\*\*問題\s*(?:\d+|[一二三四五六七八九十])[：:][^*]*\*\*/g;
   const matches = [...text.matchAll(questionPattern)];
 
   if (matches.length === 0) {
@@ -112,10 +113,10 @@ function parseSummaryText(raw: string): QuestionBlock[] {
 
 function extractBullsBears(chunk: string) {
   const bullMatch = chunk.match(
-    /(?:🐂\s*\*\*多頭觀點[：:]?\*\*|🐂\s*多頭觀點[：:]?|\*\*多頭觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
+    /(?:🐂\s*\*\*(?:多頭|看漲)觀點[：:]?\*\*|🐂\s*(?:多頭|看漲)觀點[：:]?|\*\*(?:多頭|看漲)觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
   );
   const bearMatch = chunk.match(
-    /(?:🐻\s*\*\*空頭觀點[：:]?\*\*|🐻\s*空頭觀點[：:]?|\*\*空頭觀點[：:]\*\*)(.*?)(?=$)/s
+    /(?:🐻\s*\*\*(?:空頭|看跌|熊市)觀點?[：:]?\*\*|🐻\s*(?:空頭|看跌|熊市)觀點?[：:]?|\*\*(?:空頭|看跌|熊市)觀點?[：:]\*\*)(.*?)(?=$)/s
   );
   const cleanBull = bullMatch ? cleanSegment(bullMatch[1]) : "";
   const cleanBear = bearMatch ? cleanSegment(bearMatch[1]) : "";
