@@ -165,6 +165,7 @@ function InlineSourcePopover({
   allSources: DigestSource[];
 }) {
   const [open, setOpen] = useState(false);
+  const [openLeft, setOpenLeft] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
 
   // Filter matching sources: sourceId 1 → sortOrder 0
@@ -191,7 +192,14 @@ function InlineSourcePopover({
   return (
     <span ref={ref} className="relative inline-block ml-1.5">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (!open && ref.current) {
+            const rect = ref.current.getBoundingClientRect();
+            // If button is in the right half of the viewport, open popover to the left
+            setOpenLeft(rect.left > window.innerWidth / 2);
+          }
+          setOpen((v) => !v);
+        }}
         className={cn(
           "text-[11px] font-medium px-1.5 py-0.5 rounded border transition-colors",
           open
@@ -203,7 +211,7 @@ function InlineSourcePopover({
       </button>
 
       {open && (
-        <div className="absolute z-50 bottom-full mb-2 left-0 w-80 rounded-xl bg-[#0d1726] border border-white/12 shadow-2xl shadow-black/60">
+        <div className={cn("absolute z-50 bottom-full mb-2 w-80 rounded-xl bg-[#0d1726] border border-white/12 shadow-2xl shadow-black/60", openLeft ? "right-0" : "left-0")}>
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/8">
             <span className="text-[11px] font-semibold text-foreground/80">原始來源</span>
             <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors">
