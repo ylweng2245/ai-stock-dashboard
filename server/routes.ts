@@ -701,16 +701,17 @@ export async function registerRoutes(
       const txns = await storage.getTransactions();
 
       // Group by symbol+market
-      // Weighted Average Cost method:
-      // avgCost is recalculated after every buy (total holding cost / total holding shares).
-      // On sell: realizedGain += proceeds - (avgCost × shares_sold); holding cost decreases proportionally.
+      // Cost method depends on market:
+      //   TW → FIFO (台灣券商採先進先出法)
+      //   US → Weighted Average Cost
       type PositionMap = Record<string, {
         symbol: string; name: string; market: string; currency: string;
         holdingShares: number;   // current shares held
-        holdingCost: number;     // current total cost of held shares (weighted avg basis)
+        holdingCost: number;     // current total cost of held shares (weighted avg basis, US only)
         realizedGain: number;    // cumulative realized gain in native currency
         totalBuyCost: number;    // total buy cost (abs value, for reference)
         totalBuyShares: number;
+        lots: Array<{ shares: number; unitCost: number }>;  // FIFO lots (TW only)
       }>;
 
       const positions: PositionMap = {};
@@ -721,29 +722,64 @@ export async function registerRoutes(
           positions[key] = {
             symbol: tx.symbol, name: tx.name, market: tx.market, currency: tx.currency,
             holdingShares: 0, holdingCost: 0, realizedGain: 0, totalBuyCost: 0, totalBuyShares: 0,
+            lots: [],
           };
         }
         const pos = positions[key];
+        const isTW = pos.market === "TW";
 
         if (tx.side === "buy") {
-          // Weighted average: add to holding pool
-          pos.holdingShares += tx.shares;
-          pos.holdingCost += Math.abs(tx.totalCost);
           pos.totalBuyCost += Math.abs(tx.totalCost);
           pos.totalBuyShares += tx.shares;
+          if (isTW) {
+            // FIFO: push a new lot
+            pos.lots.push({ shares: tx.shares, unitCost: Math.abs(tx.totalCost) / tx.shares });
+            pos.holdingShares += tx.shares;
+            pos.holdingCost += Math.abs(tx.totalCost);
+          } else {
+            // Weighted average: add to holding pool
+            pos.holdingShares += tx.shares;
+            pos.holdingCost += Math.abs(tx.totalCost);
+          }
         } else if (tx.side === "dividend") {
           // Dividend: directly add to realized gain
           pos.realizedGain += tx.totalCost;
         } else {
-          // Sell: use current weighted average cost basis
-          const avgCostNow = pos.holdingShares > 0 ? pos.holdingCost / pos.holdingShares : 0;
-          const costBasis = avgCostNow * tx.shares;
+          // Sell
           const proceeds = Math.abs(tx.totalCost);
-          pos.realizedGain += proceeds - costBasis;
-          // Reduce holding proportionally
-          pos.holdingShares -= tx.shares;
-          pos.holdingCost -= costBasis;
-          if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; }
+          if (isTW) {
+            // FIFO: consume oldest lots first
+            let remainingToSell = tx.shares;
+            let costBasis = 0;
+            while (remainingToSell > 0.0001 && pos.lots.length > 0) {
+              const lot = pos.lots[0];
+              if (lot.shares <= remainingToSell + 0.0001) {
+                // consume entire lot
+                costBasis += lot.unitCost * lot.shares;
+                remainingToSell -= lot.shares;
+                pos.holdingShares -= lot.shares;
+                pos.holdingCost -= lot.unitCost * lot.shares;
+                pos.lots.shift();
+              } else {
+                // partial lot
+                costBasis += lot.unitCost * remainingToSell;
+                pos.holdingShares -= remainingToSell;
+                pos.holdingCost -= lot.unitCost * remainingToSell;
+                lot.shares -= remainingToSell;
+                remainingToSell = 0;
+              }
+            }
+            pos.realizedGain += proceeds - costBasis;
+            if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; pos.lots = []; }
+          } else {
+            // Weighted average sell
+            const avgCostNow = pos.holdingShares > 0 ? pos.holdingCost / pos.holdingShares : 0;
+            const costBasis = avgCostNow * tx.shares;
+            pos.realizedGain += proceeds - costBasis;
+            pos.holdingShares -= tx.shares;
+            pos.holdingCost -= costBasis;
+            if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; }
+          }
         }
       }
 

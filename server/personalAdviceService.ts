@@ -62,10 +62,15 @@ export async function buildPersonalPositionState(
     return null;
   }
 
-  // Weighted Average Cost: replay transactions in order
+  // Cost method depends on market:
+  //   TW → FIFO (台灣券商採先進先出法)
+  //   US → Weighted Average Cost
+  const isTW = market === "TW";
   let holdingShares = 0;
   let holdingCost = 0;
   let realizedGainTotal = 0;
+  // FIFO lots for TW
+  const lots: Array<{ shares: number; unitCost: number }> = [];
 
   for (const t of transactions) {
     const side = t.side ?? (t.type === "sell" || (t.shares ?? 0) < 0 ? "sell" : "buy");
@@ -74,14 +79,41 @@ export async function buildPersonalPositionState(
     if (side === "buy") {
       holdingShares += shares;
       holdingCost += cost;
+      if (isTW) {
+        lots.push({ shares, unitCost: cost / shares });
+      }
     } else if (side === "sell") {
-      const avgNow = holdingShares > 0 ? holdingCost / holdingShares : 0;
-      const basis = avgNow * shares;
-      const proceeds = cost;
-      realizedGainTotal += proceeds - basis;
-      holdingShares -= shares;
-      holdingCost -= basis;
-      if (holdingShares < 0.0001) { holdingShares = 0; holdingCost = 0; }
+      if (isTW) {
+        // FIFO: consume oldest lots first
+        let remainingToSell = shares;
+        let basis = 0;
+        while (remainingToSell > 0.0001 && lots.length > 0) {
+          const lot = lots[0];
+          if (lot.shares <= remainingToSell + 0.0001) {
+            basis += lot.unitCost * lot.shares;
+            remainingToSell -= lot.shares;
+            holdingShares -= lot.shares;
+            holdingCost -= lot.unitCost * lot.shares;
+            lots.shift();
+          } else {
+            basis += lot.unitCost * remainingToSell;
+            holdingShares -= remainingToSell;
+            holdingCost -= lot.unitCost * remainingToSell;
+            lot.shares -= remainingToSell;
+            remainingToSell = 0;
+          }
+        }
+        realizedGainTotal += cost - basis;
+        if (holdingShares < 0.0001) { holdingShares = 0; holdingCost = 0; lots.length = 0; }
+      } else {
+        // Weighted average
+        const avgNow = holdingShares > 0 ? holdingCost / holdingShares : 0;
+        const basis = avgNow * shares;
+        realizedGainTotal += cost - basis;
+        holdingShares -= shares;
+        holdingCost -= basis;
+        if (holdingShares < 0.0001) { holdingShares = 0; holdingCost = 0; }
+      }
     } else if (side === "dividend") {
       realizedGainTotal += t.totalCost ?? 0;
     }
@@ -91,9 +123,8 @@ export async function buildPersonalPositionState(
   if (netShares <= 0) return null;
 
   const avgCost = holdingShares > 0 ? holdingCost / holdingShares : 0;
-  const totalBuyShares = transactions
-    .filter((t: any) => (t.side ?? t.type) === "buy")
-    .reduce((s: number, t: any) => s + Math.abs(t.shares ?? 0), 0);
+  const buys = transactions.filter((t: any) => (t.side ?? t.type) === "buy");
+  const totalBuyShares = buys.reduce((s: number, t: any) => s + Math.abs(t.shares ?? 0), 0);
 
   // Average holding days: average days between each buy tradeDate and today
   const today = new Date();
