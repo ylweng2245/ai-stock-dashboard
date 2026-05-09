@@ -167,9 +167,22 @@ export default function Portfolio() {
         const quote = priceMap.get(h.symbol);
         // Use live price if available and non-zero; fallback to avgCost only when truly no data
         const currentPrice = (quote?.price && quote.price > 0) ? quote.price : h.avgCost;
-        const unrealizedGain = (currentPrice - h.avgCost) * h.shares;
-        const unrealizedPct = h.avgCost > 0 ? ((currentPrice - h.avgCost) / h.avgCost) * 100 : 0;
         const marketValue = currentPrice * h.shares;
+
+        // 台股賣出成本扣除（假設現在賣出所需支付）:
+        //   手續費：成交金額 × 0.1425%
+        //   交易稅：ETF 0.1%，個股 0.3%
+        // ETF 判斷：台股代號以 "0" 開頭
+        let sellCostDeduction = 0;
+        if (h.market === "TW") {
+          const isTWETF = h.symbol.startsWith("0");
+          const commission = marketValue * 0.001425;
+          const txTax = marketValue * (isTWETF ? 0.001 : 0.003);
+          sellCostDeduction = commission + txTax;
+        }
+
+        const unrealizedGain = (currentPrice - h.avgCost) * h.shares - sellCostDeduction;
+        const unrealizedPct = h.avgCost > 0 ? (unrealizedGain / (h.avgCost * h.shares)) * 100 : 0;
         return { ...h, currentPrice, quote, unrealizedGain, unrealizedPct, marketValue };
       });
   }, [computedHoldings, priceMap]);
