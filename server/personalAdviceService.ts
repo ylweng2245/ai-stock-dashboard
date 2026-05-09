@@ -62,28 +62,38 @@ export async function buildPersonalPositionState(
     return null;
   }
 
-  // Separate buys and sells
-  const buys = transactions.filter((t: any) => t.type === "buy" || t.shares > 0);
-  const sells = transactions.filter((t: any) => t.type === "sell" || t.shares < 0);
+  // Weighted Average Cost: replay transactions in order
+  let holdingShares = 0;
+  let holdingCost = 0;
+  let realizedGainTotal = 0;
 
-  const totalBuyShares = buys.reduce((sum: number, t: any) => sum + Math.abs(t.shares), 0);
-  const totalSellShares = sells.reduce((sum: number, t: any) => sum + Math.abs(t.shares), 0);
-  const netShares = totalBuyShares - totalSellShares;
-
-  if (netShares <= 0) {
-    return null;
+  for (const t of transactions) {
+    const side = t.side ?? (t.type === "sell" || (t.shares ?? 0) < 0 ? "sell" : "buy");
+    const shares = Math.abs(t.shares ?? 0);
+    const cost = Math.abs(t.totalCost ?? (t.price * shares));
+    if (side === "buy") {
+      holdingShares += shares;
+      holdingCost += cost;
+    } else if (side === "sell") {
+      const avgNow = holdingShares > 0 ? holdingCost / holdingShares : 0;
+      const basis = avgNow * shares;
+      const proceeds = cost;
+      realizedGainTotal += proceeds - basis;
+      holdingShares -= shares;
+      holdingCost -= basis;
+      if (holdingShares < 0.0001) { holdingShares = 0; holdingCost = 0; }
+    } else if (side === "dividend") {
+      realizedGainTotal += t.totalCost ?? 0;
+    }
   }
 
-  // Average cost from buy transactions
-  const totalBuyCost = buys.reduce((sum: number, t: any) => sum + Math.abs(t.totalCost ?? (t.price * Math.abs(t.shares))), 0);
-  const avgCost = totalBuyShares > 0 ? totalBuyCost / totalBuyShares : 0;
+  const netShares = holdingShares;
+  if (netShares <= 0) return null;
 
-  // Realized gain: sum of all totalCost (negative for buys, positive for sells)
-  // Using simple proxy: SUM(totalCost) for all transactions
-  const realizedGainTotal = transactions.reduce((sum: number, t: any) => {
-    const cost = t.totalCost ?? 0;
-    return sum + cost;
-  }, 0);
+  const avgCost = holdingShares > 0 ? holdingCost / holdingShares : 0;
+  const totalBuyShares = transactions
+    .filter((t: any) => (t.side ?? t.type) === "buy")
+    .reduce((s: number, t: any) => s + Math.abs(t.shares ?? 0), 0);
 
   // Average holding days: average days between each buy tradeDate and today
   const today = new Date();

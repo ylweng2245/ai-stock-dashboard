@@ -701,11 +701,15 @@ export async function registerRoutes(
       const txns = await storage.getTransactions();
 
       // Group by symbol+market
+      // Weighted Average Cost method:
+      // avgCost is recalculated after every buy (total holding cost / total holding shares).
+      // On sell: realizedGain += proceeds - (avgCost × shares_sold); holding cost decreases proportionally.
       type PositionMap = Record<string, {
         symbol: string; name: string; market: string; currency: string;
-        lots: Array<{ shares: number; price: number; cost: number }>; // open lots (FIFO)
-        realizedGain: number; // cumulative realized gain in native currency
-        totalBuyCost: number; // total buy cost (abs value)
+        holdingShares: number;   // current shares held
+        holdingCost: number;     // current total cost of held shares (weighted avg basis)
+        realizedGain: number;    // cumulative realized gain in native currency
+        totalBuyCost: number;    // total buy cost (abs value, for reference)
         totalBuyShares: number;
       }>;
 
@@ -716,40 +720,37 @@ export async function registerRoutes(
         if (!positions[key]) {
           positions[key] = {
             symbol: tx.symbol, name: tx.name, market: tx.market, currency: tx.currency,
-            lots: [], realizedGain: 0, totalBuyCost: 0, totalBuyShares: 0,
+            holdingShares: 0, holdingCost: 0, realizedGain: 0, totalBuyCost: 0, totalBuyShares: 0,
           };
         }
         const pos = positions[key];
 
         if (tx.side === "buy") {
-          pos.lots.push({ shares: tx.shares, price: tx.price, cost: Math.abs(tx.totalCost) });
+          // Weighted average: add to holding pool
+          pos.holdingShares += tx.shares;
+          pos.holdingCost += Math.abs(tx.totalCost);
           pos.totalBuyCost += Math.abs(tx.totalCost);
           pos.totalBuyShares += tx.shares;
         } else if (tx.side === "dividend") {
-          // Dividend: directly add to realized gain (no lot consumption)
+          // Dividend: directly add to realized gain
           pos.realizedGain += tx.totalCost;
         } else {
-          // FIFO sell: consume oldest lots first
-          let toSell = tx.shares;
-          const proceedsPerShare = tx.totalCost / tx.shares; // positive per share
-          while (toSell > 0 && pos.lots.length > 0) {
-            const lot = pos.lots[0];
-            const consume = Math.min(lot.shares, toSell);
-            const costBasis = (lot.cost / lot.shares) * consume;
-            const proceeds = Math.abs(tx.totalCost) * (consume / tx.shares);
-            pos.realizedGain += proceeds - costBasis;
-            lot.shares -= consume;
-            lot.cost -= costBasis;
-            toSell -= consume;
-            if (lot.shares <= 0.0001) pos.lots.shift();
-          }
+          // Sell: use current weighted average cost basis
+          const avgCostNow = pos.holdingShares > 0 ? pos.holdingCost / pos.holdingShares : 0;
+          const costBasis = avgCostNow * tx.shares;
+          const proceeds = Math.abs(tx.totalCost);
+          pos.realizedGain += proceeds - costBasis;
+          // Reduce holding proportionally
+          pos.holdingShares -= tx.shares;
+          pos.holdingCost -= costBasis;
+          if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; }
         }
       }
 
       // Build output
       const holdings = Object.values(positions).map((pos) => {
-        const currentShares = pos.lots.reduce((s, l) => s + l.shares, 0);
-        const currentCost = pos.lots.reduce((s, l) => s + l.cost, 0);
+        const currentShares = pos.holdingShares;
+        const currentCost = pos.holdingCost;
         const avgCost = currentShares > 0 ? currentCost / currentShares : 0;
         return {
           symbol: pos.symbol,
