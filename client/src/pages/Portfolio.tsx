@@ -181,9 +181,6 @@ export default function Portfolio() {
           const commission = marketValue * 0.001425;
           const txTax = isBondETF ? 0 : marketValue * (isTWETF ? 0.001 : 0.003);
           sellCostDeduction = commission + txTax;
-        } else if (h.market === "US") {
-          // 美股手續費 0.1%
-          sellCostDeduction = marketValue * 0.001;
         }
 
         const unrealizedGain = (currentPrice - h.avgCost) * h.shares - sellCostDeduction;
