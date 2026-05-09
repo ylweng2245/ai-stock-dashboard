@@ -176,8 +176,10 @@ export default function Portfolio() {
         let sellCostDeduction = 0;
         if (h.market === "TW") {
           const isTWETF = h.symbol.startsWith("0");
+          // 債券型ETF（如00719B）交易稅0%
+          const isBondETF = /^00\d+B$/i.test(h.symbol);
           const commission = marketValue * 0.001425;
-          const txTax = marketValue * (isTWETF ? 0.001 : 0.003);
+          const txTax = isBondETF ? 0 : marketValue * (isTWETF ? 0.001 : 0.003);
           sellCostDeduction = commission + txTax;
         }
 
