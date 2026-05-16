@@ -1334,14 +1334,14 @@ export default function TechnicalAnalysis() {
                       isAnimationActive={false}
                       legendType="none"
                     />
-                    {/* Orange median dashed line */}
+                    {/* Orange median dot line — one dot per trading day, no connecting line */}
                     <Line
                       type="monotone"
                       dataKey="predMedian"
-                      stroke="#F97316"
-                      strokeWidth={2}
-                      strokeDasharray="6 3"
-                      dot={false}
+                      stroke="none"
+                      strokeWidth={0}
+                      dot={{ r: 2.5, fill: "#F97316", strokeWidth: 0 }}
+                      activeDot={{ r: 4, fill: "#F97316", strokeWidth: 0 }}
                       connectNulls={false}
                       isAnimationActive={false}
                       name="ML預測中位數"
@@ -1384,13 +1384,14 @@ export default function TechnicalAnalysis() {
                       isAnimationActive={false}
                       legendType="none"
                     />
+                    {/* Blue median dot line — one dot per trading day, no connecting line */}
                     <Line
                       type="monotone"
                       dataKey="cmpMedian"
-                      stroke="#3B82F6"
-                      strokeWidth={1.5}
-                      strokeDasharray="4 3"
-                      dot={false}
+                      stroke="none"
+                      strokeWidth={0}
+                      dot={{ r: 2, fill: "#3B82F6", strokeWidth: 0 }}
+                      activeDot={{ r: 3.5, fill: "#3B82F6", strokeWidth: 0 }}
                       connectNulls={false}
                       isAnimationActive={false}
                       name="對比預測中位數"
