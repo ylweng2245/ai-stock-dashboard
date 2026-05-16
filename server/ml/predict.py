@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-predict.py -- RandomForest Direct Multi-Step price-path predictor
-AI Stock Dashboard V6.1
+predict.py -- HistGradientBoosting Direct Multi-Step price-path predictor
+AI Stock Dashboard V6.1  (model: HGB_v4)
 
 Input (stdin JSON):
   { "symbol", "market", "horizons": [1..20], "bars": [...], "analystFeatures": {...} }
@@ -28,10 +28,13 @@ Band method: walk-forward OOS residuals, per-horizon.
   For each horizon h:
     residual[t] = actual_return[t+h] - predicted_return[t]   (on OOS period)
     p25, p75 = percentile(residuals, 25), percentile(residuals, 75)
-    lower = medianPrice * (1 + p25)
-    upper = medianPrice * (1 + p75)
+    lower = medianPrice + basePrice * p25
+    upper = medianPrice + basePrice * p75
     -- then clamp so lower <= medianPrice <= upper
-  Fallback (< 5 OOS samples): +/- IQR of per-tree predictions.
+  Fallback (< 5 OOS samples): +/- 1 ATR band.
+
+Algorithm: HistGradientBoostingRegressor (handles NaN natively)
+  max_iter=200, learning_rate=0.05, max_depth=4, random_state=42
 """
 
 import sys
@@ -42,7 +45,7 @@ from datetime import date, timedelta, timezone, datetime
 try:
     import numpy as np
     import pandas as pd
-    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.ensemble import HistGradientBoostingRegressor
 except ImportError as e:
     print(json.dumps({"ok": False, "error": f"Missing dependency: {e}"}))
     sys.exit(0)
@@ -73,6 +76,7 @@ def _build_features(df: pd.DataFrame, use_analyst: bool, analyst: dict) -> pd.Da
     vol = df["volume"]
     df  = df.copy()
 
+    # ── v3 base features ────────────────────────────────────────────────────
     # Momentum / trend
     df["ret_1d"]         = c.pct_change(1)
     df["ret_3d"]         = c.pct_change(3)
@@ -98,6 +102,30 @@ def _build_features(df: pd.DataFrame, use_analyst: bool, analyst: dict) -> pd.Da
     bb_std               = c.rolling(20, min_periods=20).std()
     df["bb_z"]           = (c - ma20) / bb_std.replace(0, np.nan)
 
+    # ── v4 new features ──────────────────────────────────────────────────────
+    # Lag returns (recent price memory)
+    df["lag_ret_1"]      = c.pct_change(1).shift(1)
+    df["lag_ret_2"]      = c.pct_change(1).shift(2)
+    df["lag_ret_3"]      = c.pct_change(1).shift(3)
+    df["lag_ret_5"]      = c.pct_change(1).shift(5)
+
+    # MACD features (normalised by price)
+    ema12                = c.ewm(span=12, adjust=False).mean()
+    ema26                = c.ewm(span=26, adjust=False).mean()
+    macd_line            = ema12 - ema26
+    signal_line          = macd_line.ewm(span=9, adjust=False).mean()
+    df["macd_norm"]      = macd_line / c.replace(0, np.nan)
+    df["macd_hist_norm"] = (macd_line - signal_line) / c.replace(0, np.nan)
+
+    # Time / seasonality features
+    df_dates             = pd.to_datetime(df["date"])
+    df["weekday"]        = df_dates.dt.dayofweek          # 0=Mon … 4=Fri
+    df["month"]          = df_dates.dt.month              # 1–12
+
+    # Intraday range (volatility proxy)
+    df["hl_pct"]         = (df["high"] - df["low"]) / c.replace(0, np.nan)
+
+    # ── Analyst features (optional) ──────────────────────────────────────────
     if use_analyst:
         df["upside_avg_ratio"] = analyst.get("upsideAvgRatio") or 0.0
         df["band_width"]       = analyst.get("bandWidth") or 0.0
@@ -109,12 +137,18 @@ def _build_features(df: pd.DataFrame, use_analyst: bool, analyst: dict) -> pd.Da
 
 def _feature_cols(use_analyst: bool) -> list:
     cols = [
+        # v3 base (10)
         "ret_1d", "ret_3d",
         "close_pct_5d", "close_pct_20d",
         "rsi_14",
         "vol_ratio_20d", "atr_14_pct",
         "ma20_dist_pct", "ma60_dist_pct",
         "bb_z",
+        # v4 new (9)
+        "lag_ret_1", "lag_ret_2", "lag_ret_3", "lag_ret_5",
+        "macd_norm", "macd_hist_norm",
+        "weekday", "month",
+        "hl_pct",
     ]
     if use_analyst:
         cols += ["upside_avg_ratio", "band_width", "bullish_ratio", "avg_score"]
@@ -122,20 +156,29 @@ def _feature_cols(use_analyst: bool) -> list:
 
 
 FEATURE_LABELS = {
-    "ret_1d":            "1\u65e5\u5831\u916c",
-    "ret_3d":            "3\u65e5\u5831\u916c",
-    "close_pct_5d":      "5\u65e5\u6f32\u8dcc\u5e45",
-    "close_pct_20d":     "20\u65e5\u6f32\u8dcc\u5e45",
+    "ret_1d":            "1日報酬",
+    "ret_3d":            "3日報酬",
+    "close_pct_5d":      "5日漲跌幅",
+    "close_pct_20d":     "20日漲跌幅",
     "rsi_14":            "RSI(14)",
-    "vol_ratio_20d":     "\u6210\u4ea4\u91cf\u6bd4\u7387",
-    "atr_14_pct":        "ATR\u6ce2\u52d5\u7387",
-    "ma20_dist_pct":     "MA20\u4e56\u96e2",
-    "ma60_dist_pct":     "MA60\u4e56\u96e2",
-    "bb_z":              "\u5e03\u6797Z\u5206",
-    "upside_avg_ratio":  "\u5206\u6790\u5e2b\u4e0a\u884c\u7a7a\u9593",
-    "band_width":        "\u5206\u6790\u5e2b\u76ee\u6a19\u5340\u9593",
-    "bullish_ratio":     "\u6a02\u89c0\u8a55\u7d1a\u4f54\u6bd4",
-    "avg_score":         "\u5206\u6790\u5e2b\u5e73\u5747\u8a55\u5206",
+    "vol_ratio_20d":     "成交量比率",
+    "atr_14_pct":        "ATR波動率",
+    "ma20_dist_pct":     "MA20乖離",
+    "ma60_dist_pct":     "MA60乖離",
+    "bb_z":              "布林Z分",
+    "lag_ret_1":         "前1日報酬",
+    "lag_ret_2":         "前2日報酬",
+    "lag_ret_3":         "前3日報酬",
+    "lag_ret_5":         "前5日報酬",
+    "macd_norm":         "MACD強度",
+    "macd_hist_norm":    "MACD柱狀",
+    "weekday":           "星期幾",
+    "month":             "月份",
+    "hl_pct":            "日內振幅",
+    "upside_avg_ratio":  "分析師上行空間",
+    "band_width":        "分析師目標區間",
+    "bullish_ratio":     "樂觀評級占比",
+    "avg_score":         "分析師平均評分",
 }
 
 
@@ -208,9 +251,9 @@ def run():
         return
     train_cutoff = n_total - oos_size
 
-    # Seed features (last bar)
+    # Seed features (last bar) — HGB handles NaN natively, use nan for missing
     seed_features = [
-        float(last_bar.get(c, 0.0)) if pd.notna(last_bar.get(c)) else 0.0
+        float(last_bar.get(c)) if pd.notna(last_bar.get(c)) else float("nan")
         for c in feature_cols
     ]
     X_seed = np.array([seed_features])
@@ -230,49 +273,82 @@ def run():
         # Target: h-day cumulative return, labelled at the START bar (no lookahead)
         df_h["target"] = df_h["close"].shift(-h) / df_h["close"] - 1
 
-        train_df = df_h.iloc[:train_cutoff].dropna(subset=feature_cols + ["target"])
+        train_df = df_h.iloc[:train_cutoff].dropna(subset=["target"])
         if len(train_df) < 30:
             continue
 
-        model = RandomForestRegressor(
-            n_estimators=150, random_state=42, n_jobs=-1, min_samples_leaf=3
+        # HistGradientBoostingRegressor handles NaN natively — no need to fill
+        model = HistGradientBoostingRegressor(
+            max_iter=200,
+            learning_rate=0.05,
+            max_depth=4,
+            random_state=42,
         )
-        model.fit(train_df[feature_cols].values, train_df["target"].values)
+        X_train = train_df[feature_cols].values
+        y_train = train_df["target"].values
+        model.fit(X_train, y_train)
 
         # Walk-forward OOS residuals (actual_return - predicted_return)
-        oos_df = df_h.iloc[train_cutoff : n_total - h].dropna(subset=feature_cols + ["target"])
+        oos_df    = df_h.iloc[train_cutoff : n_total - h].dropna(subset=["target"])
         residuals = np.array([])
         if len(oos_df) >= 5:
-            y_pred = model.predict(oos_df[feature_cols].values)
-            y_true = oos_df["target"].values
+            y_pred    = model.predict(oos_df[feature_cols].values)
+            y_true    = oos_df["target"].values
             residuals = y_true - y_pred   # positive = model underestimated
 
         # Predict on seed (last bar)
-        tree_preds     = np.array([t.predict(X_seed)[0] for t in model.estimators_])
-        median_return  = float(np.median(tree_preds))
-        up_probability = float(np.mean(tree_preds > 0))
+        # HGB is a single ensemble — use staged_predict or simple predict for median
+        # For spread estimate: bootstrap the OOS predictions
+        median_return  = float(model.predict(X_seed)[0])
         median_price   = round(base_price * (1 + median_return), 4)
 
+        # upProbability: fraction of OOS rows where model predicted > 0
+        # (proxy for directional confidence)
+        if len(oos_df) >= 5:
+            oos_preds      = model.predict(oos_df[feature_cols].values)
+            up_probability = float(np.mean(oos_preds > 0))
+        else:
+            up_probability = float(median_return > 0)
+
         # Band: add residual percentiles onto median_price
-        # residual is in return-space; multiply by base_price to get price delta
         if len(residuals) >= 5:
             p25 = float(np.percentile(residuals, 25))
             p75 = float(np.percentile(residuals, 75))
             lower_price = round(median_price + base_price * p25, 4)
             upper_price = round(median_price + base_price * p75, 4)
         else:
-            # Fallback: IQR of per-tree predictions
-            tree_p25 = float(np.percentile(tree_preds, 25))
-            tree_p75 = float(np.percentile(tree_preds, 75))
-            lower_price = round(base_price * (1 + tree_p25), 4)
-            upper_price = round(base_price * (1 + tree_p75), 4)
+            # Fallback: ±1 ATR band
+            atr_val     = float(last_bar.get("atr_14_pct") or 0.02) * base_price
+            lower_price = round(median_price - atr_val, 4)
+            upper_price = round(median_price + atr_val, 4)
 
         # Guarantee: lower <= median <= upper (clamp, not swap)
         lower_price = min(lower_price, median_price)
         upper_price = max(upper_price, median_price)
 
-        # Feature importance (top 5)
-        fi = sorted(zip(feature_cols, model.feature_importances_), key=lambda x: -x[1])[:5]
+        # Feature importance: computed once (h=1) via permutation_importance
+        # then reused across all horizons to avoid per-horizon overhead
+        if "_global_importances" not in horizon_results:
+            try:
+                from sklearn.inspection import permutation_importance
+                pi_oos = df_h.iloc[train_cutoff : n_total - h].dropna(subset=["target"])
+                if len(pi_oos) >= 10:
+                    pi = permutation_importance(
+                        model, pi_oos[feature_cols].values, pi_oos["target"].values,
+                        n_repeats=5, random_state=42,
+                        scoring="neg_mean_absolute_error",
+                    )
+                    horizon_results["_global_importances"] = pi.importances_mean.tolist()
+                else:
+                    raise ValueError("too small")
+            except Exception:
+                horizon_results["_global_importances"] = [1.0 / len(feature_cols)] * len(feature_cols)
+
+        importances = horizon_results["_global_importances"]
+        fi = sorted(
+            zip(feature_cols, importances),
+            key=lambda x: -x[1]
+        )[:5]
         top_features = [
             {"feature": k, "label": FEATURE_LABELS.get(k, k), "importance": round(float(v), 4)}
             for k, v in fi
@@ -288,6 +364,9 @@ def run():
             "topFeatures":   top_features,
         }
 
+    # Remove internal key before output
+    horizon_results.pop("_global_importances", None)
+
     if not horizon_results:
         print(json.dumps({"ok": False, "error": "all horizons failed training"}))
         return
@@ -297,7 +376,7 @@ def run():
         "barsUsed":     n_total,
         "trainSize":    train_cutoff,
         "oosSize":      oos_size,
-        "modelVersion": "RF_v3",
+        "modelVersion": "HGB_v4",
         "featuresUsed": feature_cols,
         "useAnalyst":   use_analyst,
     }
