@@ -388,21 +388,28 @@ function AnalystWideCard({
 // ─── Stock Note Card ──────────────────────────────────────────────────────────
 function StockNoteCard({
   initialContent,
+  symbol,
   onSave,
   isSaving,
 }: {
   initialContent: string;
+  symbol: string;
   onSave: (content: string) => void;
   isSaving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(initialContent);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prevSymbolRef = useRef(symbol);
 
-  // Sync when symbol changes (initialContent updates)
+  // 只在 symbol 切換時才同步 draft，不因儲存後的 initialContent 更新而清掉
   useEffect(() => {
-    if (!editing) setDraft(initialContent);
-  }, [initialContent, editing]);
+    if (symbol !== prevSymbolRef.current) {
+      prevSymbolRef.current = symbol;
+      setEditing(false);
+      setDraft(initialContent);
+    }
+  }, [symbol, initialContent]);
 
   const handleDoubleClick = useCallback(() => {
     setDraft(initialContent);
@@ -711,8 +718,12 @@ export default function TechnicalAnalysis() {
     mutationFn: (content: string) =>
       apiRequest("PUT", `/api/stock-notes/${activeSymbol}?market=${meta.market}`, { content })
         .then(r => r.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/stock-notes/${activeSymbol}`] });
+    onSuccess: (_data, content) => {
+      // 直接更新快取，不依賴 refetch
+      queryClient.setQueryData(
+        [`/api/stock-notes/${activeSymbol}`, meta.market],
+        { content }
+      );
     },
   });
 
@@ -891,6 +902,7 @@ export default function TechnicalAnalysis() {
 
       {/* ── 個股投資筆記 ── */}
       <StockNoteCard
+        symbol={activeSymbol}
         initialContent={stockNoteData?.content ?? ""}
         onSave={(content) => saveNoteMutation.mutate(content)}
         isSaving={saveNoteMutation.isPending}
