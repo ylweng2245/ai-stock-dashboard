@@ -412,10 +412,10 @@ function StockNoteCard({
   }, [symbol, initialContent]);
 
   const handleDoubleClick = useCallback(() => {
-    setDraft(initialContent);
+    // 不重置 draft，直接用目前已顯示的內容開啟編輯
     setEditing(true);
     setTimeout(() => textareaRef.current?.focus(), 30);
-  }, [initialContent]);
+  }, []);
 
   const handleSave = useCallback(() => {
     onSave(draft);
