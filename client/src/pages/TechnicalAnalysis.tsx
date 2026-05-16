@@ -1172,7 +1172,7 @@ export default function TechnicalAnalysis() {
                 >
                   <History size={10} />
                   {comparePrediction ? (
-                    <span>對比：{comparePrediction.baseDate ?? comparePrediction.runAt?.slice(0,10)}</span>
+                    <span className="text-[#EAB308]">對比：{comparePrediction.baseDate ?? comparePrediction.runAt?.slice(0,10)}</span>
                   ) : (
                     <span>+ 對比歷史預測</span>
                   )}
@@ -1195,7 +1195,7 @@ export default function TechnicalAnalysis() {
                       <button
                         key={run.run_id}
                         className={`w-full text-left px-3 py-1.5 text-[11px] hover:bg-muted/40 ${
-                          compareRunId === run.run_id ? 'text-[#3B82F6]' : 'text-foreground'
+                          compareRunId === run.run_id ? 'text-[#EAB308]' : 'text-foreground'
                         }`}
                         onClick={() => {
                           setCompareRunId(run.run_id);
@@ -1368,7 +1368,7 @@ export default function TechnicalAnalysis() {
                       type="monotone"
                       dataKey="cmpUpper"
                       stroke="none"
-                      fill="#3B82F6"
+                      fill="#EAB308"
                       fillOpacity={0.08}
                       connectNulls={false}
                       isAnimationActive={false}
@@ -1390,8 +1390,8 @@ export default function TechnicalAnalysis() {
                       dataKey="cmpMedian"
                       stroke="none"
                       strokeWidth={0}
-                      dot={{ r: 2, fill: "#3B82F6", strokeWidth: 0 }}
-                      activeDot={{ r: 3.5, fill: "#3B82F6", strokeWidth: 0 }}
+                      dot={{ r: 2, fill: "#EAB308", strokeWidth: 0 }}
+                      activeDot={{ r: 3.5, fill: "#EAB308", strokeWidth: 0 }}
                       connectNulls={false}
                       isAnimationActive={false}
                       name="對比預測中位數"
@@ -1400,7 +1400,7 @@ export default function TechnicalAnalysis() {
                     {comparePrediction?.baseDate && (
                       <ReferenceLine
                         x={comparePrediction.baseDate.slice(5)}
-                        stroke="#3B82F6"
+                        stroke="#EAB308"
                         strokeWidth={1}
                         strokeDasharray="3 3"
                         opacity={0.4}
