@@ -1166,6 +1166,33 @@ export async function registerRoutes(
     }
   });
 
+  // ──── Stock Notes ────────────────────────────────────────────────────────────────────────
+
+  // GET /api/stock-notes/:symbol?market=US|TW
+  app.get("/api/stock-notes/:symbol", (req, res) => {
+    const symbol = req.params.symbol.toUpperCase();
+    const market = ((req.query.market as string) || "US").toUpperCase();
+    const row = sqlite.prepare(
+      "SELECT content FROM stock_notes WHERE symbol = ? AND market = ?"
+    ).get(symbol, market) as { content: string } | undefined;
+    res.json({ symbol, market, content: row?.content ?? "" });
+  });
+
+  // PUT /api/stock-notes/:symbol?market=US|TW  { content: string }
+  app.put("/api/stock-notes/:symbol", (req, res) => {
+    const symbol = req.params.symbol.toUpperCase();
+    const market = ((req.query.market as string) || "US").toUpperCase();
+    const content: string = req.body?.content ?? "";
+    const now = Date.now();
+    sqlite.prepare(`
+      INSERT INTO stock_notes (symbol, market, content, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(symbol, market) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
+    `).run(symbol, market, content, now);
+    res.json({ ok: true });
+  });
+
+
   // ──── Fundamentals ───────────────────────────────────────────────────────────────────────
 
   /**

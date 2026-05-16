@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -384,6 +384,101 @@ function AnalystWideCard({
   );
 }
 
+
+// ─── Stock Note Card ──────────────────────────────────────────────────────────
+function StockNoteCard({
+  initialContent,
+  onSave,
+  isSaving,
+}: {
+  initialContent: string;
+  onSave: (content: string) => void;
+  isSaving: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initialContent);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Sync when symbol changes (initialContent updates)
+  useEffect(() => {
+    if (!editing) setDraft(initialContent);
+  }, [initialContent, editing]);
+
+  const handleDoubleClick = useCallback(() => {
+    setDraft(initialContent);
+    setEditing(true);
+    setTimeout(() => textareaRef.current?.focus(), 30);
+  }, [initialContent]);
+
+  const handleSave = useCallback(() => {
+    onSave(draft);
+    setEditing(false);
+  }, [draft, onSave]);
+
+  const handleCancel = useCallback(() => {
+    setDraft(initialContent);
+    setEditing(false);
+  }, [initialContent]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      handleCancel();
+    }
+  }, [handleSave, handleCancel]);
+
+  return (
+    <Card className="border-border mb-4">
+      <CardHeader className="pb-1.5 pt-3 px-4 flex-row items-center justify-between">
+        <CardTitle className="text-xs font-semibold">個股投資筆記</CardTitle>
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <span className="text-[10px] text-muted-foreground">Ctrl+Enter 儲存・Esc 取消</span>
+              <button
+                onClick={handleCancel}
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors px-1.5"
+              >取消</button>
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                className="text-[11px] text-[#1cb8be] hover:text-[#66c6df] transition-colors px-1.5 font-medium disabled:opacity-50"
+              >{isSaving ? "儲存中…" : "儲存"}</button>
+            </>
+          ) : (
+            <span className="text-[10px] text-muted-foreground">雙擊進行編輯</span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="px-4 pb-3 pt-0">
+        {editing ? (
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            className="w-full h-[120px] bg-muted/30 border border-[#1cb8be]/40 rounded-md px-3 py-2 text-xs text-foreground resize-none focus:outline-none focus:ring-1 focus:ring-[#1cb8be]/60 placeholder:text-muted-foreground"
+            placeholder="在這裡記錄投資摘要、觀察、進出場策略…"
+          />
+        ) : (
+          <div
+            onDoubleClick={handleDoubleClick}
+            className="h-[120px] overflow-y-auto px-3 py-2 rounded-md cursor-text hover:bg-muted/20 transition-colors"
+          >
+            {draft ? (
+              <pre className="text-xs text-foreground whitespace-pre-wrap font-sans leading-relaxed">{draft}</pre>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">雙擊新增筆記…</span>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Analyst target price table ───────────────────────────────────────────────
 function AnalystTargetTable({
   rows,
@@ -602,6 +697,25 @@ export default function TechnicalAnalysis() {
     placeholderData: (prev) => prev,
   });
 
+  // Stock notes
+  const { data: stockNoteData } = useQuery<{ content: string }>({
+    queryKey: [`/api/stock-notes/${activeSymbol}`, meta.market],
+    queryFn: () =>
+      apiRequest("GET", `/api/stock-notes/${activeSymbol}?market=${meta.market}`)
+        .then(r => r.json()),
+    staleTime: 0,
+    enabled: !!activeSymbol,
+    placeholderData: (prev) => prev,
+  });
+  const saveNoteMutation = useMutation({
+    mutationFn: (content: string) =>
+      apiRequest("PUT", `/api/stock-notes/${activeSymbol}?market=${meta.market}`, { content })
+        .then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/stock-notes/${activeSymbol}`] });
+    },
+  });
+
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
   const isLoading = data === undefined;
 
@@ -774,6 +888,13 @@ export default function TechnicalAnalysis() {
           currencySymbol={currencySymbol}
         />
       )}
+
+      {/* ── 個股投資筆記 ── */}
+      <StockNoteCard
+        initialContent={stockNoteData?.content ?? ""}
+        onSave={(content) => saveNoteMutation.mutate(content)}
+        isSaving={saveNoteMutation.isPending}
+      />
 
       {/* Signal Cards */}
       <div className="grid grid-cols-3 gap-3">

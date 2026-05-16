@@ -932,4 +932,18 @@ try {
   // Already exists
 }
 
+// ── Stock notes table (individual investment memos) ───────────────────────────
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS stock_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  )`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS stock_notes_sym_market ON stock_notes (symbol, market)`);
+} catch {
+  // Already exists
+}
+
 export const storage = new DatabaseStorage();
