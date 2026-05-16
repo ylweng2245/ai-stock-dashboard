@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -385,70 +385,63 @@ function AnalystWideCard({
 }
 
 
-// ─── Stock Note Card ──────────────────────────────────────────────────────────
-function StockNoteCard({
-  initialContent,
-  symbol,
-  onSave,
-  isSaving,
-}: {
-  initialContent: string;
-  symbol: string;
-  onSave: (content: string) => void;
-  isSaving: boolean;
-}) {
+// ─── Stock Note Card (自治版) ─────────────────────────────────────────────────
+function StockNoteCard({ symbol, market }: { symbol: string; market: string }) {
+  const queryClient = useQueryClient();
+  const qKey = ["/api/stock-notes", symbol, market];
+
+  // 自治 fetch，staleTime 設大避免切換時無謂 refetch 帶起舊資料閃爍
+  const { data, isLoading: noteLoading } = useQuery<{ content: string }>({
+    queryKey: qKey,
+    queryFn: () =>
+      apiRequest("GET", `/api/stock-notes/${symbol}?market=${market}`)
+        .then(r => r.json()),
+    staleTime: 10 * 60_000,
+    gcTime: 30 * 60_000,
+    enabled: !!symbol,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (content: string) =>
+      apiRequest("PUT", `/api/stock-notes/${symbol}?market=${market}`, { content })
+        .then(r => r.json()),
+    onSuccess: (_res, content) => {
+      // 直接寫入快取，不 refetch，確保顯示內容不閃
+      queryClient.setQueryData(qKey, { content });
+    },
+  });
+
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(initialContent);
+  const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const prevSymbolRef = useRef(symbol);
-  // 進入編輯前備份，Esc 取消時復原
-  const savedDraftRef = useRef(draft);
 
-  // 只在 symbol 切換時才同步 draft
-  useEffect(() => {
-    if (symbol !== prevSymbolRef.current) {
-      prevSymbolRef.current = symbol;
-      setEditing(false);
-      setDraft(initialContent);
-      savedDraftRef.current = initialContent;
-    }
-  }, [symbol, initialContent]);
+  // 顯示用：永遠讀 query 快取，不用 draft state
+  const savedContent = data?.content ?? "";
 
-  // 第一次載入資料時同步 draft（頁面初始化）
-  const didInitRef = useRef(false);
-  useEffect(() => {
-    if (!didInitRef.current && initialContent) {
-      didInitRef.current = true;
-      setDraft(initialContent);
-      savedDraftRef.current = initialContent;
-    }
-  }, [initialContent]);
-
-  const handleDoubleClick = useCallback(() => {
-    savedDraftRef.current = draft; // 備份當前內容
+  const handleDoubleClick = () => {
+    setDraft(savedContent);   // 從快取載入最新內容進草稿
     setEditing(true);
     setTimeout(() => textareaRef.current?.focus(), 30);
-  }, [draft]);
+  };
 
-  const handleSave = useCallback(() => {
-    onSave(draft);
-    savedDraftRef.current = draft;
+  const handleSave = () => {
+    saveMutation.mutate(draft);
     setEditing(false);
-  }, [draft, onSave]);
+  };
 
-  const handleCancel = useCallback(() => {
-    setDraft(savedDraftRef.current); // 復原進入編輯前的內容
+  const handleCancel = () => {
     setEditing(false);
-  }, []);
+    // 不動 draft；退出編輯後顯示的是 savedContent（query 快取），不是 draft
+  };
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSave();
     } else if (e.key === "Escape") {
       handleCancel();
     }
-  }, [handleSave, handleCancel]);
+  };
 
   return (
     <Card className="border-border mb-4">
@@ -464,9 +457,9 @@ function StockNoteCard({
               >取消</button>
               <button
                 onClick={handleSave}
-                disabled={isSaving}
+                disabled={saveMutation.isPending}
                 className="text-[11px] text-[#1cb8be] hover:text-[#66c6df] transition-colors px-1.5 font-medium disabled:opacity-50"
-              >{isSaving ? "儲存中…" : "儲存"}</button>
+              >{saveMutation.isPending ? "儲存中…" : "儲存"}</button>
             </>
           ) : (
             <span className="text-[10px] text-muted-foreground">雙擊進行編輯</span>
@@ -488,8 +481,10 @@ function StockNoteCard({
             onDoubleClick={handleDoubleClick}
             className="h-[120px] overflow-y-auto px-3 py-2 rounded-md cursor-text hover:bg-muted/20 transition-colors"
           >
-            {draft ? (
-              <pre className="text-xs text-foreground whitespace-pre-wrap font-sans leading-relaxed">{draft}</pre>
+            {noteLoading ? (
+              <span className="text-xs text-muted-foreground">載入中…</span>
+            ) : savedContent ? (
+              <pre className="text-xs text-foreground whitespace-pre-wrap font-sans leading-relaxed">{savedContent}</pre>
             ) : (
               <span className="text-xs text-muted-foreground italic">雙擊新增筆記…</span>
             )}
@@ -499,6 +494,7 @@ function StockNoteCard({
     </Card>
   );
 }
+
 
 // ─── Analyst target price table ───────────────────────────────────────────────
 function AnalystTargetTable({
@@ -718,28 +714,7 @@ export default function TechnicalAnalysis() {
     placeholderData: (prev) => prev,
   });
 
-  // Stock notes
-  const { data: stockNoteData } = useQuery<{ content: string }>({
-    queryKey: [`/api/stock-notes/${activeSymbol}`, meta.market],
-    queryFn: () =>
-      apiRequest("GET", `/api/stock-notes/${activeSymbol}?market=${meta.market}`)
-        .then(r => r.json()),
-    staleTime: 0,
-    enabled: !!activeSymbol,
-    placeholderData: (prev) => prev,
-  });
-  const saveNoteMutation = useMutation({
-    mutationFn: (content: string) =>
-      apiRequest("PUT", `/api/stock-notes/${activeSymbol}?market=${meta.market}`, { content })
-        .then(r => r.json()),
-    onSuccess: (_data, content) => {
-      // 直接更新快取，不依賴 refetch
-      queryClient.setQueryData(
-        [`/api/stock-notes/${activeSymbol}`, meta.market],
-        { content }
-      );
-    },
-  });
+  // Stock notes — query 移至 StockNoteCard 內部自治
 
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
   const isLoading = data === undefined;
@@ -917,9 +892,7 @@ export default function TechnicalAnalysis() {
       {/* ── 個股投資筆記 ── */}
       <StockNoteCard
         symbol={activeSymbol}
-        initialContent={stockNoteData?.content ?? ""}
-        onSave={(content) => saveNoteMutation.mutate(content)}
-        isSaving={saveNoteMutation.isPending}
+        market={meta.market}
       />
 
       {/* Signal Cards */}
