@@ -1064,15 +1064,25 @@ export async function registerRoutes(
       const symbol = req.params.symbol.toUpperCase();
       const market = ((req.query.market as string) || "US").toUpperCase() as "US" | "TW";
 
-      // All rows for this symbol (newest first, near 6 months for table)
-      const sixMonthsAgo = new Date();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-      const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
+      // All rows for this symbol — filter to 4 months
+      const fourMonthsAgo = new Date();
+      fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4);
+      const cutoff = fourMonthsAgo.toISOString().slice(0, 10);
 
       const allRows = await storage.getAnalystTargetsBySymbol(symbol, market);
 
-      // rows → near-6-month only (for table display)
-      const recentRows = allRows.filter(r => r.analystDate >= cutoff);
+      // rows → near-4-month only, deduplicated per institution (latest row per institution)
+      const withinCutoff = allRows.filter(r => r.analystDate >= cutoff);
+      // Deduplicate: keep only the most recent entry per institution
+      const latestByInstitution = new Map<string, typeof withinCutoff[0]>();
+      for (const row of withinCutoff) {
+        const existing = latestByInstitution.get(row.institution);
+        if (!existing || row.analystDate > existing.analystDate) {
+          latestByInstitution.set(row.institution, row);
+        }
+      }
+      const recentRows = Array.from(latestByInstitution.values())
+        .sort((a, b) => (a.analystDate > b.analystDate ? -1 : 1));
 
       if (recentRows.length === 0) {
         return res.json({ symbol, market, hasData: false });

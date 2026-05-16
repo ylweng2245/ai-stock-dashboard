@@ -554,15 +554,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Returns near-6-month rows, deduplicated to the most-recent entry per institution.
+   * Returns near-4-month rows, deduplicated to the most-recent entry per institution.
    * Used directly for consensus calculation.
    */
   async getLatestAnalystConsensusBySymbol(symbol: string, market: string): Promise<AnalystTarget[]> {
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-    const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
+    const fourMonthsAgo = new Date();
+    fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4);
+    const cutoff = fourMonthsAgo.toISOString().slice(0, 10);
 
-    // Raw SQL: within 6 months, pick latest row per institution
+    // Raw SQL: within 4 months, pick latest row per institution
     // better-sqlite3 returns snake_case column names; map to camelCase to match AnalystTarget type.
     const raw = sqlite.prepare(`
       SELECT *
