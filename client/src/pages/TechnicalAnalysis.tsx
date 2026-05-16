@@ -292,7 +292,7 @@ function AnalystWideCard({
             <div className="text-[13px] font-medium text-foreground mb-3">
               分析師 52W 目標價
               <span className="ml-2 text-[11px] text-muted-foreground font-normal">
-                近 6 個月樣本：{summary.sampleCount} 筆
+                近 4 個月樣本：{summary.sampleCount} 筆
               </span>
             </div>
 
@@ -406,7 +406,7 @@ function AnalystTargetTable({
     <Card className="border-border mt-4">
       <CardHeader className="pb-1.5 pt-3 px-4 flex-row items-center justify-between">
         <CardTitle className="text-xs font-semibold">分析師目標價資料表</CardTitle>
-        <span className="text-[10px] text-muted-foreground">依日期新到舊，近 6 個月資料</span>
+        <span className="text-[10px] text-muted-foreground">近 6 個月，同機構歷史集中顯示</span>
       </CardHeader>
       <CardContent className="p-0 overflow-auto">
         <table className="w-full text-xs border-collapse">
@@ -421,41 +421,73 @@ function AnalystTargetTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => {
-              const upsidePct = currentPrice > 0
-                ? ((row.targetPrice - currentPrice) / currentPrice * 100)
-                : null;
-
-              const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#ef4444]" : upsidePct < 0 ? "text-[#10b981]" : "text-muted-foreground";
-
-              const dateFormatted = row.analystDate
-                ? row.analystDate.replace(/-/g, "/")
-                : "—";
-
-              return (
-                <tr key={row.id ?? i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                  <td className="px-3 py-1.5 font-medium">{row.institution}</td>
-                  <td className={cn(
-                    "px-3 py-1.5 font-bold",
-                    row.ratingCategory === "bullish" ? "text-[#ef4444]" :
-                    row.ratingCategory === "bearish" ? "text-[#10b981]" :
-                    "text-foreground"
-                  )}>{row.rating}</td>
-                  <td className="px-3 py-1.5 tabular-nums font-medium">
-                    {currencySymbol}{row.targetPrice.toLocaleString()}
-                  </td>
-                  <td className="px-3 py-1.5 tabular-nums text-muted-foreground">
-                    {row.previousTargetPrice !== null && row.previousTargetPrice !== undefined
-                      ? `${currencySymbol}${row.previousTargetPrice.toLocaleString()}`
-                      : "—"}
-                  </td>
-                  <td className={cn("px-3 py-1.5 tabular-nums font-medium", upsideColor)}>
-                    {upsidePct === null ? "—" : `${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}%`}
-                  </td>
-                  <td className="px-3 py-1.5 text-muted-foreground tabular-nums">{dateFormatted}</td>
-                </tr>
+            {(() => {
+              // 分組：依機構归併，同機構內依日期新→舊排列。最新行先出現（以最新行日期排機構順序）
+              const grouped = new Map<string, typeof rows>();
+              for (const row of rows) {
+                if (!grouped.has(row.institution)) grouped.set(row.institution, []);
+                grouped.get(row.institution)!.push(row);
+              }
+              // Sort each group newest first
+              for (const grp of grouped.values()) {
+                grp.sort((a, b) => (a.analystDate > b.analystDate ? -1 : 1));
+              }
+              // Sort institution groups by their latest date descending
+              const sortedGroups = Array.from(grouped.entries()).sort(
+                ([, a], [, b]) => (a[0].analystDate > b[0].analystDate ? -1 : 1)
               );
-            })}
+
+              return sortedGroups.flatMap(([institution, grp]) =>
+                grp.map((row, idx) => {
+                  const isFirst = idx === 0;
+                  const upsidePct = currentPrice > 0
+                    ? ((row.targetPrice - currentPrice) / currentPrice * 100)
+                    : null;
+                  const upsideColor = upsidePct === null ? "" : upsidePct > 0 ? "text-[#ef4444]" : upsidePct < 0 ? "text-[#10b981]" : "text-muted-foreground";
+                  const dateFormatted = row.analystDate ? row.analystDate.replace(/-/g, "/") : "—";
+
+                  return (
+                    <tr
+                      key={row.id ?? `${institution}-${idx}`}
+                      className={cn(
+                        "border-b border-border/50 hover:bg-muted/20 transition-colors",
+                        !isFirst && "bg-muted/5"
+                      )}
+                    >
+                      {/* 機構欄：第一筆顯示名稱，後續筆縮排 */}
+                      <td className="px-3 py-1.5 font-medium">
+                        {isFirst ? (
+                          <span>{institution}</span>
+                        ) : (
+                          <span className="pl-4 text-muted-foreground">└ {institution}</span>
+                        )}
+                      </td>
+                      <td className={cn(
+                        "px-3 py-1.5 font-bold",
+                        !isFirst && "pl-7",
+                        row.ratingCategory === "bullish" ? "text-[#ef4444]" :
+                        row.ratingCategory === "bearish" ? "text-[#10b981]" :
+                        "text-foreground"
+                      )}>{row.rating}</td>
+                      <td className={cn("px-3 py-1.5 tabular-nums font-medium", !isFirst && "pl-7")}>
+                        {currencySymbol}{row.targetPrice.toLocaleString()}
+                      </td>
+                      <td className={cn("px-3 py-1.5 tabular-nums text-muted-foreground", !isFirst && "pl-7")}>
+                        {row.previousTargetPrice !== null && row.previousTargetPrice !== undefined
+                          ? `${currencySymbol}${row.previousTargetPrice.toLocaleString()}`
+                          : "—"}
+                      </td>
+                      <td className={cn("px-3 py-1.5 tabular-nums font-medium", upsideColor, !isFirst && "pl-7")}>
+                        {upsidePct === null ? "—" : `${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}%`}
+                      </td>
+                      <td className={cn("px-3 py-1.5 text-muted-foreground tabular-nums", !isFirst && "pl-7")}>
+                        {dateFormatted}
+                      </td>
+                    </tr>
+                  );
+                })
+              );
+            })()}
           </tbody>
         </table>
       </CardContent>
@@ -682,7 +714,7 @@ export default function TechnicalAnalysis() {
             <Badge variant="outline" className="text-[11px] py-0.5">技術分析</Badge>
             {hasAnalyst && (
               <Badge variant="outline" className="text-[11px] py-0.5">
-                近 6 個月分析師樣本：{analystData!.summary!.sampleCount} 筆
+                近 4 個月分析師樣本：{analystData!.summary!.sampleCount} 筆
               </Badge>
             )}
           </div>

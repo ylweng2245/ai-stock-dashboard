@@ -1071,18 +1071,17 @@ export async function registerRoutes(
 
       const allRows = await storage.getAnalystTargetsBySymbol(symbol, market);
 
-      // rows → near-4-month only, deduplicated per institution (latest row per institution)
-      const withinCutoff = allRows.filter(r => r.analystDate >= cutoff);
-      // Deduplicate: keep only the most recent entry per institution
-      const latestByInstitution = new Map<string, typeof withinCutoff[0]>();
-      for (const row of withinCutoff) {
-        const existing = latestByInstitution.get(row.institution);
-        if (!existing || row.analystDate > existing.analystDate) {
-          latestByInstitution.set(row.institution, row);
-        }
-      }
-      const recentRows = Array.from(latestByInstitution.values())
+      // consensusRows (4-month, deduplicated per institution) — for summary stats
+      // tableRows (6-month, ALL rows including repeated institutions) — for table display
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const sixMonthCutoff = sixMonthsAgo.toISOString().slice(0, 10);
+      const tableRows = allRows
+        .filter(r => r.analystDate >= sixMonthCutoff)
         .sort((a, b) => (a.analystDate > b.analystDate ? -1 : 1));
+
+      // recentRows alias for downstream checks
+      const recentRows = tableRows;
 
       if (recentRows.length === 0) {
         return res.json({ symbol, market, hasData: false });
