@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { scheduleAutoRefresh } from "./fundamentalService";
 import { syncNgrokUrlToGist } from "./gistSync";
+import { startPredictionScheduler } from "./predictionScheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -98,5 +99,7 @@ app.use((req, res, next) => {
     scheduleAutoRefresh();
     // Update GitHub Gist with current ngrok URL (so cron tasks can find this server)
     syncNgrokUrlToGist().catch((e) => console.error("[gistSync] startup error:", e.message));
+    // Start background prediction scheduler (sweeps all watchlist symbols daily)
+    startPredictionScheduler();
   });
 })();

@@ -621,6 +621,7 @@ interface HorizonPoint {
 interface PredictionRun {
   ok: boolean;
   found?: boolean;
+  queued?: boolean;  // true when server auto-queued a background prediction
   run_id: string | null;
   runAt: string;
   baseDate: string | null;
@@ -765,6 +766,7 @@ export default function TechnicalAnalysis() {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   // Fetch latest prediction for current symbol
+  // When found=false & queued=true, refetch every 10s until prediction arrives
   const { data: latestPrediction, isLoading: isPredLoading } = useQuery<PredictionRun>({
     queryKey: ["/api/predictions/latest", activeSymbol, meta.market],
     queryFn: () =>
@@ -773,6 +775,11 @@ export default function TechnicalAnalysis() {
     staleTime: 5 * 60_000,
     enabled: !!activeSymbol,
     placeholderData: (prev) => prev,
+    // Poll every 10s while the background prediction is running (found=false + queued=true)
+    refetchInterval: (query) => {
+      const d = query.state.data as PredictionRun | undefined;
+      return d && !d.found && d.queued ? 10_000 : false;
+    },
   });
 
   // Fetch prediction run history list
@@ -1148,7 +1155,14 @@ export default function TechnicalAnalysis() {
                   預測 {latestPrediction.baseDate}
                 </span>
               )}
-              {!latestPrediction?.found && !isPredLoading && (
+              {/* Background queued: show pulsing indicator */}
+              {!latestPrediction?.found && latestPrediction?.queued && !isPredLoading && (
+                <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#F97316] animate-pulse" />
+                  背景預測中...
+                </span>
+              )}
+              {!latestPrediction?.found && !latestPrediction?.queued && !isPredLoading && (
                 <span className="text-[11px] text-muted-foreground">尚無預測資料</span>
               )}
               {isPredLoading && (

@@ -871,6 +871,19 @@ export class DatabaseStorage implements IStorage {
       baseDate: r.base_date ?? r.run_at?.slice(0, 10) ?? '',
     }));
   }
+  /**
+   * Check if a prediction already exists for the given symbol+market on todayStr.
+   * todayStr should be in the market's local timezone (YYYY-MM-DD).
+   */
+  hasTodayPrediction(symbol: string, market: string, todayStr: string): boolean {
+    const row = sqlite.prepare(`
+      SELECT 1 FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND run_at = ?
+      LIMIT 1
+    `).get(symbol, market, todayStr);
+    return !!row;
+  }
+
   getStockNote(symbol: string, market: string): string {
     const row = sqlite.prepare(
       "SELECT content FROM stock_notes WHERE symbol = ? AND market = ?"

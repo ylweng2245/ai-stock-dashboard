@@ -9,6 +9,7 @@ import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayloa
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, type DigestSyncItem } from "./newsDigestService";
 import { runPrediction } from "./mlPredictionService";
+import { ensurePrediction, getSchedulerStatus, triggerSweepNow } from "./predictionScheduler";
 import { buildPersonalPositionState, generatePersonalAdvice, DEFAULT_STRATEGY } from "./personalAdviceService";
 import { buildAnalystConsensusFeatures } from "./analystConsensusService";
 
@@ -1465,7 +1466,11 @@ export async function registerRoutes(
       return res.status(400).json({ error: "symbol and market are required" });
     try {
       const row = (storage as any).getLatestModelPrediction(symbol, market, 20) as any;
-      if (!row) return res.json({ ok: false, found: false, message: "No prediction found" });
+      if (!row) {
+        // Kick off a background prediction for this symbol (non-blocking)
+        ensurePrediction(symbol, market).catch(() => {});
+        return res.json({ ok: false, found: false, queued: true, message: "No prediction found — queued" });
+      }
 
       // Parse horizons from metaJson if present
       let horizons: Record<string, any> | null = null;
@@ -1580,6 +1585,21 @@ export async function registerRoutes(
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // GET /api/predictions/queue-status — background scheduler progress
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/predictions/queue-status", (_req, res) => {
+    res.json(getSchedulerStatus());
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // POST /api/predictions/sweep — manually trigger full watchlist sweep
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/predictions/sweep", (_req, res) => {
+    triggerSweepNow();
+    res.json({ ok: true, message: "Sweep triggered" });
   });
 
   // V6.1: GET /api/personal-advice
