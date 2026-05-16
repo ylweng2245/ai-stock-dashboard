@@ -1,34 +1,55 @@
 // server/mlPredictionService.ts
 import { spawn } from "child_process";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import { storage } from "./storage";
 import { buildAnalystConsensusFeatures } from "./analystConsensusService";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface HorizonPoint {
+  targetDate: string;
+  medianPrice: number;
+  lowerPrice: number;
+  upperPrice: number;
+  medianReturn: number;   // % units
+  upProbability: number;
+  topFeatures: Array<{ feature: string; label: string; importance: number }>;
+}
 
 export interface PredictionResult {
   ok: boolean;
   error?: string;
+  runAt?: string;
+  runId?: string;
+  symbol?: string;
+  baseDate?: string;
+  basePrice?: number;
+  /** New format: keyed by horizon string e.g. "1".."20" */
+  horizons?: Record<string, HorizonPoint>;
+  meta?: Record<string, any>;
+
+  // Legacy fields — kept for backward compat with existing routes
   modelName?: string;
   horizonDays?: number;
-  runAt?: string;
   startDate?: string;
   endDate?: string;
   medianPath?: Array<{ date: string; price: number }>;
   lowerPath?: Array<{ date: string; price: number }>;
   upperPath?: Array<{ date: string; price: number }>;
-  meta?: Record<string, any>;
 }
 
 export interface RunPredictionOptions {
   symbol: string;
   market: string;
-  horizonDays: 5 | 20 | 60;
+  horizonDays?: 5 | 20 | 60;    // kept for legacy callers; ignored when horizons array is given
+  horizons?: number[];            // new: array like [1..20]
   currentPrice: number;
-  saveToDb?: boolean;  // default true
+  saveToDb?: boolean;             // default true
 }
 
-/**
- * Returns today's date string (YYYY-MM-DD) in the appropriate market timezone.
- */
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function getTodayInMarketTimezone(market: string): string {
   const tz = market === "US" ? "America/New_York" : "Asia/Taipei";
   const formatter = new Intl.DateTimeFormat("en-CA", {
@@ -37,19 +58,39 @@ function getTodayInMarketTimezone(market: string): string {
     month: "2-digit",
     day: "2-digit",
   });
-  // en-CA locale returns dates in YYYY-MM-DD format
   return formatter.format(new Date());
 }
 
-/**
- * Determines the Python executable name (platform-aware).
- */
 function getPythonBin(): string {
   return process.platform === "win32" ? "python" : "python3";
 }
 
+/**
+ * Convert new horizons output to legacy medianPath / lowerPath / upperPath arrays
+ * for backward compatibility (personal-advice, prediction-history pages).
+ * Uses horizons 1..N sorted, one point per horizon.
+ */
+function horizonsToLegacyPaths(
+  horizons: Record<string, HorizonPoint>,
+): { medianPath: Array<{date:string;price:number}>; lowerPath: Array<{date:string;price:number}>; upperPath: Array<{date:string;price:number}> } {
+  const keys = Object.keys(horizons).map(Number).sort((a, b) => a - b);
+  const medianPath = keys.map(k => ({ date: horizons[String(k)].targetDate, price: horizons[String(k)].medianPrice }));
+  const lowerPath  = keys.map(k => ({ date: horizons[String(k)].targetDate, price: horizons[String(k)].lowerPrice  }));
+  const upperPath  = keys.map(k => ({ date: horizons[String(k)].targetDate, price: horizons[String(k)].upperPrice  }));
+  return { medianPath, lowerPath, upperPath };
+}
+
+// ─── Core prediction runner ───────────────────────────────────────────────────
+
 export async function runPrediction(opts: RunPredictionOptions): Promise<PredictionResult> {
-  const { symbol, market, horizonDays, currentPrice, saveToDb = true } = opts;
+  const { symbol, market, currentPrice, saveToDb = true } = opts;
+
+  // Decide horizons array
+  const horizonsArr: number[] = opts.horizons
+    ? opts.horizons
+    : opts.horizonDays
+      ? [opts.horizonDays]
+      : Array.from({ length: 20 }, (_, i) => i + 1);
 
   // 1. Fetch historical price bars
   const rawBars = await storage.getHistoricalPrices(symbol, market);
@@ -66,17 +107,18 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
     volume: b.volume,
   }));
 
-  // 2. Build analyst features for 20D and 60D horizons
+  // 2. Build analyst features
   let analystFeatures: any = null;
-  if (horizonDays === 20 || horizonDays === 60) {
+  const maxH = Math.max(...horizonsArr);
+  if (maxH >= 20) {
     analystFeatures = await buildAnalystConsensusFeatures(symbol, market, currentPrice);
   }
 
-  // 3. Build payload for Python script
+  // 3. Build stdin payload
   const payload = {
     symbol,
     market,
-    horizon: horizonDays,
+    horizons: horizonsArr,
     bars,
     analystFeatures: analystFeatures ?? {},
   };
@@ -94,22 +136,16 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Timeout: 90 seconds (Python cold start with sklearn/numpy can take 30-60s)
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         child.kill("SIGKILL");
-        resolve({ ok: false, error: "Python 預測程序逾時 (90s)" });
+        resolve({ ok: false, error: "Python 預測程序逾時 (120s)" });
       }
-    }, 90_000);
+    }, 120_000);
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBuf += chunk.toString("utf8");
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString("utf8");
-    });
+    child.stdout.on("data", (chunk: Buffer) => { stdoutBuf += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => { stderrBuf += chunk.toString("utf8"); });
 
     child.on("close", (code: number | null) => {
       if (settled) return;
@@ -139,41 +175,70 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
       resolve({ ok: false, error: `無法啟動 Python: ${err.message}` });
     });
 
-    // Write payload to stdin
     child.stdin.write(JSON.stringify(payload), "utf8");
     child.stdin.end();
   });
 
-  // 5. Persist to DB if requested and result is successful
-  if (result.ok && saveToDb) {
-    const todayStr = getTodayInMarketTimezone(market);
+  if (!result.ok) return result;
+
+  // 5. Generate run_id and build legacy paths
+  const runId = randomUUID();
+  const todayStr = getTodayInMarketTimezone(market);
+  const runAt = result.runAt ?? new Date().toISOString();
+  const baseDate  = result.baseDate ?? todayStr;
+  const basePrice = result.basePrice ?? currentPrice;
+
+  // Build legacy paths from horizons output
+  const legacyPaths = result.horizons
+    ? horizonsToLegacyPaths(result.horizons)
+    : { medianPath: [], lowerPath: [], upperPath: [] };
+
+  // Determine startDate / endDate from horizon keys
+  const hKeys = result.horizons ? Object.keys(result.horizons).map(Number).sort((a, b) => a - b) : [];
+  const startDate = hKeys.length > 0 ? result.horizons![String(hKeys[0])].targetDate : "";
+  const endDate   = hKeys.length > 0 ? result.horizons![String(hKeys[hKeys.length - 1])].targetDate : "";
+
+  // 6. Persist to DB
+  if (saveToDb) {
+    const horizonDays = hKeys.length > 0 ? hKeys[hKeys.length - 1] : (opts.horizonDays ?? 20);
     try {
-      await storage.insertModelPrediction({
+      await (storage as any).insertModelPrediction({
         symbol,
         market,
-        modelName: result.modelName ?? "RF_v1",
+        modelName:      result.meta?.modelVersion ?? "RF_v2",
         horizonDays,
-        runAt: todayStr,
-        startDate: result.startDate ?? "",
-        endDate: result.endDate ?? "",
-        medianPathJson: JSON.stringify(result.medianPath ?? []),
-        lowerPathJson: JSON.stringify(result.lowerPath ?? []),
-        upperPathJson: JSON.stringify(result.upperPath ?? []),
-        metaJson: JSON.stringify(result.meta ?? {}),
-        createdAt: Date.now(),
+        runAt:          todayStr,          // date string for query range
+        startDate,
+        endDate,
+        medianPathJson: JSON.stringify(legacyPaths.medianPath),
+        lowerPathJson:  JSON.stringify(legacyPaths.lowerPath),
+        upperPathJson:  JSON.stringify(legacyPaths.upperPath),
+        metaJson:       JSON.stringify({ ...result.meta, horizonsJson: JSON.stringify(result.horizons) }),
+        createdAt:      Date.now(),
+        runId,
+        baseDate,
+        basePrice,
       });
     } catch (dbErr: any) {
-      // Non-fatal: log but don't override the prediction result
       console.error("[mlPredictionService] Failed to save prediction to DB:", dbErr?.message ?? dbErr);
     }
   }
 
   return {
     ...result,
-    runAt: getTodayInMarketTimezone(market),
-    horizonDays,
+    runAt,
+    runId,
+    horizonDays: opts.horizonDays,
+    startDate,
+    endDate,
+    medianPath: legacyPaths.medianPath,
+    lowerPath:  legacyPaths.lowerPath,
+    upperPath:  legacyPaths.upperPath,
+    modelName:  result.meta?.modelVersion ?? "RF_v2",
   };
 }
+
+// ─── Legacy multi-horizon runner (personal-advice page) ───────────────────────
 
 export async function runAllHorizons(
   symbol: string,
@@ -181,12 +246,10 @@ export async function runAllHorizons(
   currentPrice: number,
 ): Promise<PredictionResult[]> {
   const horizons: Array<5 | 20 | 60> = [5, 20, 60];
-
   const results = await Promise.all(
     horizons.map((horizonDays) =>
       runPrediction({ symbol, market, horizonDays, currentPrice }),
     ),
   );
-
   return results;
 }

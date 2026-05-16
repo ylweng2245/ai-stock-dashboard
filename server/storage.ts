@@ -727,14 +727,16 @@ export class DatabaseStorage implements IStorage {
   // ─── Model Predictions (V6.1) ────────────────────────────────────────────────────
 
   /** Always INSERT a new row — never UPDATE (history is append-only). */
-  insertModelPrediction(row: InsertModelPrediction): void {
+  insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number }): void {
     sqlite.prepare(`
       INSERT INTO modelpredictions
         (symbol, market, model_name, horizon_days, run_at, start_date, end_date,
-         median_path, lower_path, upper_path, meta_json, created_at)
+         median_path, lower_path, upper_path, meta_json, created_at,
+         run_id, base_date, base_price)
       VALUES
         (@symbol, @market, @modelName, @horizonDays, @runAt, @startDate, @endDate,
-         @medianPathJson, @lowerPathJson, @upperPathJson, @metaJson, @createdAt)
+         @medianPathJson, @lowerPathJson, @upperPathJson, @metaJson, @createdAt,
+         @runId, @baseDate, @basePrice)
     `).run({
       symbol:         row.symbol,
       market:         row.market,
@@ -748,6 +750,9 @@ export class DatabaseStorage implements IStorage {
       upperPathJson:  row.upperPathJson ?? null,
       metaJson:       row.metaJson ?? null,
       createdAt:      row.createdAt,
+      runId:          (row as any).runId ?? null,
+      baseDate:       (row as any).baseDate ?? null,
+      basePrice:      (row as any).basePrice ?? null,
     });
   }
 
@@ -779,7 +784,10 @@ export class DatabaseStorage implements IStorage {
       upperPathJson:   r.upper_path ?? null,
       metaJson:        r.meta_json ?? null,
       createdAt:       r.created_at,
-    }));
+      runId:           r.run_id ?? null,
+      baseDate:        r.base_date ?? null,
+      basePrice:       r.base_price ?? null,
+    } as any));
   }
 
   /** Get the most recent prediction for a symbol + horizon. */
@@ -809,7 +817,59 @@ export class DatabaseStorage implements IStorage {
       upperPathJson:   r.upper_path ?? null,
       metaJson:        r.meta_json ?? null,
       createdAt:       r.created_at,
+      runId:           r.run_id ?? null,
+      baseDate:        r.base_date ?? null,
+      basePrice:       r.base_price ?? null,
+    } as any;
+  }
+
+  /** Get latest prediction by run_id (for /api/predictions/run/:run_id). */
+  getModelPredictionByRunId(runId: string): any | undefined {
+    const r = sqlite.prepare(`
+      SELECT * FROM modelpredictions
+      WHERE run_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(runId) as any;
+    if (!r) return undefined;
+    return {
+      id:              r.id,
+      symbol:          r.symbol,
+      market:          r.market,
+      modelName:       r.model_name,
+      horizonDays:     r.horizon_days,
+      runAt:           r.run_at,
+      startDate:       r.start_date,
+      endDate:         r.end_date,
+      medianPathJson:  r.median_path,
+      lowerPathJson:   r.lower_path ?? null,
+      upperPathJson:   r.upper_path ?? null,
+      metaJson:        r.meta_json ?? null,
+      createdAt:       r.created_at,
+      runId:           r.run_id ?? null,
+      baseDate:        r.base_date ?? null,
+      basePrice:       r.base_price ?? null,
     };
+  }
+
+  /** Get recent prediction run list for history dropdown. */
+  getModelPredictionHistory(
+    symbol: string,
+    market: string,
+    limit: number = 10,
+  ): Array<{ run_id: string; runAt: string; baseDate: string }> {
+    const rows = sqlite.prepare(`
+      SELECT DISTINCT run_id, run_at, base_date
+      FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND run_id IS NOT NULL
+      ORDER BY run_at DESC
+      LIMIT ?
+    `).all(symbol, market, limit) as any[];
+    return rows.map(r => ({
+      run_id:   r.run_id,
+      runAt:    r.run_at,
+      baseDate: r.base_date ?? r.run_at?.slice(0, 10) ?? '',
+    }));
   }
   getStockNote(symbol: string, market: string): string {
     const row = sqlite.prepare(
@@ -843,6 +903,13 @@ safeAlter("ALTER TABLE daily_news_digest ADD COLUMN price_close REAL");
 safeAlter("ALTER TABLE daily_news_digest ADD COLUMN price_change_pct REAL");
 safeAlter("ALTER TABLE daily_news_digest ADD COLUMN source_count INTEGER NOT NULL DEFAULT 0");
 safeAlter("ALTER TABLE daily_news_digest ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'");
+
+// modelpredictions — V6.1 new columns
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN run_id TEXT");
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN base_date TEXT");
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN base_price REAL");
+try { sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_predictions_symbol_runAt ON modelpredictions (symbol, market, run_at DESC)`); } catch { /* exists */ }
+try { sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_predictions_run_id ON modelpredictions (run_id)`); } catch { /* exists */ }
 
 // ─────────────────────────────────────────────────────────────────────────────
 

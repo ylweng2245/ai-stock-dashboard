@@ -1425,6 +1425,163 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1 NEW: POST /api/predictions/trigger — trigger 1~20 prediction run
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/predictions/trigger", async (req, res) => {
+    const { symbol, market } = req.body as { symbol?: string; market?: string };
+    if (!symbol || !market)
+      return res.status(400).json({ error: "symbol and market are required" });
+    try {
+      const recentBars = await storage.getHistoricalPricesByRange(
+        symbol.toUpperCase(), market.toUpperCase(),
+        new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10),
+        new Date().toISOString().slice(0, 10),
+      );
+      const currentPrice = recentBars.length > 0
+        ? recentBars.sort((a: any, b: any) => b.date.localeCompare(a.date))[0].close
+        : 0;
+      const result = await runPrediction({
+        symbol: symbol.toUpperCase(),
+        market: market.toUpperCase() as "TW" | "US",
+        horizons: Array.from({ length: 20 }, (_, i) => i + 1),
+        currentPrice,
+        saveToDb: true,
+      });
+      res.json(result);
+    } catch (e: any) {
+      console.error(`[predictions/trigger] ${symbol}:`, e.message);
+      res.status(500).json({ ok: false, error: e.message ?? "Prediction failed" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1 NEW: GET /api/predictions/latest — latest run's 20-point paths
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/predictions/latest", async (req, res) => {
+    const symbol = (req.query.symbol as string ?? "").toUpperCase();
+    const market = (req.query.market as string ?? "").toUpperCase();
+    if (!symbol || !market)
+      return res.status(400).json({ error: "symbol and market are required" });
+    try {
+      const row = (storage as any).getLatestModelPrediction(symbol, market, 20) as any;
+      if (!row) return res.json({ ok: false, found: false, message: "No prediction found" });
+
+      // Parse horizons from metaJson if present
+      let horizons: Record<string, any> | null = null;
+      if (row.metaJson) {
+        try {
+          const meta = JSON.parse(row.metaJson);
+          if (meta.horizonsJson) horizons = JSON.parse(meta.horizonsJson);
+        } catch { /* non-fatal */ }
+      }
+
+      // Fallback: reconstruct horizons from medianPath / lowerPath / upperPath
+      if (!horizons && row.medianPathJson) {
+        const median: Array<{date:string;price:number}> = JSON.parse(row.medianPathJson);
+        const lower:  Array<{date:string;price:number}> = row.lowerPathJson ? JSON.parse(row.lowerPathJson) : [];
+        const upper:  Array<{date:string;price:number}> = row.upperPathJson ? JSON.parse(row.upperPathJson) : [];
+        const baseP = row.basePrice ?? (median[0]?.price ?? 0);
+        horizons = {};
+        for (let i = 0; i < median.length; i++) {
+          const h = i + 1;
+          horizons[String(h)] = {
+            targetDate:    median[i].date,
+            medianPrice:   median[i].price,
+            lowerPrice:    lower[i]?.price  ?? median[i].price,
+            upperPrice:    upper[i]?.price  ?? median[i].price,
+            medianReturn:  baseP > 0 ? (median[i].price - baseP) / baseP * 100 : 0,
+            upProbability: 0.5,
+            topFeatures:   [],
+          };
+        }
+      }
+
+      res.json({
+        ok:         true,
+        found:      true,
+        run_id:     row.runId   ?? null,
+        runAt:      row.runAt,
+        baseDate:   row.baseDate  ?? null,
+        basePrice:  row.basePrice ?? null,
+        symbol:     row.symbol,
+        market:     row.market,
+        horizons,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1 NEW: GET /api/predictions/history — list recent run_ids
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/predictions/history", async (req, res) => {
+    const symbol = (req.query.symbol as string ?? "").toUpperCase();
+    const market = (req.query.market as string ?? "").toUpperCase();
+    const limit  = Math.min(parseInt(req.query.limit as string ?? "10", 10) || 10, 30);
+    if (!symbol || !market)
+      return res.status(400).json({ error: "symbol and market are required" });
+    try {
+      const runs = (storage as any).getModelPredictionHistory(symbol, market, limit);
+      res.json({ ok: true, runs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // V6.1 NEW: GET /api/predictions/run/:run_id — full run data
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/predictions/run/:run_id", async (req, res) => {
+    const run_id = req.params.run_id;
+    if (!run_id) return res.status(400).json({ error: "run_id required" });
+    try {
+      const row = (storage as any).getModelPredictionByRunId(run_id);
+      if (!row) return res.status(404).json({ ok: false, error: "run not found" });
+
+      let horizons: Record<string, any> | null = null;
+      if (row.metaJson) {
+        try {
+          const meta = JSON.parse(row.metaJson);
+          if (meta.horizonsJson) horizons = JSON.parse(meta.horizonsJson);
+        } catch { /* non-fatal */ }
+      }
+      if (!horizons && row.medianPathJson) {
+        const median: Array<{date:string;price:number}> = JSON.parse(row.medianPathJson);
+        const lower:  Array<{date:string;price:number}> = row.lowerPathJson ? JSON.parse(row.lowerPathJson) : [];
+        const upper:  Array<{date:string;price:number}> = row.upperPathJson ? JSON.parse(row.upperPathJson) : [];
+        const baseP = row.basePrice ?? (median[0]?.price ?? 0);
+        horizons = {};
+        for (let i = 0; i < median.length; i++) {
+          const h = i + 1;
+          horizons[String(h)] = {
+            targetDate:    median[i].date,
+            medianPrice:   median[i].price,
+            lowerPrice:    lower[i]?.price  ?? median[i].price,
+            upperPrice:    upper[i]?.price  ?? median[i].price,
+            medianReturn:  baseP > 0 ? (median[i].price - baseP) / baseP * 100 : 0,
+            upProbability: 0.5,
+            topFeatures:   [],
+          };
+        }
+      }
+
+      res.json({
+        ok:        true,
+        run_id:    row.runId   ?? null,
+        runAt:     row.runAt,
+        baseDate:  row.baseDate  ?? null,
+        basePrice: row.basePrice ?? null,
+        symbol:    row.symbol,
+        market:    row.market,
+        horizons,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // V6.1: GET /api/personal-advice
   // ──────────────────────────────────────────────────────────────────
   app.get("/api/personal-advice", async (req, res) => {

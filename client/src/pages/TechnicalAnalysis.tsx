@@ -1,10 +1,10 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertCircle, ExternalLink, RefreshCw } from "lucide-react";
+import { AlertCircle, ExternalLink, RefreshCw, ChevronDown, History } from "lucide-react";
 import {
   type CandleData,
   calculateRSI,
@@ -607,6 +607,49 @@ function AnalystTargetTable({
   );
 }
 
+// ─── ML Prediction types ────────────────────────────────────────────────────
+interface HorizonPoint {
+  targetDate: string;
+  medianPrice: number;
+  lowerPrice: number;
+  upperPrice: number;
+  medianReturn: number;  // % units
+  upProbability: number;
+  topFeatures: Array<{ feature: string; label: string; importance: number }>;
+}
+
+interface PredictionRun {
+  ok: boolean;
+  found?: boolean;
+  run_id: string | null;
+  runAt: string;
+  baseDate: string | null;
+  basePrice: number | null;
+  symbol: string;
+  market: string;
+  horizons: Record<string, HorizonPoint> | null;
+}
+
+interface HistoryRunItem {
+  run_id: string;
+  runAt: string;
+  baseDate: string;
+}
+
+/** Build sorted array of {date, median, lower, upper} from horizons dict */
+function buildPredPoints(run: PredictionRun): Array<{ date: string; median: number; lower: number; upper: number }> {
+  if (!run.horizons) return [];
+  return Object.keys(run.horizons)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map(h => ({
+      date:   run.horizons![String(h)].targetDate,
+      median: run.horizons![String(h)].medianPrice,
+      lower:  run.horizons![String(h)].lowerPrice,
+      upper:  run.horizons![String(h)].upperPrice,
+    }));
+}
+
 // ─── Range options ────────────────────────────────────────────────────────────
 interface HistoryResponse {
   symbol: string;
@@ -716,6 +759,56 @@ export default function TechnicalAnalysis() {
 
   // Stock notes — query 移至 StockNoteCard 內部自治
 
+  // ─── ML Prediction state ──────────────────────────────────
+  const [comparePrediction, setComparePrediction] = useState<PredictionRun | null>(null);
+  const [compareRunId, setCompareRunId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  // Fetch latest prediction for current symbol
+  const { data: latestPrediction, isLoading: isPredLoading } = useQuery<PredictionRun>({
+    queryKey: ["/api/predictions/latest", activeSymbol, meta.market],
+    queryFn: () =>
+      apiRequest("GET", `/api/predictions/latest?symbol=${activeSymbol}&market=${meta.market}`)
+        .then(r => r.json()),
+    staleTime: 5 * 60_000,
+    enabled: !!activeSymbol,
+    placeholderData: (prev) => prev,
+  });
+
+  // Fetch prediction run history list
+  const { data: predHistory } = useQuery<{ ok: boolean; runs: HistoryRunItem[] }>({
+    queryKey: ["/api/predictions/history", activeSymbol, meta.market],
+    queryFn: () =>
+      apiRequest("GET", `/api/predictions/history?symbol=${activeSymbol}&market=${meta.market}&limit=10`)
+        .then(r => r.json()),
+    staleTime: 5 * 60_000,
+    enabled: historyOpen && !!activeSymbol,
+  });
+
+  // Fetch a historical run by run_id for comparison
+  const { isFetching: isCompareFetching } = useQuery<PredictionRun>({
+    queryKey: ["/api/predictions/run", compareRunId],
+    queryFn: () =>
+      apiRequest("GET", `/api/predictions/run/${compareRunId}`)
+        .then(r => r.json()),
+    staleTime: Infinity,
+    enabled: !!compareRunId,
+    onSuccess: (data: PredictionRun) => setComparePrediction(data),
+  } as any);
+
+  // Trigger a new prediction run
+  const triggerPredMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", "/api/predictions/trigger", { symbol: activeSymbol, market: meta.market })
+        .then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/predictions/latest", activeSymbol, meta.market] });
+      queryClient.invalidateQueries({ queryKey: ["/api/predictions/history", activeSymbol, meta.market] });
+      setComparePrediction(null);
+      setCompareRunId(null);
+    },
+  });
+
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
   const isLoading = data === undefined;
 
@@ -788,6 +881,69 @@ export default function TechnicalAnalysis() {
       }),
     [candleData, rsi, macdData, bollingerData, tradeDotMap, analystEventMap]
   );
+
+  // ─── Build merged chart data = historical + future prediction points ──────
+  const showPredOverlay = ["3mo", "6mo", "1y"].includes(range);
+
+  const predPoints = useMemo(() =>
+    showPredOverlay && latestPrediction?.horizons ? buildPredPoints(latestPrediction) : []
+  , [latestPrediction, showPredOverlay]);
+
+  const comparePredPoints = useMemo(() =>
+    showPredOverlay && comparePrediction?.horizons ? buildPredPoints(comparePrediction) : []
+  , [comparePrediction, showPredOverlay]);
+
+  // Whether the compare baseDate is visible in current chart window
+  const compareBaseDateVisible = useMemo(() => {
+    if (!comparePrediction?.baseDate || !candleData.length) return true;
+    return comparePrediction.baseDate >= candleData[0].time;
+  }, [comparePrediction, candleData]);
+
+  // Merged data: historical bars + future prediction dates
+  const mergedChartData = useMemo(() => {
+    if (!showPredOverlay || predPoints.length === 0) return chartData;
+    const existingDates = new Set(chartData.map((d: any) => d.fullDate));
+    const future = predPoints
+      .filter(p => !existingDates.has(p.date))
+      .map(p => ({
+        date: p.date.slice(5),
+        fullDate: p.date,
+        open: null, high: null, low: null, close: null, volume: null,
+        rsi: null, macd: null, signal: null, histogram: null,
+        bbUpper: null, bbMiddle: null, bbLower: null,
+        tradeDot: null, tradeInfo: null, analystEvent: null, analystDot: null,
+      }));
+    return [...chartData, ...future];
+  }, [chartData, predPoints, showPredOverlay]);
+
+  // Build lookup maps for prediction lines on mergedChartData
+  const latestPredMap = useMemo(() => {
+    const m = new Map<string, { median: number; lower: number; upper: number }>();
+    for (const p of predPoints) m.set(p.date, p);
+    return m;
+  }, [predPoints]);
+
+  const comparePredMap = useMemo(() => {
+    const m = new Map<string, { median: number; lower: number; upper: number }>();
+    for (const p of comparePredPoints) m.set(p.date, p);
+    return m;
+  }, [comparePredPoints]);
+
+  // Extend mergedChartData with prediction columns
+  const extendedChartData = useMemo(() => {
+    if (!showPredOverlay) return mergedChartData;
+    return mergedChartData.map((d: any) => ({
+      ...d,
+      predMedian:  latestPredMap.get(d.fullDate)?.median  ?? null,
+      predLower:   latestPredMap.get(d.fullDate)?.lower   ?? null,
+      predUpper:   latestPredMap.get(d.fullDate)?.upper   ?? null,
+      cmpMedian:   comparePredMap.get(d.fullDate)?.median ?? null,
+      cmpLower:    comparePredMap.get(d.fullDate)?.lower  ?? null,
+      cmpUpper:    comparePredMap.get(d.fullDate)?.upper  ?? null,
+    }));
+  }, [mergedChartData, latestPredMap, comparePredMap, showPredOverlay]);
+
+  const extendedXInterval = Math.max(1, Math.floor(extendedChartData.length / 12));
 
   const lastRSI    = rsi[rsi.length - 1] ?? 50;
   const lastMACD   = macdData.macd[macdData.macd.length - 1] ?? 0;
@@ -981,15 +1137,96 @@ export default function TechnicalAnalysis() {
               </button>
             </div>
           </div>
+
+          {/* ── ML Prediction controls row (3mo+ only) ── */}
+          {showPredOverlay && (
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              {/* Latest prediction label */}
+              {latestPrediction?.found && latestPrediction.baseDate && (
+                <span className="text-[11px] text-[#F97316] font-medium flex items-center gap-1">
+                  <span className="inline-block w-4 h-0.5 bg-[#F97316] opacity-70 mr-0.5" style={{borderTop: '2px dashed #F97316', background: 'none'}} />
+                  預測 {latestPrediction.baseDate}
+                </span>
+              )}
+              {!latestPrediction?.found && !isPredLoading && (
+                <span className="text-[11px] text-muted-foreground">尚無預測資料</span>
+              )}
+              {isPredLoading && (
+                <span className="text-[11px] text-muted-foreground">載入預測中...</span>
+              )}
+              {/* Trigger new prediction button */}
+              <button
+                onClick={() => triggerPredMutation.mutate()}
+                disabled={triggerPredMutation.isPending}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-[#F97316]/40 text-[#F97316] hover:bg-[#F97316]/10 transition-colors disabled:opacity-40"
+              >
+                <RefreshCw size={10} className={triggerPredMutation.isPending ? "animate-spin" : ""} />
+                {triggerPredMutation.isPending ? "預測中..." : "重新預測"}
+              </button>
+
+              {/* Compare history dropdown */}
+              <div className="relative">
+                <button
+                  onClick={() => setHistoryOpen(v => !v)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-border/60 text-muted-foreground hover:text-foreground hover:border-border hover:bg-muted/30 transition-colors"
+                >
+                  <History size={10} />
+                  {comparePrediction ? (
+                    <span>對比：{comparePrediction.baseDate ?? comparePrediction.runAt?.slice(0,10)}</span>
+                  ) : (
+                    <span>+ 對比歷史預測</span>
+                  )}
+                  <ChevronDown size={9} />
+                </button>
+                {historyOpen && (
+                  <div className="absolute top-full left-0 mt-1 w-52 bg-background border border-border rounded-md shadow-lg z-50 py-1">
+                    {comparePrediction && (
+                      <button
+                        className="w-full text-left px-3 py-1.5 text-[11px] text-[#10b981] hover:bg-muted/40"
+                        onClick={() => { setComparePrediction(null); setCompareRunId(null); setHistoryOpen(false); }}
+                      >
+                        清除對比
+                      </button>
+                    )}
+                    {!predHistory?.runs?.length && (
+                      <div className="px-3 py-2 text-[11px] text-muted-foreground">無歷史預測資料</div>
+                    )}
+                    {predHistory?.runs?.filter(r => r.run_id !== latestPrediction?.run_id).map(run => (
+                      <button
+                        key={run.run_id}
+                        className={`w-full text-left px-3 py-1.5 text-[11px] hover:bg-muted/40 ${
+                          compareRunId === run.run_id ? 'text-[#3B82F6]' : 'text-foreground'
+                        }`}
+                        onClick={() => {
+                          setCompareRunId(run.run_id);
+                          setHistoryOpen(false);
+                        }}
+                      >
+                        {run.baseDate} <span className="text-muted-foreground ml-1">{run.runAt?.slice(0,10)}</span>
+                      </button>
+                    ))}
+                    {isCompareFetching && (
+                      <div className="px-3 py-1.5 text-[11px] text-muted-foreground">載入中...</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Out-of-range warning */}
+              {comparePrediction && !compareBaseDateVisible && (
+                <span className="text-[11px] text-amber-400">此預測超出當前顯示範圍，請切換至更長 range</span>
+              )}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="px-2 pb-3">
           {isLoading ? (
             <Skeleton className="w-full h-[320px] rounded-md" />
           ) : (
             <ResponsiveContainer width="100%" height={320}>
-              <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <ComposedChart data={extendedChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} interval={xInterval} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} interval={extendedXInterval} />
                 <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} width={65} tickFormatter={(v) => v.toLocaleString()} />
                 <Tooltip content={<BollingerTooltip />} />
                 <Area type="monotone" dataKey="bbUpper" stroke="none" fill="hsl(var(--chart-1))" fillOpacity={0.06} />
@@ -1070,6 +1307,106 @@ export default function TechnicalAnalysis() {
                     legendType="none"
                     isAnimationActive={false}
                   />
+                )}
+
+                {/* ── ML Prediction overlay: orange channel band + median line ── */}
+                {showPredOverlay && predPoints.length > 0 && (
+                  <>
+                    {/* Orange band: upper fill */}
+                    <Area
+                      type="monotone"
+                      dataKey="predUpper"
+                      stroke="none"
+                      fill="#F97316"
+                      fillOpacity={0.12}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      legendType="none"
+                    />
+                    {/* Orange band: lower fill (paint over with background to create band) */}
+                    <Area
+                      type="monotone"
+                      dataKey="predLower"
+                      stroke="none"
+                      fill="hsl(var(--background))"
+                      fillOpacity={1}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      legendType="none"
+                    />
+                    {/* Orange median dashed line */}
+                    <Line
+                      type="monotone"
+                      dataKey="predMedian"
+                      stroke="#F97316"
+                      strokeWidth={2}
+                      strokeDasharray="6 3"
+                      dot={false}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      name="ML預測中位數"
+                      legendType="none"
+                    />
+                    {/* baseDate vertical marker */}
+                    {latestPrediction?.baseDate && (
+                      <ReferenceLine
+                        x={latestPrediction.baseDate.slice(5)}
+                        stroke="#9CA3AF"
+                        strokeWidth={1}
+                        strokeDasharray="4 3"
+                        opacity={0.6}
+                        label={false}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* ── Compare prediction overlay: blue channel band + median line ── */}
+                {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
+                  <>
+                    <Area
+                      type="monotone"
+                      dataKey="cmpUpper"
+                      stroke="none"
+                      fill="#3B82F6"
+                      fillOpacity={0.08}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      legendType="none"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="cmpLower"
+                      stroke="none"
+                      fill="hsl(var(--background))"
+                      fillOpacity={0.5}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      legendType="none"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="cmpMedian"
+                      stroke="#3B82F6"
+                      strokeWidth={1.5}
+                      strokeDasharray="4 3"
+                      dot={false}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                      name="對比預測中位數"
+                      legendType="none"
+                    />
+                    {comparePrediction?.baseDate && (
+                      <ReferenceLine
+                        x={comparePrediction.baseDate.slice(5)}
+                        stroke="#3B82F6"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        opacity={0.4}
+                        label={false}
+                      />
+                    )}
+                  </>
                 )}
               </ComposedChart>
             </ResponsiveContainer>
