@@ -1172,10 +1172,8 @@ export async function registerRoutes(
   app.get("/api/stock-notes/:symbol", (req, res) => {
     const symbol = req.params.symbol.toUpperCase();
     const market = ((req.query.market as string) || "US").toUpperCase();
-    const row = sqlite.prepare(
-      "SELECT content FROM stock_notes WHERE symbol = ? AND market = ?"
-    ).get(symbol, market) as { content: string } | undefined;
-    res.json({ symbol, market, content: row?.content ?? "" });
+    const content = storage.getStockNote(symbol, market);
+    res.json({ symbol, market, content });
   });
 
   // PUT /api/stock-notes/:symbol?market=US|TW  { content: string }
@@ -1183,12 +1181,7 @@ export async function registerRoutes(
     const symbol = req.params.symbol.toUpperCase();
     const market = ((req.query.market as string) || "US").toUpperCase();
     const content: string = req.body?.content ?? "";
-    const now = Date.now();
-    sqlite.prepare(`
-      INSERT INTO stock_notes (symbol, market, content, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(symbol, market) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
-    `).run(symbol, market, content, now);
+    storage.upsertStockNote(symbol, market, content);
     res.json({ ok: true });
   });
 

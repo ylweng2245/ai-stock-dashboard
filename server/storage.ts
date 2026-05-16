@@ -811,6 +811,20 @@ export class DatabaseStorage implements IStorage {
       createdAt:       r.created_at,
     };
   }
+  getStockNote(symbol: string, market: string): string {
+    const row = sqlite.prepare(
+      "SELECT content FROM stock_notes WHERE symbol = ? AND market = ?"
+    ).get(symbol, market) as { content: string } | undefined;
+    return row?.content ?? "";
+  }
+
+  upsertStockNote(symbol: string, market: string, content: string): void {
+    sqlite.prepare(`
+      INSERT INTO stock_notes (symbol, market, content, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(symbol, market) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
+    `).run(symbol, market, content, Date.now());
+  }
 }
 
 // ─── ALTER TABLE safety guards ─────────────────────────────────────────────
