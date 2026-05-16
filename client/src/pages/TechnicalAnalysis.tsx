@@ -401,31 +401,45 @@ function StockNoteCard({
   const [draft, setDraft] = useState(initialContent);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevSymbolRef = useRef(symbol);
+  // 進入編輯前備份，Esc 取消時復原
+  const savedDraftRef = useRef(draft);
 
-  // 只在 symbol 切換時才同步 draft，不因儲存後的 initialContent 更新而清掉
+  // 只在 symbol 切換時才同步 draft
   useEffect(() => {
     if (symbol !== prevSymbolRef.current) {
       prevSymbolRef.current = symbol;
       setEditing(false);
       setDraft(initialContent);
+      savedDraftRef.current = initialContent;
     }
   }, [symbol, initialContent]);
 
+  // 第一次載入資料時同步 draft（頁面初始化）
+  const didInitRef = useRef(false);
+  useEffect(() => {
+    if (!didInitRef.current && initialContent) {
+      didInitRef.current = true;
+      setDraft(initialContent);
+      savedDraftRef.current = initialContent;
+    }
+  }, [initialContent]);
+
   const handleDoubleClick = useCallback(() => {
-    // 不重置 draft，直接用目前已顯示的內容開啟編輯
+    savedDraftRef.current = draft; // 備份當前內容
     setEditing(true);
     setTimeout(() => textareaRef.current?.focus(), 30);
-  }, []);
+  }, [draft]);
 
   const handleSave = useCallback(() => {
     onSave(draft);
+    savedDraftRef.current = draft;
     setEditing(false);
   }, [draft, onSave]);
 
   const handleCancel = useCallback(() => {
-    setDraft(initialContent);
+    setDraft(savedDraftRef.current); // 復原進入編輯前的內容
     setEditing(false);
-  }, [initialContent]);
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
