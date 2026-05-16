@@ -1229,6 +1229,30 @@ export default function TechnicalAnalysis() {
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} interval={extendedXInterval} />
                 <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} width={65} tickFormatter={(v) => v.toLocaleString()} />
                 <Tooltip content={<BollingerTooltip />} />
+
+                {/* == Prediction channel bands (rendered first = lowest layer) == */}
+                {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
+                  <>
+                    <Area type="monotone" dataKey="cmpUpper" stroke="none" fill="#EAB308" fillOpacity={0.08} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area type="monotone" dataKey="cmpLower" stroke="none" fill="hsl(var(--background))" fillOpacity={0.5} connectNulls={false} isAnimationActive={false} legendType="none" />
+                  </>
+                )}
+                {showPredOverlay && predPoints.length > 0 && (
+                  <>
+                    <Area type="monotone" dataKey="predUpper" stroke="none" fill="#F97316" fillOpacity={0.12} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area type="monotone" dataKey="predLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} connectNulls={false} isAnimationActive={false} legendType="none" />
+                  </>
+                )}
+
+                {/* == Prediction median lines (above bands, below Bollinger+K-line) == */}
+                {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
+                  <Line type="monotone" dataKey="cmpMedian" stroke="#EAB308" strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} name="對比預測" legendType="none" />
+                )}
+                {showPredOverlay && predPoints.length > 0 && (
+                  <Line type="monotone" dataKey="predMedian" stroke="#F97316" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} name="ML預測中位數" legendType="none" />
+                )}
+
+                {/* == Bollinger + K-line rendered on top == */}
                 <Area type="monotone" dataKey="bbUpper" stroke="none" fill="hsl(var(--chart-1))" fillOpacity={0.06} />
                 <Area type="monotone" dataKey="bbLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} />
                 <Line type="monotone" dataKey="bbUpper" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林上軌" />
@@ -1309,105 +1333,12 @@ export default function TechnicalAnalysis() {
                   />
                 )}
 
-                {/* ── ML Prediction overlay: orange channel band + median line ── */}
-                {showPredOverlay && predPoints.length > 0 && (
-                  <>
-                    {/* Orange band: upper fill */}
-                    <Area
-                      type="monotone"
-                      dataKey="predUpper"
-                      stroke="none"
-                      fill="#F97316"
-                      fillOpacity={0.12}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      legendType="none"
-                    />
-                    {/* Orange band: lower fill (paint over with background to create band) */}
-                    <Area
-                      type="monotone"
-                      dataKey="predLower"
-                      stroke="none"
-                      fill="hsl(var(--background))"
-                      fillOpacity={1}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      legendType="none"
-                    />
-                    {/* Orange median dot line — one dot per trading day, no connecting line */}
-                    <Line
-                      type="monotone"
-                      dataKey="predMedian"
-                      stroke="none"
-                      strokeWidth={0}
-                      dot={{ r: 2.5, fill: "#F97316", strokeWidth: 0 }}
-                      activeDot={{ r: 4, fill: "#F97316", strokeWidth: 0 }}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      name="ML預測中位數"
-                      legendType="none"
-                    />
-                    {/* baseDate vertical marker */}
-                    {latestPrediction?.baseDate && (
-                      <ReferenceLine
-                        x={latestPrediction.baseDate.slice(5)}
-                        stroke="#9CA3AF"
-                        strokeWidth={1}
-                        strokeDasharray="4 3"
-                        opacity={0.6}
-                        label={false}
-                      />
-                    )}
-                  </>
+                {/* baseDate vertical markers (rendered on top of everything) */}
+                {showPredOverlay && latestPrediction?.baseDate && (
+                  <ReferenceLine x={latestPrediction.baseDate.slice(5)} stroke="#9CA3AF" strokeWidth={1} strokeDasharray="4 3" opacity={0.6} label={false} />
                 )}
-
-                {/* ── Compare prediction overlay: blue channel band + median line ── */}
-                {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
-                  <>
-                    <Area
-                      type="monotone"
-                      dataKey="cmpUpper"
-                      stroke="none"
-                      fill="#EAB308"
-                      fillOpacity={0.08}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      legendType="none"
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cmpLower"
-                      stroke="none"
-                      fill="hsl(var(--background))"
-                      fillOpacity={0.5}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      legendType="none"
-                    />
-                    {/* Blue median dot line — one dot per trading day, no connecting line */}
-                    <Line
-                      type="monotone"
-                      dataKey="cmpMedian"
-                      stroke="none"
-                      strokeWidth={0}
-                      dot={{ r: 2, fill: "#EAB308", strokeWidth: 0 }}
-                      activeDot={{ r: 3.5, fill: "#EAB308", strokeWidth: 0 }}
-                      connectNulls={false}
-                      isAnimationActive={false}
-                      name="對比預測中位數"
-                      legendType="none"
-                    />
-                    {comparePrediction?.baseDate && (
-                      <ReferenceLine
-                        x={comparePrediction.baseDate.slice(5)}
-                        stroke="#EAB308"
-                        strokeWidth={1}
-                        strokeDasharray="3 3"
-                        opacity={0.4}
-                        label={false}
-                      />
-                    )}
-                  </>
+                {showPredOverlay && comparePrediction?.baseDate && compareBaseDateVisible && (
+                  <ReferenceLine x={comparePrediction.baseDate.slice(5)} stroke="#EAB308" strokeWidth={1} strokeDasharray="3 3" opacity={0.4} label={false} />
                 )}
               </ComposedChart>
             </ResponsiveContainer>

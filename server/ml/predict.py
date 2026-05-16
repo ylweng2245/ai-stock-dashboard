@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-predict.py — RandomForest Direct Multi-Step price-path predictor
+predict.py -- RandomForest Direct Multi-Step price-path predictor
 AI Stock Dashboard V6.1
 
 Reads JSON from stdin:
   {
     "symbol": "LLY",
     "market": "US",
-    "horizons": [1, 2, 3, ..., 20],   // array of horizon ints
+    "horizons": [1, 2, 3, ..., 20],
     "bars": [{"date":"YYYY-MM-DD","open":...,"high":...,"low":...,"close":...,"volume":...}],
     "analystFeatures": {...} | null
   }
-
-  Backward compatible: if stdin contains "horizon" (int) instead of "horizons" (array),
-  it is wrapped automatically as [horizon].
+  Backward compatible: if stdin contains "horizon" (int), wraps as [horizon].
 
 Writes JSON to stdout:
   {
@@ -28,14 +26,18 @@ Writes JSON to stdout:
       "20": {...}
     },
     "meta": {
-      "barsUsed": 504,
-      "trainSize": 400,
-      "oosSize": 104,
-      "modelVersion": "RF_v2",
-      "featuresUsed": [...],
-      "warning": "less_than_2y_data"   // optional
+      "barsUsed": 504, "trainSize": 400, "oosSize": 104,
+      "modelVersion": "RF_v2", "featuresUsed": [...],
+      "dailySigma": 0.012,
+      "warning": "less_than_2y_data"
     }
   }
+
+Upper/lower band = Bollinger forward projection:
+  upper = median_price * exp(+2 * sigma * sqrt(h))
+  lower = median_price * exp(-2 * sigma * sqrt(h))
+where sigma = daily log-return std of the last 20 bars.
+This is always symmetric around median_price (no band inversion possible).
 """
 
 import sys
@@ -52,7 +54,7 @@ except ImportError as e:
     sys.exit(0)
 
 
-# ─── Feature engineering helpers ─────────────────────────────────────────────
+# --- Feature engineering helpers -------------------------------------------
 
 def _rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
@@ -107,22 +109,21 @@ def _base_feature_cols(use_analyst: bool) -> list:
 
 
 FEATURE_LABELS = {
-    "close_pct_5d":      "5日漲跌幅",
-    "close_pct_20d":     "20日漲跌幅",
+    "close_pct_5d":      "5\u65e5\u6f32\u8dcc\u5e45",
+    "close_pct_20d":     "20\u65e5\u6f32\u8dcc\u5e45",
     "rsi_14":            "RSI(14)",
-    "vol_ratio_20d":     "成交量比率",
-    "atr_14_pct":        "ATR波動率",
-    "ma20_dist_pct":     "20日均線乖離",
-    "ma60_dist_pct":     "60日均線乖離",
-    "upside_avg_ratio":  "分析師目標上行空間",
-    "band_width":        "分析師目標區間寬度",
-    "bullish_ratio":     "樂觀評級佔比",
-    "avg_score":         "分析師平均評分",
+    "vol_ratio_20d":     "\u6210\u4ea4\u91cf\u6bd4\u7387",
+    "atr_14_pct":        "ATR\u6ce2\u52d5\u7387",
+    "ma20_dist_pct":     "20\u65e5\u5747\u7dda\u4e56\u96e2",
+    "ma60_dist_pct":     "60\u65e5\u5747\u7dda\u4e56\u96e2",
+    "upside_avg_ratio":  "\u5206\u6790\u5e2b\u76ee\u6a19\u4e0a\u884c\u7a7a\u9593",
+    "band_width":        "\u5206\u6790\u5e2b\u76ee\u6a19\u5340\u9593\u5bf9\u5ea6",
+    "bullish_ratio":     "\u6a02\u89c0\u8a55\u7d1a\u4f54\u6bd4",
+    "avg_score":         "\u5206\u6790\u5e2b\u5e73\u5747\u8a55\u5206",
 }
 
 
 def _next_trading_days(start: date, n: int) -> list:
-    """Return n weekday dates starting from (but not including) start."""
     days = []
     d = start
     while len(days) < n:
@@ -132,7 +133,7 @@ def _next_trading_days(start: date, n: int) -> list:
     return days
 
 
-# ─── Main prediction logic ────────────────────────────────────────────────────
+# --- Main prediction logic --------------------------------------------------
 
 def run():
     raw = sys.stdin.read()
@@ -142,12 +143,12 @@ def run():
         print(json.dumps({"ok": False, "error": f"JSON parse error: {e}"}))
         return
 
-    symbol     = payload.get("symbol", "")
-    market     = payload.get("market", "US")
-    bars       = payload.get("bars", [])
+    symbol      = payload.get("symbol", "")
+    market      = payload.get("market", "US")
+    bars        = payload.get("bars", [])
     analyst_raw = payload.get("analystFeatures") or {}
 
-    # Backward compatibility: "horizon" int → wrap as [horizon]
+    # Backward compatibility
     if "horizons" in payload:
         horizons = [int(h) for h in payload["horizons"]]
     elif "horizon" in payload:
@@ -155,14 +156,12 @@ def run():
     else:
         horizons = list(range(1, 21))
 
-    # Validate horizons
     if not horizons or any(h < 1 or h > 60 for h in horizons):
         print(json.dumps({"ok": False, "error": "horizons must be integers in [1, 60]"}))
         return
 
     max_horizon = max(horizons)
 
-    # ── Validate bar count ────────────────────────────────────────────────────
     if len(bars) < 60:
         print(json.dumps({"ok": False, "error": "insufficient history"}))
         return
@@ -171,7 +170,7 @@ def run():
     if len(bars) < 504:
         warning = "less_than_2y_data"
 
-    # ── Build DataFrame ───────────────────────────────────────────────────────
+    # Build DataFrame
     df = pd.DataFrame(bars)
     df = df.sort_values("date").reset_index(drop=True)
     for col in ("open", "high", "low", "close", "volume"):
@@ -182,47 +181,51 @@ def run():
     df = _build_features(df, use_analyst=use_analyst, analyst=analyst_raw)
     feature_cols = _base_feature_cols(use_analyst)
 
-    # Base date and price (last bar = T day)
+    # Base date/price (last bar = T day)
     last_bar    = df.iloc[-1]
     base_date   = str(last_bar["date"])[:10]
     base_price  = float(last_bar["close"])
     base_date_obj = date.fromisoformat(base_date)
 
-    # OOS split: last ~20% of data (at least 20 bars, capped by max_horizon headroom)
+    # OOS split
     n_total = len(df)
     oos_size = max(20, int(n_total * 0.2))
-    # Ensure enough train rows for the largest horizon
     oos_size = min(oos_size, n_total - max_horizon - 30)
     if oos_size < 10:
         print(json.dumps({"ok": False, "error": "insufficient history for OOS split"}))
         return
-    train_cutoff = n_total - oos_size   # index of first OOS row
+    train_cutoff = n_total - oos_size
 
-    # Pre-compute seed features (from last bar)
+    # Seed features (from last bar)
     seed_features = []
     for col in feature_cols:
         val = last_bar.get(col, 0.0)
         seed_features.append(float(val) if pd.notna(val) else 0.0)
     X_seed = np.array([seed_features])
 
-    # Pre-compute target trading dates
-    # We need up to max_horizon trading days ahead
+    # Future trading dates
     all_future_dates = _next_trading_days(base_date_obj, max(horizons))
-    future_date_map = {h: all_future_dates[h - 1] for h in horizons}
+    future_date_map  = {h: all_future_dates[h - 1] for h in horizons}
 
-    # ── Per-horizon training ──────────────────────────────────────────────────
+    # --- Bollinger forward band parameters ----------------------------------
+    # Compute daily log-return sigma from the last 20 bars.
+    # Upper/lower = median_price * exp(+-2 * sigma * sqrt(h))
+    # This is symmetric around median_price by construction -- no inversion.
+    boll_window = min(20, len(df))
+    recent_closes = df["close"].iloc[-boll_window:].values
+    daily_log_returns = np.diff(np.log(recent_closes.astype(float)))
+    daily_sigma = float(np.std(daily_log_returns, ddof=1)) if len(daily_log_returns) > 1 else 0.01
+
+    # --- Per-horizon training -----------------------------------------------
     horizon_results = {}
 
     for h in horizons:
-        # Target: cumulative return at horizon h (shift back by h from each row)
         df_h = df.copy()
         df_h["target_h"] = df_h["close"].pct_change(h).shift(-h)
 
-        # Train set: up to train_cutoff, drop rows lacking target or features
         train_df = df_h.iloc[:train_cutoff].dropna(subset=feature_cols + ["target_h"])
 
         if len(train_df) < 30:
-            # Not enough training data for this horizon — skip
             continue
 
         X_train = train_df[feature_cols].values
@@ -232,41 +235,19 @@ def run():
                                       min_samples_leaf=3)
         model.fit(X_train, y_train)
 
-        # ── OOS residuals for uncertainty band ───────────────────────────────
-        oos_df = df_h.iloc[train_cutoff:].dropna(subset=feature_cols + ["target_h"])
-        oos_residuals = []
-        if len(oos_df) >= 5:
-            X_oos = oos_df[feature_cols].values
-            y_oos = oos_df["target_h"].values
-            y_pred_oos = model.predict(X_oos)
-            oos_residuals = (y_oos - y_pred_oos).tolist()
-
-        # ── Predict on seed (last bar) ────────────────────────────────────────
-        # Per-tree distribution for uncertainty + probability
-        tree_preds = np.array([t.predict(X_seed)[0] for t in model.estimators_])
-        median_return = float(np.median(tree_preds))
+        # Predict on seed
+        tree_preds     = np.array([t.predict(X_seed)[0] for t in model.estimators_])
+        median_return  = float(np.median(tree_preds))
         up_probability = float(np.mean(tree_preds > 0))
 
-        # OOS residual band (25th / 75th pct of residuals)
-        if len(oos_residuals) >= 5:
-            res_arr = np.array(oos_residuals)
-            band_lower_offset = float(np.percentile(res_arr, 25))
-            band_upper_offset = float(np.percentile(res_arr, 75))
-        else:
-            # Fallback: ±std of tree predictions
-            std_r = float(np.std(tree_preds))
-            band_lower_offset = -std_r
-            band_upper_offset =  std_r
-
-        # Price predictions: P_T × (1 + r̂_h)
+        # Bollinger forward band: median +/- 2*sigma*sqrt(h)
+        # Always symmetric around median_price
+        h_sigma      = daily_sigma * math.sqrt(h)
         median_price = round(base_price * (1 + median_return), 4)
-        lower_price  = round(base_price * (1 + median_return + band_lower_offset), 4)
-        upper_price  = round(base_price * (1 + median_return + band_upper_offset), 4)
-        # Ensure lower <= upper
-        if lower_price > upper_price:
-            lower_price, upper_price = upper_price, lower_price
+        upper_price  = round(median_price * math.exp( 2 * h_sigma), 4)
+        lower_price  = round(median_price * math.exp(-2 * h_sigma), 4)
 
-        # Feature importance (top 5)
+        # Feature importance top 5
         importances = model.feature_importances_
         fi_pairs = sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True)[:5]
         top_features = [
@@ -280,7 +261,7 @@ def run():
             "medianPrice":   median_price,
             "lowerPrice":    lower_price,
             "upperPrice":    upper_price,
-            "medianReturn":  round(median_return * 100, 4),   # % units
+            "medianReturn":  round(median_return * 100, 4),
             "upProbability": round(up_probability, 4),
             "topFeatures":   top_features,
         }
@@ -289,7 +270,6 @@ def run():
         print(json.dumps({"ok": False, "error": "all horizons failed training"}))
         return
 
-    # ── Build output ──────────────────────────────────────────────────────────
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     meta: dict = {
@@ -299,6 +279,7 @@ def run():
         "modelVersion": "RF_v2",
         "featuresUsed": feature_cols,
         "useAnalyst":   use_analyst,
+        "dailySigma":   round(daily_sigma, 6),
     }
     if warning:
         meta["warning"] = warning
