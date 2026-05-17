@@ -1496,8 +1496,7 @@ export async function registerRoutes(
     };
     if (!symbol || !market)
       return res.status(400).json({ error: "symbol and market are required" });
-    if (!horizonDays || ![5, 20, 60].includes(horizonDays))
-      return res.status(400).json({ error: "horizonDays must be 5, 20, or 60" });
+    // horizonDays is accepted but ignored — always run full 1..20 horizon set
     try {
       // Get current price from latest historical bar
       const recentBars = await storage.getHistoricalPricesByRange(
@@ -1508,14 +1507,16 @@ export async function registerRoutes(
       const currentPrice = recentBars.length > 0
         ? recentBars.sort((a, b) => b.date.localeCompare(a.date))[0].close
         : 0;
+      // Always run full 1..20 horizons so ForecastChart gets all 20 points
       const result = await runPrediction({
         symbol: symbol.toUpperCase(),
         market: market.toUpperCase() as "TW" | "US",
-        horizonDays: horizonDays as 5 | 20 | 60,
+        horizons: Array.from({ length: 20 }, (_, i) => i + 1),
         currentPrice,
         saveToDb: true,
       });
-      res.json(result);
+      // Attach the requested horizonDays for frontend display
+      res.json({ ...result, horizonDays: horizonDays ?? 20 });
     } catch (e: any) {
       console.error(`[prediction/run] ${symbol} h=${horizonDays}:`, e.message);
       res.status(500).json({ ok: false, error: e.message ?? "Prediction failed" });
