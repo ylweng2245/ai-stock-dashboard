@@ -22,6 +22,32 @@ import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
 import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
 
+const FEATURE_LABELS: Record<string, string> = {
+  analyst_bullish_pct: '分析師樂觀占比',
+  analyst_bearish_pct: '分析師悲觀占比',
+  analyst_pt_upside: '目標價上行空間',
+  analyst_upgrade_net: '評級淨升級',
+  analyst_pt_dispersion: '目標價離散度',
+  pt_change_30d_pct: '目標價30日變化',
+  pt_revision_count: '目標價修訂次數',
+  revenue_qoq: '營收季增率',
+  revenue_yoy: '營收年增率',
+  gross_margin: '毛利率',
+  net_margin: '淨利率',
+  eps_qoq: 'EPS季增率',
+  days_since_earnings: '距財報天數',
+  fear_greed: '恐懼貪婪指數',
+  fear_greed_delta_7d: '恐貪7日變化',
+  vix_level: 'VIX水準',
+  vix_5d_change: 'VIX5日變化',
+  sector_rs_5d: '板塊5日RS',
+  sector_rs_20d: '板塊20日RS',
+  news_sentiment_score: '新聞情緒分',
+  news_bullish_ratio: '新聞看多比率',
+  news_sentiment_3d_avg: '情緒3日均值',
+  news_article_count: '新聞熱度',
+};
+
 // ─── Trade dot types ─────────────────────────────────────────────────────────
 interface TradeDot {
   date: string;       // chart date key ("MM-DD")
@@ -629,6 +655,13 @@ interface PredictionRun {
   symbol: string;
   market: string;
   horizons: Record<string, HorizonPoint> | null;
+  meta?: {
+    featureCoverage?: {
+      total: number;
+      available: number;
+      missing: string[];
+    };
+  };
 }
 
 interface HistoryRunItem {
@@ -1177,6 +1210,36 @@ export default function TechnicalAnalysis() {
                 <RefreshCw size={10} className={triggerPredMutation.isPending ? "animate-spin" : ""} />
                 {triggerPredMutation.isPending ? "預測中..." : "重新預測"}
               </button>
+
+              {/* Feature coverage badge */}
+              {latestPrediction?.meta?.featureCoverage && (() => {
+                const fc = latestPrediction.meta!.featureCoverage!;
+                const color = fc.available >= fc.total
+                  ? '#10b981'
+                  : fc.available / fc.total >= 0.8
+                  ? '#f59e0b'
+                  : '#ef4444';
+                return (
+                  <div className="relative group cursor-default">
+                    <span
+                      className="text-xs px-2 py-0.5 rounded border"
+                      style={{ color, borderColor: color }}
+                    >
+                      預測指標 ({fc.available}/{fc.total})
+                    </span>
+                    {fc.missing.length > 0 && (
+                      <div className="absolute bottom-full left-0 mb-1 z-50 hidden group-hover:flex flex-col bg-gray-900 border border-gray-700 rounded p-2 min-w-[160px] shadow-lg">
+                        <span className="text-xs text-gray-400 mb-1">缺少資料：</span>
+                        {fc.missing.map((key) => (
+                          <span key={key} className="text-xs text-gray-200">
+                            • {FEATURE_LABELS[key] ?? key}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Compare history dropdown */}
               <div className="relative">
