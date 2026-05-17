@@ -1304,6 +1304,114 @@ export async function registerRoutes(
     res.json({ ok: true, saved, errors });
   });
 
+  /**
+   * POST /api/internal/analyst-sync
+   * Called by analyst_sync_cron.py to write analyst target data into the DB.
+   * Requires X-Sync-Secret header matching INTERNAL_SYNC_SECRET env var.
+   *
+   * Body: Array of { symbol, market, institution, rating, rating_category,
+   *                   score, target_price, previous_target_price, analyst_date, source_sheet }
+   */
+  app.post("/api/internal/analyst-sync", async (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const items = req.body as any[];
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Expected non-empty array" });
+    }
+    const now = Date.now();
+    const rows: InsertAnalystTarget[] = [];
+    for (const item of items) {
+      const sym = String(item.symbol ?? "").toUpperCase();
+      const mkt = String(item.market ?? "US").toUpperCase();
+      const institution = String(item.institution ?? "").trim();
+      const analystDate = String(item.analyst_date ?? "").trim();
+      if (!sym || !institution || !analystDate) continue;
+
+      const rawRating = String(item.rating ?? "").trim();
+      const rawCategory = String(item.rating_category ?? "").trim().toLowerCase();
+      const { rating, category, score } = rawCategory === "bullish" || rawCategory === "bearish" || rawCategory === "neutral"
+        ? { rating: rawRating, category: rawCategory as "bullish" | "neutral" | "bearish", score: rawCategory === "bullish" ? 5 : rawCategory === "bearish" ? 1 : 3 as 5 | 3 | 1 }
+        : normalizeAnalystRating(rawRating);
+
+      const targetPrice = parseFloat(item.target_price);
+      if (isNaN(targetPrice) || targetPrice <= 0) continue;
+      const prevTarget = item.previous_target_price != null ? parseFloat(item.previous_target_price) : null;
+
+      rows.push({
+        symbol: sym,
+        market: mkt,
+        institution,
+        rating,
+        ratingCategory: category,
+        score,
+        targetPrice,
+        previousTargetPrice: isNaN(prevTarget as any) ? null : prevTarget,
+        analystDate,
+        sourceSheet: String(item.source_sheet ?? "auto-sync"),
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    try {
+      await storage.upsertAnalystTargets(rows);
+      console.log(`[analyst-sync] synced ${rows.length}/${items.length} rows`);
+      res.json({ ok: true, synced: rows.length });
+    } catch (e: any) {
+      console.error("[analyst-sync] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * POST /api/internal/historical-prices-sync
+   * Called by sector_etf_cron.py to write ETF/stock historical prices into the DB.
+   * Requires X-Sync-Secret header matching INTERNAL_SYNC_SECRET env var.
+   *
+   * Body: { symbol, market, prices: [{ date, open, high, low, close, volume }] }
+   */
+  app.post("/api/internal/historical-prices-sync", async (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { symbol, market, prices } = req.body as {
+      symbol?: string; market?: string; prices?: any[];
+    };
+    if (!symbol || !market || !Array.isArray(prices) || prices.length === 0) {
+      return res.status(400).json({ error: "symbol, market, and non-empty prices array required" });
+    }
+    const sym = symbol.toUpperCase();
+    const mkt = market.toUpperCase();
+    const now = Date.now();
+
+    const rows = prices
+      .filter((p: any) => p.date && p.close != null)
+      .map((p: any) => ({
+        symbol: sym,
+        market: mkt,
+        date: String(p.date).slice(0, 10),
+        open: parseFloat(p.open) || parseFloat(p.close),
+        high: parseFloat(p.high) || parseFloat(p.close),
+        low: parseFloat(p.low) || parseFloat(p.close),
+        close: parseFloat(p.close),
+        volume: parseInt(p.volume) || 0,
+        updatedAt: now,
+      }));
+
+    try {
+      await storage.upsertHistoricalPrices(rows);
+      console.log(`[historical-prices-sync] ${sym}: upserted ${rows.length} bars`);
+      res.json({ ok: true, synced: rows.length });
+    } catch (e: any) {
+      console.error("[historical-prices-sync] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ──────────────────────────────────────────────────────────────────
   // V6.1: POST /api/history/backfill-2y  — backfill all watchlist symbols to 2 years
   // ──────────────────────────────────────────────────────────────────

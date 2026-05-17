@@ -38,9 +38,13 @@ Algorithm: HistGradientBoostingRegressor (handles NaN natively)
 """
 
 import sys
+import os
 import json
 import math
 from datetime import date, timedelta, timezone, datetime
+
+sys.path.insert(0, os.path.dirname(__file__))
+from features_extra import get_extra_features
 
 try:
     import numpy as np
@@ -125,34 +129,31 @@ def _build_features(df: pd.DataFrame, use_analyst: bool, analyst: dict) -> pd.Da
     # Intraday range (volatility proxy)
     df["hl_pct"]         = (df["high"] - df["low"]) / c.replace(0, np.nan)
 
-    # ── Analyst features (optional) ──────────────────────────────────────────
-    if use_analyst:
-        df["upside_avg_ratio"] = analyst.get("upsideAvgRatio") or 0.0
-        df["band_width"]       = analyst.get("bandWidth") or 0.0
-        df["bullish_ratio"]    = analyst.get("bullishRatio") or 0.0
-        df["avg_score"]        = analyst.get("avgScore") or 0.0
-
     return df
 
 
+FEATURES = [
+    # Original 19 (keep exactly as-is)
+    "ret_1d", "ret_3d", "close_pct_5d", "close_pct_20d",
+    "rsi_14", "vol_ratio_20d", "atr_14_pct", "ma20_dist_pct",
+    "ma60_dist_pct", "bb_z", "lag_ret_1", "lag_ret_2",
+    "lag_ret_3", "lag_ret_5", "macd_norm", "macd_hist_norm",
+    "weekday", "month", "hl_pct",
+    # Layer 1: Analyst
+    "analyst_bullish_pct", "analyst_bearish_pct", "analyst_pt_upside",
+    "analyst_upgrade_net", "analyst_pt_dispersion",
+    "pt_change_30d_pct", "pt_revision_count",
+    # Layer 2: Fundamentals
+    "revenue_qoq", "revenue_yoy", "gross_margin", "net_margin",
+    "eps_qoq", "days_since_earnings",
+    # Layer 3: Market + Sector
+    "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
+    "sector_rs_5d", "sector_rs_20d",
+]
+
+
 def _feature_cols(use_analyst: bool) -> list:
-    cols = [
-        # v3 base (10)
-        "ret_1d", "ret_3d",
-        "close_pct_5d", "close_pct_20d",
-        "rsi_14",
-        "vol_ratio_20d", "atr_14_pct",
-        "ma20_dist_pct", "ma60_dist_pct",
-        "bb_z",
-        # v4 new (9)
-        "lag_ret_1", "lag_ret_2", "lag_ret_3", "lag_ret_5",
-        "macd_norm", "macd_hist_norm",
-        "weekday", "month",
-        "hl_pct",
-    ]
-    if use_analyst:
-        cols += ["upside_avg_ratio", "band_width", "bullish_ratio", "avg_score"]
-    return cols
+    return FEATURES
 
 
 FEATURE_LABELS = {
@@ -175,10 +176,28 @@ FEATURE_LABELS = {
     "weekday":           "星期幾",
     "month":             "月份",
     "hl_pct":            "日內振幅",
-    "upside_avg_ratio":  "分析師上行空間",
-    "band_width":        "分析師目標區間",
-    "bullish_ratio":     "樂觀評級占比",
-    "avg_score":         "分析師平均評分",
+    # Layer 1: Analyst
+    "analyst_bullish_pct":  "分析師樂觀占比",
+    "analyst_bearish_pct":  "分析師悲觀占比",
+    "analyst_pt_upside":    "目標價上行空間",
+    "analyst_upgrade_net":  "評級淨升級",
+    "analyst_pt_dispersion":"目標價離散度",
+    "pt_change_30d_pct":    "目標價30日變化",
+    "pt_revision_count":    "目標價修訂次數",
+    # Layer 2: Fundamentals
+    "revenue_qoq":          "營收季增率",
+    "revenue_yoy":          "營收年增率",
+    "gross_margin":         "毛利率",
+    "net_margin":           "淨利率",
+    "eps_qoq":              "EPS季增率",
+    "days_since_earnings":  "距財報天數",
+    # Layer 3: Market + Sector
+    "fear_greed":           "恐懼貪婪指數",
+    "fear_greed_delta_7d":  "恐貪7日變化",
+    "vix_level":            "VIX水準",
+    "vix_5d_change":        "VIX5日變化",
+    "sector_rs_5d":         "板塊5日RS",
+    "sector_rs_20d":        "板塊20日RS",
 }
 
 
@@ -236,6 +255,40 @@ def run():
     use_analyst  = analyst_raw.get("hasConsensus", False)
     df           = _build_features(df, use_analyst, analyst_raw)
     feature_cols = _feature_cols(use_analyst)
+
+    # ── Layer 1+2+3 extra features from DB ───────────────────────────────────
+    db_path = os.environ.get("DB_PATH", "data.db")
+    extra_cache = {}
+    for idx, row in df.iterrows():
+        d = row["date"]
+        if d not in extra_cache:
+            try:
+                d_obj = pd.Timestamp(d).date() if not isinstance(d, date) else d
+                extra_cache[d] = get_extra_features(symbol, market, d_obj, db_path=db_path)
+            except Exception:
+                extra_cache[d] = {}
+
+    # Merge extra features into DataFrame columns
+    extra_keys = [
+        "analyst_bullish_pct", "analyst_bearish_pct", "analyst_pt_dispersion",
+        "analyst_upgrade_net", "pt_change_30d_pct", "pt_revision_count",
+        "revenue_qoq", "revenue_yoy", "gross_margin", "net_margin",
+        "eps_qoq", "days_since_earnings",
+        "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
+        "sector_rs_5d", "sector_rs_20d",
+    ]
+    for key in extra_keys:
+        df[key] = df["date"].map(lambda d, k=key: extra_cache.get(d, {}).get(k, float("nan")))
+
+    # analyst_pt_upside: (avg_pt / close - 1) — requires close price per row
+    def _calc_pt_upside(row):
+        extra = extra_cache.get(row["date"], {})
+        avg_pt = extra.get("analyst_avg_pt", float("nan"))
+        close_price = row["close"]
+        if close_price and not math.isnan(avg_pt):
+            return avg_pt / close_price - 1
+        return float("nan")
+    df["analyst_pt_upside"] = df.apply(_calc_pt_upside, axis=1)
 
     # Base date / price
     last_bar    = df.iloc[-1]
