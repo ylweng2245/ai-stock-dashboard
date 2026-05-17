@@ -500,7 +500,7 @@ export async function registerRoutes(
 
 ${ctx}
 
-請嚴格根據以上數據進行分析，不要憑空假設數字。`;
+分析時請優先引用以上數據作為個人持倉與量化依據，並結合你對該公司、產業與總體經濟的知識給出整合性回答。`;
 
     const prompts: Record<string, string> = {
       trade: `${base}
