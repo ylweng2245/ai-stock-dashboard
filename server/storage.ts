@@ -726,8 +726,13 @@ export class DatabaseStorage implements IStorage {
 
   // ─── Model Predictions (V6.1) ────────────────────────────────────────────────────
 
-  /** Always INSERT a new row — never UPDATE (history is append-only). */
+  /** Insert a prediction row — deletes any existing row for same symbol+market+date first (keep one per day). */
   insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number }): void {
+    // Delete existing predictions for same symbol+market+date (keep only latest per day)
+    sqlite.prepare(`
+      DELETE FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND date(run_at) = date(?)
+    `).run(row.symbol, row.market, row.runAt);
     sqlite.prepare(`
       INSERT INTO modelpredictions
         (symbol, market, model_name, horizon_days, run_at, start_date, end_date,
@@ -858,13 +863,20 @@ export class DatabaseStorage implements IStorage {
     market: string,
     limit: number = 10,
   ): Array<{ run_id: string; runAt: string; baseDate: string }> {
+    // One row per calendar day — pick the row with the latest run_at within each day
     const rows = sqlite.prepare(`
-      SELECT DISTINCT run_id, run_at, base_date
+      SELECT run_id, run_at, base_date
       FROM modelpredictions
       WHERE symbol = ? AND market = ? AND run_id IS NOT NULL
+        AND (run_at, rowid) IN (
+          SELECT run_at, MAX(rowid)
+          FROM modelpredictions
+          WHERE symbol = ? AND market = ? AND run_id IS NOT NULL
+          GROUP BY date(run_at)
+        )
       ORDER BY run_at DESC
       LIMIT ?
-    `).all(symbol, market, limit) as any[];
+    `).all(symbol, market, symbol, market, limit) as any[];
     return rows.map(r => ({
       run_id:   r.run_id,
       runAt:    r.run_at,

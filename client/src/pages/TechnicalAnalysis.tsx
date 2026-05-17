@@ -1249,7 +1249,7 @@ export default function TechnicalAnalysis() {
                 >
                   <History size={10} />
                   {comparePrediction ? (
-                    <span className="text-[#EAB308]">對比：{comparePrediction.baseDate ?? comparePrediction.runAt?.slice(0,10)}</span>
+                    <span className="text-[#EAB308]">對比：{comparePrediction.runAt?.slice(0,10)}</span>
                   ) : (
                     <span>+ 對比歷史預測</span>
                   )}
@@ -1279,7 +1279,7 @@ export default function TechnicalAnalysis() {
                           setHistoryOpen(false);
                         }}
                       >
-                        {run.baseDate} <span className="text-muted-foreground ml-1">{run.runAt?.slice(0,10)}</span>
+                        {run.runAt?.slice(0, 10)}
                       </button>
                     ))}
                     {isCompareFetching && (
