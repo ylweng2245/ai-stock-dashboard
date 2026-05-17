@@ -125,7 +125,21 @@ export default function AIInsights() {
 
   const handleCopy = async () => {
     if (!generatedPrompt) return;
-    await navigator.clipboard.writeText(generatedPrompt);
+    try {
+      // Try modern clipboard API first
+      await navigator.clipboard.writeText(generatedPrompt);
+    } catch {
+      // Fallback: create a temporary textarea and execCommand
+      const el = document.createElement("textarea");
+      el.value = generatedPrompt;
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

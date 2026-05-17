@@ -338,17 +338,54 @@ export async function registerRoutes(
     lines.push(`股票代碼：${symbol}（${name}）| 市場：${market === "TW" ? "台灣證券交易所" : "美國股市"}`);
     lines.push(`現價：${cur}${price.toLocaleString()} | 今日漲跌：${change >= 0 ? "+" : ""}${change.toFixed(2)}%`);
 
-    // ── 持倉資訊 ──
+    // ── 持倉資訊（從 transactions 計算，與 portfolio/computed 相同邏輯）──
     try {
-      const holding = sqlite.prepare(
-        `SELECT shares, avg_cost FROM holdings WHERE symbol=? AND market=? LIMIT 1`
-      ).get(symbol, market) as { shares: number; avg_cost: number } | undefined;
-      if (holding) {
-        const cost = holding.avg_cost;
-        const pnl = ((price - cost) / cost * 100);
-        const currentValue = price * holding.shares;
+      const txns = sqlite.prepare(
+        `SELECT side, shares, total_cost FROM transactions WHERE symbol=? AND market=? ORDER BY trade_date ASC`
+      ).all(symbol, market) as { side: string; shares: number; total_cost: number }[];
+
+      const isTW = market === "TW";
+      let holdingShares = 0;
+      let holdingCost = 0;
+      let realizedGain = 0;
+      const lots: { shares: number; unitCost: number }[] = [];
+
+      for (const tx of txns) {
+        if (tx.side === "buy") {
+          const cost = Math.abs(tx.total_cost);
+          holdingShares += tx.shares;
+          holdingCost += cost;
+          if (isTW) lots.push({ shares: tx.shares, unitCost: cost / tx.shares });
+        } else if (tx.side === "sell") {
+          const proceeds = Math.abs(tx.total_cost);
+          if (isTW) {
+            let rem = tx.shares; let cb = 0;
+            while (rem > 0.0001 && lots.length > 0) {
+              const lot = lots[0];
+              if (lot.shares <= rem + 0.0001) { cb += lot.unitCost * lot.shares; rem -= lot.shares; holdingShares -= lot.shares; holdingCost -= lot.unitCost * lot.shares; lots.shift(); }
+              else { cb += lot.unitCost * rem; holdingShares -= rem; holdingCost -= lot.unitCost * rem; lot.shares -= rem; rem = 0; }
+            }
+            realizedGain += proceeds - cb;
+          } else {
+            const avgNow = holdingShares > 0 ? holdingCost / holdingShares : 0;
+            const cb = avgNow * tx.shares;
+            realizedGain += proceeds - cb;
+            holdingShares -= tx.shares;
+            holdingCost -= cb;
+          }
+          if (holdingShares < 0.0001) { holdingShares = 0; holdingCost = 0; }
+        } else if (tx.side === "dividend") {
+          realizedGain += tx.total_cost;
+        }
+      }
+
+      if (holdingShares > 0.0001) {
+        const avgCost = holdingCost / holdingShares;
+        const pnl = ((price - avgCost) / avgCost * 100);
+        const currentValue = price * holdingShares;
         lines.push(`\n【持倉】`);
-        lines.push(`持有股數：${holding.shares.toLocaleString()} | 平均成本：${cur}${cost.toFixed(2)} | 現值：${cur}${currentValue.toLocaleString(undefined, {maximumFractionDigits:0})} | 未實現損益：${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`);
+        lines.push(`持有股數：${holdingShares.toFixed(2)} | 平均成本：${cur}${avgCost.toFixed(2)} | 現值：${cur}${currentValue.toFixed(0)} | 未實現損益：${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`);
+        if (realizedGain !== 0) lines.push(`已實現損益：${cur}${realizedGain.toFixed(2)}`);
       } else {
         lines.push(`\n【持倉】`);
         lines.push(`目前未持有此股票`);
@@ -375,7 +412,12 @@ export async function registerRoutes(
         // Latest 2 quarters revenue + EPS trend
         if (qInc.length >= 2) {
           const recent = qInc.slice(0, 2);
-          const qStr = recent.map((q: any) => `${q.period}: 營收${cur}${(q.revenue/1e9).toFixed(2)}B EPS${cur}${q.eps_diluted ?? "N/A"}`).join(" | ");
+          const qStr = recent.map((q: any) => {
+            const period = q.period || q.date || q.quarter || "—";
+            const rev = q.revenue ? `${cur}${(q.revenue/1e9).toFixed(2)}B` : "N/A";
+            const eps = q.eps_diluted ?? q.eps ?? "N/A";
+            return `${period}: 營收${rev} EPS${eps !== "N/A" ? cur + eps : "N/A"}`;
+          }).join(" | ");
           lines.push(`近期季報：${qStr}`);
         }
       }
