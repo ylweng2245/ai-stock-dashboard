@@ -14,7 +14,7 @@
  *  5. Idempotent: calling start() multiple times is safe.
  */
 
-import { storage } from "./storage";
+import { storage, sqlite } from "./storage";
 import { runPrediction } from "./mlPredictionService";
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -199,6 +199,136 @@ async function runSweep(label = "sweep"): Promise<void> {
   }
 }
 
+// ─── Weekly actuals fill + weight recompute ─────────────────────────────────
+
+let _weeklyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function msUntilNextSaturday(): number {
+  const now = new Date();
+  // Target: Saturday UTC 14:00
+  const next = new Date(now);
+  const day = next.getUTCDay(); // 0=Sun ... 6=Sat
+  const daysUntilSat = ((6 - day) + 7) % 7;
+  next.setUTCDate(next.getUTCDate() + daysUntilSat);
+  next.setUTCHours(14, 0, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 7);
+  return next.getTime() - now.getTime();
+}
+
+export async function fillActualsAndRecomputeWeights(): Promise<void> {
+  console.log("[predSched] fillActuals — start");
+
+  // 1. Find unfilled prediction rows whose target date has already passed
+  const unfilled = sqlite.prepare(`
+    SELECT id, symbol, market, run_date, horizon, base_price, predicted_return
+    FROM prediction_tracking
+    WHERE actual_price IS NULL
+      AND date(run_date, '+' || horizon || ' days') <= date('now')
+  `).all() as Array<{
+    id: number; symbol: string; market: string;
+    run_date: string; horizon: number;
+    base_price: number; predicted_return: number;
+  }>;
+
+  console.log(`[predSched] fillActuals — ${unfilled.length} rows to fill`);
+
+  let filledCount = 0;
+  for (const row of unfilled) {
+    // Target date = run_date + horizon days
+    const targetDate = new Date(row.run_date);
+    targetDate.setUTCDate(targetDate.getUTCDate() + row.horizon);
+    const targetStr = targetDate.toISOString().slice(0, 10);
+
+    // Look up actual close within ±5 trading days
+    let actualRow: { date: string; close: number } | undefined;
+    for (let offset = 0; offset <= 5; offset++) {
+      const tryDate = new Date(targetDate);
+      tryDate.setUTCDate(tryDate.getUTCDate() + offset);
+      const tryStr = tryDate.toISOString().slice(0, 10);
+      const found = sqlite.prepare(
+        `SELECT date, close FROM historical_prices WHERE symbol=? AND date=? LIMIT 1`
+      ).get(row.symbol, tryStr) as { date: string; close: number } | undefined;
+      if (found) { actualRow = found; break; }
+    }
+    if (!actualRow) continue;
+
+    const actualReturn = (actualRow.close - row.base_price) / row.base_price;
+    const error = actualReturn - row.predicted_return;
+    const directionCorrect = Math.sign(actualReturn) === Math.sign(row.predicted_return) ? 1 : 0;
+
+    sqlite.prepare(`
+      UPDATE prediction_tracking
+      SET actual_price=?, actual_return=?, error=?, direction_correct=?, filled_at=?
+      WHERE id=?
+    `).run(actualRow.close, actualReturn, error, directionCorrect, new Date().toISOString(), row.id);
+    filledCount++;
+  }
+  console.log(`[predSched] fillActuals — filled ${filledCount} rows`);
+
+  // 2. Recompute ensemble weights if we have enough data
+  // Get all filled rows grouped by model component (we approximate using all filled rows)
+  const filled = sqlite.prepare(`
+    SELECT symbol, actual_return, predicted_return, error, direction_correct
+    FROM prediction_tracking
+    WHERE actual_return IS NOT NULL
+  `).all() as Array<{
+    symbol: string; actual_return: number;
+    predicted_return: number; error: number; direction_correct: number;
+  }>;
+
+  const totalSamples = filled.length;
+  const uniqueSymbols = new Set(filled.map(r => r.symbol)).size;
+  const weeksOfData = Math.floor(totalSamples / Math.max(uniqueSymbols, 1));
+
+  if (totalSamples < 14) {
+    console.log(`[predSched] weights — not enough data yet (${totalSamples} samples, need 14)`);
+    return;
+  }
+
+  // Compute aggregate direction accuracy and MAE from ensemble predictions
+  // (We don't store per-model predictions separately, so we use ensemble totals
+  //  and adjust weights heuristically based on overall direction accuracy)
+  const dirAcc = filled.filter(r => r.direction_correct === 1).length / totalSamples;
+  const mae    = filled.reduce((s, r) => s + Math.abs(r.error), 0) / totalSamples;
+
+  // Heuristic weight adjustment based on direction accuracy
+  let w_hgb: number, w_lgb: number, w_rf: number;
+  if (dirAcc < 0.48) {
+    // Below threshold — shift weight to HGB (most stable)
+    w_hgb = 0.55; w_lgb = 0.30; w_rf = 0.15;
+  } else if (dirAcc > 0.55) {
+    // Above threshold — balance HGB and LGB
+    w_hgb = 0.40; w_lgb = 0.40; w_rf = 0.20;
+  } else {
+    // Neutral — default weights
+    w_hgb = 0.45; w_lgb = 0.35; w_rf = 0.20;
+  }
+
+  sqlite.prepare(`
+    INSERT INTO ensemble_weights
+      (computed_at, weeks_of_data, sample_count, w_hgb, w_lgb, w_rf,
+       dir_acc_hgb, dir_acc_lgb, dir_acc_rf, mae_hgb, mae_lgb, mae_rf, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    new Date().toISOString(), weeksOfData, totalSamples,
+    w_hgb, w_lgb, w_rf,
+    dirAcc, dirAcc, dirAcc,  // per-model dir_acc approximated as ensemble
+    mae, mae, mae,            // per-model MAE approximated as ensemble
+    `auto: dirAcc=${dirAcc.toFixed(3)}, mae=${mae.toFixed(4)}, n=${totalSamples}`
+  );
+  console.log(`[predSched] weights updated — hgb=${w_hgb} lgb=${w_lgb} rf=${w_rf} (dirAcc=${dirAcc.toFixed(3)}, n=${totalSamples})`);
+}
+
+function scheduleWeeklyFill(): void {
+  const ms = msUntilNextSaturday();
+  console.log(`[predSched] next weekly fill in ${(ms / 3600_000).toFixed(1)}h`);
+  if (_weeklyTimer) clearTimeout(_weeklyTimer);
+  _weeklyTimer = setTimeout(async () => {
+    await fillActualsAndRecomputeWeights();
+    scheduleWeeklyFill(); // re-schedule for next week
+  }, ms);
+}
+
 // ─── Daily scheduler ────────────────────────────────────────────────────────
 
 function scheduleDailyRun(): void {
@@ -229,6 +359,9 @@ export function startPredictionScheduler(): void {
 
   // Schedule daily repeat
   scheduleDailyRun();
+
+  // Schedule weekly Saturday fill + weight recompute
+  scheduleWeeklyFill();
 }
 
 /**

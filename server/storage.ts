@@ -1082,4 +1082,52 @@ try {
   // Already exists
 }
 
+// ── prediction_tracking table ────────────────────────────────────────────────
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS prediction_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    market        TEXT NOT NULL,
+    run_date      TEXT NOT NULL,
+    horizon       INTEGER NOT NULL,
+    base_price    REAL NOT NULL,
+    predicted_return REAL NOT NULL,
+    predicted_price  REAL NOT NULL,
+    actual_price  REAL,
+    actual_return REAL,
+    error         REAL,
+    direction_correct INTEGER,
+    filled_at     TEXT,
+    created_at    TEXT NOT NULL
+  )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS pt_symbol_horizon ON prediction_tracking (symbol, market, horizon)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS pt_run_date ON prediction_tracking (run_date)`);
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pt_run_id_horizon ON prediction_tracking (run_id, horizon)`);
+} catch {
+  // Already exists
+}
+
+// ── ensemble_weights table ───────────────────────────────────────────────────
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS ensemble_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    computed_at   TEXT NOT NULL,
+    weeks_of_data INTEGER NOT NULL,
+    sample_count  INTEGER NOT NULL,
+    w_hgb         REAL NOT NULL DEFAULT 0.45,
+    w_lgb         REAL NOT NULL DEFAULT 0.35,
+    w_rf          REAL NOT NULL DEFAULT 0.20,
+    dir_acc_hgb   REAL,
+    dir_acc_lgb   REAL,
+    dir_acc_rf    REAL,
+    mae_hgb       REAL,
+    mae_lgb       REAL,
+    mae_rf        REAL,
+    notes         TEXT
+  )`);
+} catch {
+  // Already exists
+}
+
 export const storage = new DatabaseStorage();

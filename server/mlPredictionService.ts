@@ -2,7 +2,7 @@
 import { spawn } from "child_process";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { storage } from "./storage";
+import { storage, sqlite } from "./storage";
 import { buildAnalystConsensusFeatures } from "./analystConsensusService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -205,6 +205,30 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
   // 6. Persist to DB
   if (saveToDb) {
     const horizonDays = hKeys.length > 0 ? hKeys[hKeys.length - 1] : (opts.horizonDays ?? 20);
+
+    // 6a. Write prediction_tracking rows (one per horizon)
+    if (result.horizons) {
+      try {
+        const stmt = sqlite.prepare(`
+          INSERT OR IGNORE INTO prediction_tracking
+            (run_id, symbol, market, run_date, horizon, base_price, predicted_return, predicted_price, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        const insertMany = sqlite.transaction(() => {
+          for (const h of hKeys) {
+            const hp = result.horizons![String(h)];
+            if (!hp) continue;
+            stmt.run(runId, symbol, market, todayStr, h, basePrice,
+              hp.medianReturn, hp.medianPrice, new Date().toISOString());
+          }
+        });
+        insertMany();
+        console.log(`[mlPrediction] tracking: wrote ${hKeys.length} rows for ${symbol} run_id=${runId}`);
+      } catch (trackErr: any) {
+        console.warn("[mlPrediction] prediction_tracking write failed:", trackErr?.message);
+      }
+    }
+
     try {
       await (storage as any).insertModelPrediction({
         symbol,
