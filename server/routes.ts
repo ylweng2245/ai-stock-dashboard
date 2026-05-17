@@ -328,25 +328,227 @@ export async function registerRoutes(
   });
 
   // ---- AI Chat ----
+
+  /** Build rich context string from DB for a given symbol */
+  function buildStockContext(symbol: string, market: string, price: number, change: number, name: string): string {
+    const cur = market === "TW" ? "NT" : "$";
+    const lines: string[] = [];
+
+    lines.push(`【基本資訊】`);
+    lines.push(`股票代碼：${symbol}（${name}）| 市場：${market === "TW" ? "台灣證券交易所" : "美國股市"}`);
+    lines.push(`現價：${cur}${price.toLocaleString()} | 今日漲跌：${change >= 0 ? "+" : ""}${change.toFixed(2)}%`);
+
+    // ── 持倉資訊 ──
+    try {
+      const holding = sqlite.prepare(
+        `SELECT shares, cost_basis, current_value FROM holdings WHERE symbol=? AND market=? LIMIT 1`
+      ).get(symbol, market) as { shares: number; cost_basis: number; current_value: number } | undefined;
+      if (holding) {
+        const cost = holding.cost_basis;
+        const value = price * holding.shares;
+        const pnl = ((price - cost) / cost * 100);
+        lines.push(`\n【持倉】`);
+        lines.push(`持有股數：${holding.shares.toLocaleString()} | 平均成本：${cur}${cost.toFixed(2)} | 未實現損益：${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`);
+      }
+    } catch { /* no holding */ }
+
+    // ── 基本面 ──
+    try {
+      const fd = sqlite.prepare(
+        `SELECT info_json, quarterly_income_json, eps_history_json, calendar_json FROM fundamental_data WHERE symbol=? AND market=? LIMIT 1`
+      ).get(symbol, market) as { info_json: string; quarterly_income_json: string; eps_history_json: string; calendar_json: string } | undefined;
+      if (fd) {
+        const info = JSON.parse(fd.info_json || "{}");
+        const cal  = JSON.parse(fd.calendar_json || "{}");
+        const qInc = JSON.parse(fd.quarterly_income_json || "[]") as any[];
+        lines.push(`\n【基本面】`);
+        if (info.pe_ratio)    lines.push(`本益比(PE)：${info.pe_ratio}x`);
+        if (info.eps_ttm)     lines.push(`EPS(TTM)：${cur}${info.eps_ttm}`);
+        if (info.revenue_growth_yoy !== undefined) lines.push(`營收 YoY：${(info.revenue_growth_yoy * 100).toFixed(1)}%`);
+        if (info.gross_margin !== undefined)       lines.push(`毛利率：${(info.gross_margin * 100).toFixed(1)}%`);
+        if (info.market_cap)  lines.push(`市值：${cur}${(info.market_cap / 1e9).toFixed(1)}B`);
+        if (info.sector)      lines.push(`產業：${info.sector}`);
+        if (cal.earnings_date) lines.push(`下次財報日：${cal.earnings_date}`);
+        // Latest 2 quarters revenue + EPS trend
+        if (qInc.length >= 2) {
+          const recent = qInc.slice(0, 2);
+          const qStr = recent.map((q: any) => `${q.period}: 營收${cur}${(q.revenue/1e9).toFixed(2)}B EPS${cur}${q.eps_diluted ?? "N/A"}`).join(" | ");
+          lines.push(`近期季報：${qStr}`);
+        }
+      }
+    } catch { /* no fundamentals */ }
+
+    // ── 分析師共識 ──
+    try {
+      const analysts = sqlite.prepare(
+        `SELECT rating_category, score, target_price, institution, analyst_date
+         FROM analyst_targets WHERE symbol=? AND market=?
+         ORDER BY analyst_date DESC LIMIT 10`
+      ).all(symbol, market) as { rating_category: string; score: number; target_price: number; institution: string; analyst_date: string }[];
+      if (analysts.length > 0) {
+        const avgTarget = analysts.reduce((s, a) => s + a.target_price, 0) / analysts.length;
+        const buys   = analysts.filter(a => a.score >= 4).length;
+        const holds  = analysts.filter(a => a.score === 3).length;
+        const sells  = analysts.filter(a => a.score <= 2).length;
+        const upside = ((avgTarget - price) / price * 100);
+        lines.push(`\n【分析師共識（近10筆）】`);
+        lines.push(`買進：${buys} | 持有：${holds} | 賣出：${sells} | 平均目標價：${cur}${avgTarget.toFixed(2)}（潛在空間：${upside >= 0 ? "+" : ""}${upside.toFixed(1)}%）`);
+        // Most recent 3 ratings
+        const recent3 = analysts.slice(0, 3).map(a => `${a.institution}(${a.rating_category} ${a.analyst_date})`).join("、");
+        lines.push(`最新評級：${recent3}`);
+      }
+    } catch { /* no analysts */ }
+
+    // ── ML 預測 ──
+    try {
+      const pred = sqlite.prepare(
+        `SELECT meta_json, run_at FROM modelpredictions
+         WHERE symbol=? AND market=?
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(symbol, market) as { meta_json: string; run_at: string } | undefined;
+      if (pred) {
+        const meta = JSON.parse(pred.meta_json || "{}");
+        lines.push(`\n【ML 預測（${pred.run_at.slice(0,10)}）】`);
+        if (meta.predictions) {
+          const horizons = [5, 10, 20];
+          for (const h of horizons) {
+            const p = meta.predictions[h] || meta.predictions[String(h)];
+            if (p) lines.push(`${h}日：${p.predicted_return >= 0 ? "+" : ""}${(p.predicted_return * 100).toFixed(2)}% | 上漲機率：${(p.up_probability * 100).toFixed(0)}%`);
+          }
+        }
+        if (meta.modelVersion) lines.push(`模型：${meta.modelVersion}（特徵數：${meta.featureCount ?? "N/A"}）`);
+      }
+    } catch { /* no prediction */ }
+
+    // ── 新聞情緒 ──
+    try {
+      const digest = sqlite.prepare(
+        `SELECT digest_date, sentiment_label, ai_takeaway, source_count
+         FROM daily_news_digest WHERE ticker=?
+         ORDER BY digest_date DESC LIMIT 3`
+      ).all(symbol) as { digest_date: string; sentiment_label: string; ai_takeaway: string; source_count: number }[];
+      if (digest.length > 0) {
+        lines.push(`\n【近期新聞情緒】`);
+        for (const d of digest) {
+          lines.push(`${d.digest_date}：${d.sentiment_label}（${d.source_count} 則）— ${d.ai_takeaway?.slice(0, 80) ?? ""}`);
+        }
+      }
+      // Latest news titles
+      const latestDigest = digest[0];
+      if (latestDigest) {
+        const sources = sqlite.prepare(
+          `SELECT article_title FROM daily_news_sources
+           WHERE digest_id = (SELECT id FROM daily_news_digest WHERE ticker=? ORDER BY digest_date DESC LIMIT 1)
+           ORDER BY sort_order LIMIT 5`
+        ).all(symbol) as { article_title: string }[];
+        if (sources.length > 0) {
+          lines.push(`最新新聞標題：`);
+          sources.forEach((s, i) => lines.push(`  ${i + 1}. ${s.article_title}`));
+        }
+      }
+    } catch { /* no digest */ }
+
+    // ── 大盤情緒 ──
+    try {
+      const fg = sqlite.prepare(
+        `SELECT value, meta_json FROM market_indicators
+         WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`
+      ).get() as { value: number; meta_json: string } | undefined;
+      if (fg) {
+        const fgMeta = JSON.parse(fg.meta_json || "{}");
+        lines.push(`\n【大盤情緒】`);
+        lines.push(`Fear & Greed Index：${fg.value}（${fgMeta.classification ?? ""}）`);
+      }
+      const macro = sqlite.prepare(
+        `SELECT value, date FROM market_indicators
+         WHERE indicator_key='macro_sentiment' ORDER BY date DESC LIMIT 1`
+      ).get() as { value: number; date: string } | undefined;
+      if (macro) {
+        lines.push(`Macro 情緒分數（SPY+QQQ）：${macro.value.toFixed(2)}（${macro.date}）`);
+      }
+    } catch { /* no market indicators */ }
+
+    // ── 板塊相對強弱 ──
+    try {
+      const sectorRow = sqlite.prepare(
+        `SELECT meta_json FROM modelpredictions
+         WHERE symbol=? AND market=? ORDER BY created_at DESC LIMIT 1`
+      ).get(symbol, market) as { meta_json: string } | undefined;
+      if (sectorRow) {
+        const m = JSON.parse(sectorRow.meta_json || "{}");
+        const features = m.featureValues || m.features;
+        if (features) {
+          const rs5  = features["sector_rs_5d"];
+          const rs20 = features["sector_rs_20d"];
+          if (rs5 !== undefined || rs20 !== undefined) {
+            lines.push(`\n【板塊相對強弱】`);
+            if (rs5  !== undefined) lines.push(`sector_rs_5d：${rs5 >= 0 ? "+" : ""}${(rs5 * 100).toFixed(2)}%`);
+            if (rs20 !== undefined) lines.push(`sector_rs_20d：${rs20 >= 0 ? "+" : ""}${(rs20 * 100).toFixed(2)}%`);
+          }
+        }
+      }
+    } catch { /* no sector data */ }
+
+    return lines.join("\n");
+  }
+
+  /** System prompts by question type */
+  function getSystemPrompt(questionType: string, ctx: string): string {
+    const base = `你是一位專業的台灣投資分析師 AI 助手，擅長台股與美股分析。
+你的回答必須使用繁體中文。
+以下是這檔股票的即時數據（來自用戶的投資組合系統）：
+
+${ctx}
+
+請嚴格根據以上數據進行分析，不要憑空假設數字。`;
+
+    const prompts: Record<string, string> = {
+      trade: `${base}
+
+你的任務是給出具體的買賣操作建議。
+根據持倉成本、技術面位置、ML預測方向、分析師共識、估值水平，
+明確回答：現在該買進/加碼/持有/減碼/停損？給出理由與建議操作區間。
+若有估值溢價風險需特別警告。回答 250-400 字，條列重點。`,
+
+      news: `${base}
+
+你的任務是判斷消息面的投資含義。
+根據最新新聞標題與情緒分數，判斷：
+1. 多空方向（短期/長期）
+2. 消息強度（是否影響基本面或技術競爭力）
+3. 財報前後操作策略（若財報日接近）
+4. 有無個股風險預警
+直接給出結論與強度評等（強烈看多/看多/中性/看空/強烈看空）。回答 250-400 字。`,
+
+      macro: `${base}
+
+你的任務是分析大盤趨勢與風險對這檔股票的影響。
+根據 Fear & Greed Index、Macro 情緒分數、板塊相對強弱，
+1. 當前大盤環境對這檔股票是順風還是逆風？
+2. 有無崩盤預警訊號？
+3. 板塊輪動趨勢對這檔的影響？
+給出明確結論與倉位建議。回答 250-400 字，條列重點。`,
+
+      default: `${base}
+
+請提供專業、具體且實用的分析。包含數據引用和明確建議。
+使用清晰的段落和列點格式。回答長度適中（250-400字）。`,
+    };
+
+    return prompts[questionType] ?? prompts.default;
+  }
+
   app.post("/api/ai/chat", async (req, res) => {
     try {
-      const { symbol, name, price, change, market, question } = req.body;
+      const { symbol, name, price, change, market, question, questionType = "default" } = req.body;
 
       const client = new Anthropic();
-
-      const systemPrompt = `你是一位專業的台灣投資分析師 AI 助手，擅長台股與美股分析。
-你的回答必須使用繁體中文。
-你正在分析的股票是：${symbol} (${name})
-目前價格：${market === "TW" ? "NT$" : "$"}${price}
-今日漲跌：${change >= 0 ? "+" : ""}${change}%
-市場：${market === "TW" ? "台灣證券交易所" : "美國股市"}
-
-請提供專業、具體且實用的分析。包含數據、圖表描述和明確建議。
-使用清晰的段落和列點格式。回答長度適中（200-400字）。`;
+      const ctx = buildStockContext(symbol, market, price, change, name);
+      const systemPrompt = getSystemPrompt(questionType, ctx);
 
       const message = await client.messages.create({
         model: "claude-sonnet-4-5",
-        max_tokens: 768,
+        max_tokens: 900,
         messages: [{ role: "user", content: question }],
         system: systemPrompt,
       });
