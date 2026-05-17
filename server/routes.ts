@@ -4,7 +4,7 @@ import multer from "multer";
 import * as XLSX from "xlsx";
 import { storage, sqlite } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction, type InsertAnalystTarget } from "@shared/schema";
-import Anthropic from "@anthropic-ai/sdk";
+// Anthropic SDK removed — AI Insights now uses prompt builder (zero API cost)
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, saveMacroSentiment, type DigestSyncItem } from "./newsDigestService";
@@ -492,72 +492,44 @@ export async function registerRoutes(
     return lines.join("\n");
   }
 
-  /** System prompts by question type */
-  function getSystemPrompt(questionType: string, ctx: string): string {
-    const base = `你是一位專業的台灣投資分析師 AI 助手，擅長台股與美股分析。
-你的回答必須使用繁體中文。
-以下是這檔股票的即時數據（來自用戶的投資組合系統）：
+  /** Build a ready-to-paste Perplexity prompt from DB context + question intent */
+  function buildUserPrompt(ctx: string, questionType: string, customQuestion?: string): string {
+    const searchInstructions: Record<string, string> = {
+      trade: `請搜尋該公司最近 7 天的最新新聞、主要競爭對手的最新動態，以及任何可能影響股價的重大事件。
+結合上述持倉數據，回答：現在該買進 / 加碼 / 持有 / 減碼 / 停損？給出具體建議與操作區間，若有估值溢價風險請特別警示。`,
+      news: `請搜尋該公司最近 7 天的最新新聞、財報發布情況、競爭對手動態。
+判斷：1.多空方向與強度 2.消息是否改變營運基本面或技術競爭力 3.財報前後操作建議 4.有無個股風險預警。`,
+      macro: `請搜尋目前全球最新的政經新聞、貨幣政策動向、地緣政治風險與板塊輪動趨勢。
+分析：1.大盤環境是順風還是逆風 2.有無崩盤預警 3.板塊輪動對持股的影響，給出明確倉位建議。`,
+      default: `請搜尋相關最新資訊，結合以上數據給出整合性回答。`,
+    };
+
+    const questionPart = customQuestion
+      ? `\n我的問題：${customQuestion}`
+      : "";
+
+    const search = searchInstructions[questionType] ?? searchInstructions.default;
+
+    return `以下是我的投資組合系統對此股票的即時數據：
 
 ${ctx}
 
-分析時請優先引用以上數據作為個人持倉與量化依據，並結合你對該公司、產業與總體經濟的知識給出整合性回答。`;
+---
+${search}${questionPart}
 
-    const prompts: Record<string, string> = {
-      trade: `${base}
-
-你的任務是給出具體的買賣操作建議。
-根據持倉成本、技術面位置、ML預測方向、分析師共識、估值水平，
-明確回答：現在該買進/加碼/持有/減碼/停損？給出理由與建議操作區間。
-若有估值溢價風險需特別警告。回答 250-400 字，條列重點。`,
-
-      news: `${base}
-
-你的任務是判斷消息面的投資含義。
-根據最新新聞標題與情緒分數，判斷：
-1. 多空方向（短期/長期）
-2. 消息強度（是否影響基本面或技術競爭力）
-3. 財報前後操作策略（若財報日接近）
-4. 有無個股風險預警
-直接給出結論與強度評等（強烈看多/看多/中性/看空/強烈看空）。回答 250-400 字。`,
-
-      macro: `${base}
-
-你的任務是分析大盤趨勢與風險對這檔股票的影響。
-根據 Fear & Greed Index、Macro 情緒分數、板塊相對強弱，
-1. 當前大盤環境對這檔股票是順風還是逆風？
-2. 有無崩盤預警訊號？
-3. 板塊輪動趨勢對這檔的影響？
-給出明確結論與倉位建議。回答 250-400 字，條列重點。`,
-
-      default: `${base}
-
-請提供專業、具體且實用的分析。包含數據引用和明確建議。
-使用清晰的段落和列點格式。回答長度適中（250-400字）。`,
-    };
-
-    return prompts[questionType] ?? prompts.default;
+請使用繁體中文回答，條列重點，長度 300-500 字。`;
   }
 
-  app.post("/api/ai/chat", async (req, res) => {
+  /** POST /api/ai/build-prompt — returns a ready-to-paste prompt string, no LLM call */
+  app.post("/api/ai/build-prompt", (req, res) => {
     try {
-      const { symbol, name, price, change, market, question, questionType = "default" } = req.body;
-
-      const client = new Anthropic();
-      const ctx = buildStockContext(symbol, market, price, change, name);
-      const systemPrompt = getSystemPrompt(questionType, ctx);
-
-      const message = await client.messages.create({
-        model: "claude-sonnet-4-5",
-        max_tokens: 900,
-        messages: [{ role: "user", content: question }],
-        system: systemPrompt,
-      });
-
-      const textContent = message.content.find((c: any) => c.type === "text");
-      res.json({ response: textContent ? (textContent as any).text : "無法取得回應" });
+      const { symbol, name, price, change, market, questionType = "default", customQuestion } = req.body;
+      const ctx = buildStockContext(symbol, market, price ?? 0, change ?? 0, name);
+      const prompt = buildUserPrompt(ctx, questionType, customQuestion);
+      res.json({ prompt });
     } catch (error: any) {
-      console.error("AI chat error:", error.message);
-      res.status(500).json({ error: "AI service unavailable" });
+      console.error("build-prompt error:", error.message);
+      res.status(500).json({ error: "Failed to build prompt" });
     }
   });
 
