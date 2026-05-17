@@ -398,9 +398,15 @@ export async function registerRoutes(
         `SELECT info_json, quarterly_income_json, eps_history_json, calendar_json FROM fundamental_data WHERE symbol=? AND market=? LIMIT 1`
       ).get(symbol, market) as { info_json: string; quarterly_income_json: string; eps_history_json: string; calendar_json: string } | undefined;
       if (fd) {
-        const info = JSON.parse(fd.info_json || "{}");
-        const cal  = JSON.parse(fd.calendar_json || "{}");
-        const qInc = JSON.parse(fd.quarterly_income_json || "[]") as any[];
+        const info   = JSON.parse(fd.info_json || "{}");
+        const cal    = JSON.parse(fd.calendar_json || "{}");
+        const qInc   = JSON.parse(fd.quarterly_income_json || "[]") as any[];
+        const epsHist = JSON.parse(fd.eps_history_json || "[]") as any[];
+        // Build date -> epsActual lookup from eps_history_json
+        const epsMap = new Map<string, number>();
+        for (const e of epsHist) {
+          if (e.quarter) epsMap.set(e.quarter.slice(0, 10), e.epsActual);
+        }
         lines.push(`\n【基本面】`);
         if (info.pe_ratio)    lines.push(`本益比(PE)：${info.pe_ratio}x`);
         if (info.eps_ttm)     lines.push(`EPS(TTM)：${cur}${info.eps_ttm}`);
@@ -409,14 +415,16 @@ export async function registerRoutes(
         if (info.market_cap)  lines.push(`市值：${cur}${(info.market_cap / 1e9).toFixed(1)}B`);
         if (info.sector)      lines.push(`產業：${info.sector}`);
         if (cal.earnings_date) lines.push(`下次財報日：${cal.earnings_date}`);
-        // Latest 2 quarters revenue + EPS trend
-        if (qInc.length >= 2) {
+        // Latest 2 quarters: revenue from qInc, EPS from epsMap by date
+        if (qInc.length >= 1) {
           const recent = qInc.slice(0, 2);
           const qStr = recent.map((q: any) => {
-            const period = q.period || q.date || q.quarter || "—";
-            const rev = q.revenue ? `${cur}${(q.revenue/1e9).toFixed(2)}B` : "N/A";
-            const eps = q.eps_diluted ?? q.eps ?? "N/A";
-            return `${period}: 營收${rev} EPS${eps !== "N/A" ? cur + eps : "N/A"}`;
+            const date = (q.date || q.period || q.quarter || "—").slice(0, 10);
+            const rev  = q.totalRevenue ?? q.revenue;
+            const revStr = rev ? `${cur}${(rev / 1e9).toFixed(2)}B` : "N/A";
+            const eps  = epsMap.get(date);
+            const epsStr = eps !== undefined ? `${cur}${eps}` : "N/A";
+            return `${date}: 營收${revStr} EPS${epsStr}`;
           }).join(" | ");
           lines.push(`近期季報：${qStr}`);
         }
