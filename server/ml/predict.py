@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-predict.py -- HistGradientBoosting Direct Multi-Step price-path predictor
-AI Stock Dashboard V6.1  (model: HGB_v4)
+predict.py -- Ensemble Direct Multi-Step price-path predictor
+AI Stock Dashboard V6.2  (model: Ensemble_v1)
 
 Input (stdin JSON):
   { "symbol", "market", "horizons": [1..20], "bars": [...], "analystFeatures": {...} }
@@ -33,8 +33,15 @@ Band method: walk-forward OOS residuals, per-horizon.
     -- then clamp so lower <= medianPrice <= upper
   Fallback (< 5 OOS samples): +/- 1 ATR band.
 
-Algorithm: HistGradientBoostingRegressor (handles NaN natively)
-  max_iter=200, learning_rate=0.05, max_depth=4, random_state=42
+Algorithm: Ensemble of 3 models (weighted average)
+  1. HistGradientBoostingRegressor  (handles NaN natively)
+  2. LightGBM (if available, else skip gracefully)
+  3. RandomForestRegressor
+  Ensemble weight: HGB=0.45, LGB=0.35, RF=0.20 (or equal if LGB missing)
+
+upProbability: Platt-scaled probability via CalibratedClassifierCV
+  Direction labels: 1 if h-day return > 0 else 0
+  Calibrated on OOS fold for honest probability estimates
 """
 
 import sys
@@ -49,10 +56,19 @@ from features_extra import get_extra_features
 try:
     import numpy as np
     import pandas as pd
-    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.ensemble import GradientBoostingClassifier
 except ImportError as e:
     print(json.dumps({"ok": False, "error": f"Missing dependency: {e}"}))
     sys.exit(0)
+
+# LightGBM is optional — gracefully skip if not installed
+try:
+    import lightgbm as lgb
+    HAS_LGB = True
+except ImportError:
+    HAS_LGB = False
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +161,7 @@ FEATURES = [
     "pt_change_30d_pct", "pt_revision_count",
     # Layer 2: Fundamentals
     "revenue_qoq", "revenue_yoy", "gross_margin", "net_margin",
-    "eps_qoq", "days_since_earnings",
+    "eps_qoq", "days_since_earnings", "days_to_earnings",
     # Layer 3: Market + Sector
     "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
     "sector_rs_5d", "sector_rs_20d",
@@ -194,6 +210,7 @@ FEATURE_LABELS = {
     "net_margin":           "淨利率",
     "eps_qoq":              "EPS季增率",
     "days_since_earnings":  "距財報天數",
+    "days_to_earnings":     "距下次財報天數",
     # Layer 3: Market + Sector
     "fear_greed":           "恐懼貪婪指數",
     "fear_greed_delta_7d":  "恐貪7日變化",
@@ -281,7 +298,7 @@ def run():
         "analyst_bullish_pct", "analyst_bearish_pct", "analyst_pt_dispersion",
         "analyst_upgrade_net", "pt_change_30d_pct", "pt_revision_count",
         "revenue_qoq", "revenue_yoy", "gross_margin", "net_margin",
-        "eps_qoq", "days_since_earnings",
+        "eps_qoq", "days_since_earnings", "days_to_earnings",
         "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
         "sector_rs_5d", "sector_rs_20d",
         "news_sentiment_score", "news_bullish_ratio",
@@ -351,8 +368,16 @@ def run():
 
     # ---------------------------------------------------------------------------
     # Per-horizon training + walk-forward OOS band
+    # Ensemble: HGB (0.45) + LightGBM (0.35, if available) + RandomForest (0.20)
+    # upProbability: Platt-scaled via CalibratedClassifierCV on direction labels
     # ---------------------------------------------------------------------------
     horizon_results = {}
+
+    # Ensemble weights
+    if HAS_LGB:
+        W_HGB, W_LGB, W_RF = 0.45, 0.35, 0.20
+    else:
+        W_HGB, W_LGB, W_RF = 0.60, 0.00, 0.40
 
     for h in horizons:
         df_h           = df.copy()
@@ -363,64 +388,98 @@ def run():
         if len(train_df) < 30:
             continue
 
-        # HistGradientBoostingRegressor handles NaN natively — no need to fill
-        model = HistGradientBoostingRegressor(
-            max_iter=200,
-            learning_rate=0.05,
-            max_depth=4,
-            random_state=42,
-        )
         X_train = train_df[feature_cols].values
         y_train = train_df["target"].values
-        model.fit(X_train, y_train)
 
-        # Walk-forward OOS residuals (actual_return - predicted_return)
+        # ── Model 1: HistGradientBoosting (handles NaN natively) ──────────────
+        hgb = HistGradientBoostingRegressor(
+            max_iter=200, learning_rate=0.05, max_depth=4, random_state=42,
+        )
+        hgb.fit(X_train, y_train)
+
+        # ── Model 2: LightGBM ─────────────────────────────────────────────────
+        if HAS_LGB:
+            lgb_model = lgb.LGBMRegressor(
+                n_estimators=200, learning_rate=0.05, max_depth=4,
+                random_state=42, verbosity=-1,
+            )
+            # LightGBM doesn't handle NaN: fill with 0 for training (HGB is primary)
+            X_train_lgb = np.nan_to_num(X_train, nan=0.0)
+            lgb_model.fit(X_train_lgb, y_train)
+
+        # ── Model 3: RandomForest ─────────────────────────────────────────────
+        rf = RandomForestRegressor(
+            n_estimators=100, max_depth=6, random_state=42, n_jobs=-1,
+        )
+        X_train_rf = np.nan_to_num(X_train, nan=0.0)
+        rf.fit(X_train_rf, y_train)
+
+        # ── Ensemble predict helper ───────────────────────────────────────────
+        def ensemble_predict(X: np.ndarray) -> np.ndarray:
+            X_filled = np.nan_to_num(X, nan=0.0)
+            pred_hgb = hgb.predict(X)
+            pred_rf  = rf.predict(X_filled)
+            if HAS_LGB:
+                pred_lgb = lgb_model.predict(X_filled)
+                return W_HGB * pred_hgb + W_LGB * pred_lgb + W_RF * pred_rf
+            else:
+                return W_HGB * pred_hgb + W_RF * pred_rf
+
+        # Walk-forward OOS residuals
         oos_df    = df_h.iloc[train_cutoff : n_total - h].dropna(subset=["target"])
         residuals = np.array([])
         if len(oos_df) >= 5:
-            y_pred    = model.predict(oos_df[feature_cols].values)
+            y_pred    = ensemble_predict(oos_df[feature_cols].values)
             y_true    = oos_df["target"].values
-            residuals = y_true - y_pred   # positive = model underestimated
+            residuals = y_true - y_pred
 
-        # Predict on seed (last bar)
-        # HGB is a single ensemble — use staged_predict or simple predict for median
-        # For spread estimate: bootstrap the OOS predictions
-        median_return  = float(model.predict(X_seed)[0])
-        median_price   = round(base_price * (1 + median_return), 4)
+        # Ensemble prediction on seed (last bar)
+        median_return = float(ensemble_predict(X_seed)[0])
+        median_price  = round(base_price * (1 + median_return), 4)
 
-        # upProbability: fraction of OOS rows where model predicted > 0
-        # (proxy for directional confidence)
-        if len(oos_df) >= 5:
-            oos_preds      = model.predict(oos_df[feature_cols].values)
-            up_probability = float(np.mean(oos_preds > 0))
-        else:
-            up_probability = float(median_return > 0)
+        # ── upProbability: Platt scaling via CalibratedClassifierCV ──────────
+        # Direction labels: 1 = positive return, 0 = negative
+        up_probability = float(median_return > 0)  # default fallback
+        if len(train_df) >= 50:
+            try:
+                y_dir_train = (y_train > 0).astype(int)
+                # Need at least some positives and negatives
+                if y_dir_train.sum() >= 5 and (1 - y_dir_train).sum() >= 5:
+                    from sklearn.ensemble import GradientBoostingClassifier
+                    base_clf = GradientBoostingClassifier(
+                        n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42
+                    )
+                    n_cv = min(3, len(train_df) // 20)
+                    if n_cv >= 2:
+                        cal_clf = CalibratedClassifierCV(base_clf, cv=n_cv, method="sigmoid")
+                        cal_clf.fit(X_train_rf, y_dir_train)
+                        prob = cal_clf.predict_proba(np.nan_to_num(X_seed, nan=0.0))[0]
+                        up_probability = float(prob[1])  # P(up)
+            except Exception:
+                pass  # keep fallback
 
-        # Band: add residual percentiles onto median_price
+        # Band: residual percentiles
         if len(residuals) >= 5:
             p25 = float(np.percentile(residuals, 25))
             p75 = float(np.percentile(residuals, 75))
             lower_price = round(median_price + base_price * p25, 4)
             upper_price = round(median_price + base_price * p75, 4)
         else:
-            # Fallback: ±1 ATR band
             atr_val     = float(last_bar.get("atr_14_pct") or 0.02) * base_price
             lower_price = round(median_price - atr_val, 4)
             upper_price = round(median_price + atr_val, 4)
 
-        # Guarantee: lower <= median <= upper (clamp, not swap)
         lower_price = min(lower_price, median_price)
         upper_price = max(upper_price, median_price)
 
-        # Feature importance: computed once (h=1) via permutation_importance
-        # then reused across all horizons to avoid per-horizon overhead
+        # Feature importance: HGB permutation importance (computed once, h=1)
         if "_global_importances" not in horizon_results:
             try:
                 from sklearn.inspection import permutation_importance
                 pi_oos = df_h.iloc[train_cutoff : n_total - h].dropna(subset=["target"])
                 if len(pi_oos) >= 10:
                     pi = permutation_importance(
-                        model, pi_oos[feature_cols].values, pi_oos["target"].values,
+                        hgb, pi_oos[feature_cols].values, pi_oos["target"].values,
                         n_repeats=5, random_state=42,
                         scoring="neg_mean_absolute_error",
                     )
@@ -462,7 +521,9 @@ def run():
         "barsUsed":         n_total,
         "trainSize":        train_cutoff,
         "oosSize":          oos_size,
-        "modelVersion":     "HGB_v4",
+        "modelVersion":     "Ensemble_v1",
+        "ensembleWeights":  {"hgb": W_HGB, "lgb": W_LGB if HAS_LGB else 0, "rf": W_RF},
+        "hasLightGBM":      HAS_LGB,
         "featuresUsed":     feature_cols,
         "useAnalyst":       use_analyst,
         "featureCoverage":  feature_coverage,

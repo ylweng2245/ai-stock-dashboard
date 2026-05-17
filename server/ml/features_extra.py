@@ -141,23 +141,30 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
                     result["eps_qoq"] = float("nan")
 
                 # days_since_earnings: days since most recent actual EPS report date
+                # days_to_earnings: days until next expected earnings (estimated as ~91 days after last report)
                 if eps_data:
                     last_date_str = eps_data[0].get("date") or eps_data[0].get("reportDate") or eps_data[0].get("period")
                     if last_date_str:
                         try:
                             last_date = datetime.strptime(last_date_str[:10], "%Y-%m-%d").date()
                             result["days_since_earnings"] = float((as_of_date - last_date).days)
+                            # Estimate next earnings ~91 days (1 quarter) after last report
+                            next_earnings = last_date + timedelta(days=91)
+                            result["days_to_earnings"] = float((next_earnings - as_of_date).days)
                         except:
                             result["days_since_earnings"] = float("nan")
+                            result["days_to_earnings"] = float("nan")
                     else:
                         result["days_since_earnings"] = float("nan")
+                        result["days_to_earnings"] = float("nan")
                 else:
                     result["days_since_earnings"] = float("nan")
+                    result["days_to_earnings"] = float("nan")
             except Exception:
-                for k in ["revenue_qoq", "revenue_yoy", "gross_margin", "net_margin", "eps_qoq", "days_since_earnings"]:
+                for k in ["revenue_qoq", "revenue_yoy", "gross_margin", "net_margin", "eps_qoq", "days_since_earnings", "days_to_earnings"]:
                     result[k] = float("nan")
         else:
-            for k in ["revenue_qoq", "revenue_yoy", "gross_margin", "net_margin", "eps_qoq", "days_since_earnings"]:
+            for k in ["revenue_qoq", "revenue_yoy", "gross_margin", "net_margin", "eps_qoq", "days_since_earnings", "days_to_earnings"]:
                 result[k] = float("nan")
 
         # === Layer 3a: Market Sentiment (from market_indicators table) ===

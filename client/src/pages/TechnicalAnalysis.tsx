@@ -36,6 +36,7 @@ const FEATURE_LABELS: Record<string, string> = {
   net_margin: '淨利率',
   eps_qoq: 'EPS季增率',
   days_since_earnings: '距財報天數',
+  days_to_earnings: '距下次財報天數',
   fear_greed: '恐懼貪婪指數',
   fear_greed_delta_7d: '恐貪7日變化',
   vix_level: 'VIX水準',

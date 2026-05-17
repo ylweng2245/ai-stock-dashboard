@@ -1284,7 +1284,7 @@ export async function registerRoutes(
    *
    * Body: Array of DigestSyncItem
    */
-  app.post("/api/internal/news-digest-sync", (req, res) => {
+  app.post("/api/internal/news-digest-sync", async (req, res) => {
     const secret = process.env.INTERNAL_SYNC_SECRET;
     if (!secret || req.headers["x-sync-secret"] !== secret) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -1296,7 +1296,7 @@ export async function registerRoutes(
     let saved = 0;
     const errors: string[] = [];
     for (const item of items) {
-      const result = saveDigestData(item);
+      const result = await saveDigestData(item);
       if (result.success) saved++;
       else errors.push(`${item.ticker}: ${result.error}`);
     }
