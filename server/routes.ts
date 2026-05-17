@@ -403,9 +403,16 @@ export async function registerRoutes(
         const qInc   = JSON.parse(fd.quarterly_income_json || "[]") as any[];
         const epsHist = JSON.parse(fd.eps_history_json || "[]") as any[];
         // Build date -> epsActual lookup from eps_history_json
+        // Use YYYY-MM prefix match because Yahoo earningsHistory quarter date
+        // may differ from qInc date by a few days (e.g. 2026-03-30 vs 2026-03-31)
         const epsMap = new Map<string, number>();
         for (const e of epsHist) {
-          if (e.quarter) epsMap.set(e.quarter.slice(0, 10), e.epsActual);
+          if (e.quarter && e.epsActual !== undefined && e.epsActual !== null) {
+            // Store by full date AND by YYYY-MM prefix for fuzzy matching
+            const d = e.quarter.slice(0, 10);
+            epsMap.set(d, e.epsActual);
+            epsMap.set(d.slice(0, 7), e.epsActual); // YYYY-MM key
+          }
         }
         lines.push(`\n【基本面】`);
         if (info.pe_ratio)    lines.push(`本益比(PE)：${info.pe_ratio}x`);
@@ -422,7 +429,8 @@ export async function registerRoutes(
             const date = (q.date || q.period || q.quarter || "—").slice(0, 10);
             const rev  = q.totalRevenue ?? q.revenue;
             const revStr = rev ? `${cur}${(rev / 1e9).toFixed(2)}B` : "N/A";
-            const eps  = epsMap.get(date);
+            // Try exact date, then YYYY-MM prefix
+            const eps = epsMap.get(date) ?? epsMap.get(date.slice(0, 7));
             const epsStr = eps !== undefined ? `${cur}${eps}` : "N/A";
             return `${date}: 營收${revStr} EPS${epsStr}`;
           }).join(" | ");
