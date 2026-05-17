@@ -405,7 +405,8 @@ def run():
             )
             # LightGBM doesn't handle NaN: fill with 0 for training (HGB is primary)
             X_train_lgb = np.nan_to_num(X_train, nan=0.0)
-            lgb_model.fit(X_train_lgb, y_train)
+            lgb_model.fit(X_train_lgb, y_train,
+                          feature_name=feature_cols)
 
         # ── Model 3: RandomForest ─────────────────────────────────────────────
         rf = RandomForestRegressor(
