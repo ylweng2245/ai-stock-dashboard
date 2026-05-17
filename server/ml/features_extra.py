@@ -245,7 +245,6 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
         # === Layer 4: News Sentiment (from finance digest, server-scored) ===
         # Use a 7-day lookback window so weekend/non-trading-day digests are included.
         # News sentiment is updated daily regardless of trading calendar.
-        from datetime import timedelta
         lookback_start = (as_of_date - timedelta(days=7)).isoformat()
         sent_rows = conn.execute("""
             SELECT date, sentiment_score, bullish_ratio, article_count
