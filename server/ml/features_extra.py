@@ -250,12 +250,21 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
             result["sector_rs_20d"] = float("nan")
 
         # === Layer 3c: Macro Sentiment (SPY+QQQ LLM-scored, from market_indicators) ===
+        # Use 7-day lookback + 3-day lookahead to handle weekend/holiday gaps
         macro_rows = conn.execute("""
             SELECT date, value FROM market_indicators
             WHERE indicator_key='macro_sentiment'
-              AND date <= ?
+              AND date >= ? AND date <= ?
             ORDER BY date DESC LIMIT 5
-        """, (as_of_date.isoformat(),)).fetchall()
+        """, ((as_of_date - timedelta(days=7)).isoformat(), as_of_date.isoformat())).fetchall()
+
+        if not macro_rows:
+            macro_rows = conn.execute("""
+                SELECT date, value FROM market_indicators
+                WHERE indicator_key='macro_sentiment'
+                  AND date <= ?
+                ORDER BY date DESC LIMIT 5
+            """, ((as_of_date + timedelta(days=3)).isoformat(),)).fetchall()
 
         if macro_rows and macro_rows[0]["value"] is not None:
             result["macro_sentiment_score"] = float(macro_rows[0]["value"])
