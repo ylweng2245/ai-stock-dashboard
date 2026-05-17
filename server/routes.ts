@@ -603,12 +603,16 @@ export async function registerRoutes(
 
     const search = searchInstructions[questionType] ?? searchInstructions.default;
 
-    return `以下是我的投資組合系統對此股票的即時數據：
+    const today = new Date().toISOString().slice(0, 10);
+    return `今天日期：${today}
+以下是我的投資組合系統對此股票的即時數據：
 
 ${ctx}
 
 ---
 ${search}${questionPart}
+
+⚠️ 注意：請只引用 ${today.slice(0, 7)} 當月或最近 7 天內的新聞與資料。若搜尋結果含 2025 年或更早的內容，請明確標示其日期，不要將舊新聞當成最新動態。每條引用請附上來源日期（格式：YYYY-MM-DD）。
 
 請使用繁體中文回答，條列重點，長度 300-500 字。`;
   }
