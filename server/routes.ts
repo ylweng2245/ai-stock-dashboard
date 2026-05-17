@@ -398,46 +398,52 @@ export async function registerRoutes(
         `SELECT info_json, quarterly_income_json, eps_history_json, calendar_json FROM fundamental_data WHERE symbol=? AND market=? LIMIT 1`
       ).get(symbol, market) as { info_json: string; quarterly_income_json: string; eps_history_json: string; calendar_json: string } | undefined;
       if (fd) {
-        const info    = JSON.parse(fd.info_json || "{}");
-        const cal     = JSON.parse(fd.calendar_json || "{}");
-        const qInc    = JSON.parse(fd.quarterly_income_json || "[]") as any[];
-        const epsHist = JSON.parse(fd.eps_history_json || "[]") as any[];
+        const info  = JSON.parse(fd.info_json || "{}");
+        const cal   = JSON.parse(fd.calendar_json || "{}");
+        // qInc from cron: { date, fiscalYear, fiscalQuarter, revenue, grossProfit, netIncome, basicEPS, dilutedEPS }
+        const qInc  = JSON.parse(fd.quarterly_income_json || "[]") as any[];
 
-        // Convert date string to "YYYYQn" label — same logic as fundamentalService.ts
-        function toQLabel(dateStr: string): string {
-          const d = new Date(dateStr);
-          if (isNaN(d.getTime())) return "";
-          return `${d.getFullYear()}Q${Math.ceil((d.getMonth() + 1) / 3)}`;
-        }
-
-        // Build YYYYQn -> epsActual map
-        const epsMap = new Map<string, number>();
-        for (const e of epsHist) {
-          const label = toQLabel(e.quarter || "");
-          if (label && e.epsActual != null) epsMap.set(label, e.epsActual);
+        function toQLabel(q: any): string {
+          if (q.fiscalYear && q.fiscalQuarter) return `${q.fiscalYear}Q${q.fiscalQuarter}`;
+          const d = new Date(q.date || "");
+          if (!isNaN(d.getTime())) return `${d.getFullYear()}Q${Math.ceil((d.getMonth()+1)/3)}`;
+          return "—";
         }
 
         lines.push(`\n【基本面】`);
         if (info.pe_ratio)    lines.push(`本益比(PE)：${info.pe_ratio}x`);
         if (info.eps_ttm)     lines.push(`EPS(TTM)：${cur}${info.eps_ttm}`);
-        if (info.revenue_growth_yoy !== undefined) lines.push(`營收 YoY：${(info.revenue_growth_yoy * 100).toFixed(1)}%`);
-        if (info.gross_margin !== undefined)       lines.push(`毛利率：${(info.gross_margin * 100).toFixed(1)}%`);
+        if (info.revenue_growth_yoy !== undefined) lines.push(`最新季營收 YoY：${(info.revenue_growth_yoy * 100).toFixed(1)}%`);
+        if (info.gross_margin !== undefined)       lines.push(`毛利率(TTM)：${(info.gross_margin * 100).toFixed(1)}%`);
         if (info.market_cap)  lines.push(`市值：${cur}${(info.market_cap / 1e9).toFixed(1)}B`);
         if (info.sector)      lines.push(`產業：${info.sector}`);
         if (cal.earnings_date) lines.push(`下次財報日：${cal.earnings_date}`);
 
-        // Latest 2 quarters — join revenue + EPS by YYYYQn label
+        // Latest 3 quarters with full metrics
         if (qInc.length >= 1) {
-          const recent = qInc.slice(0, 2);
-          const qStr = recent.map((q: any) => {
-            const label  = toQLabel(q.date || q.quarter || "");
-            const rev    = q.totalRevenue ?? q.revenue;
-            const revStr = rev ? `${cur}${(rev / 1e9).toFixed(2)}B` : "N/A";
-            const eps    = label ? epsMap.get(label) : undefined;
-            const epsStr = eps != null ? `${cur}${eps}` : "N/A";
-            return `${label || "—"}: 營收${revStr} EPS${epsStr}`;
-          }).join(" | ");
-          lines.push(`近期季報：${qStr}`);
+          lines.push(`近期季報（最新在上）：`);
+          const recent = qInc.slice(0, 3);
+          for (let i = 0; i < recent.length; i++) {
+            const q    = recent[i];
+            const prev = recent[i + 1];
+            const label = toQLabel(q);
+            const rev   = q.revenue ?? q.totalRevenue;
+            const gp    = q.grossProfit;
+            const ni    = q.netIncome;
+            const eps   = q.basicEPS ?? q.dilutedEPS;
+            const revB  = rev  != null ? `${cur}${(rev / 1e9).toFixed(2)}B`  : "N/A";
+            const epsStr = eps != null ? `${cur}${eps.toFixed(2)}` : "N/A";
+            const gmStr  = (rev && gp   != null) ? `毛利率${((gp / rev) * 100).toFixed(1)}%`  : "";
+            const nmStr  = (rev && ni   != null) ? `淨利率${((ni / rev) * 100).toFixed(1)}%`  : "";
+            const qoqStr = (prev && rev != null && (prev.revenue ?? prev.totalRevenue) != null)
+              ? `QoQ${(((rev - (prev.revenue ?? prev.totalRevenue)) / (prev.revenue ?? prev.totalRevenue)) * 100).toFixed(1)}%` : "";
+            // YoY: compare with same quarter last year (index i+4)
+            const yoyQ  = qInc[i + 4];
+            const yoyStr = (yoyQ && rev != null && (yoyQ.revenue ?? yoyQ.totalRevenue) != null)
+              ? `YoY${(((rev - (yoyQ.revenue ?? yoyQ.totalRevenue)) / (yoyQ.revenue ?? yoyQ.totalRevenue)) * 100).toFixed(1)}%` : "";
+            const parts = [revB, epsStr !== "N/A" ? `EPS${epsStr}` : "", gmStr, nmStr, qoqStr, yoyStr].filter(Boolean);
+            lines.push(`  ${label}: ${parts.join(" | ")}`);
+          }
         }
       }
     } catch { /* no fundamentals */ }
