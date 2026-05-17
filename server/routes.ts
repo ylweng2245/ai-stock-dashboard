@@ -1625,12 +1625,16 @@ export async function registerRoutes(
         return res.json({ ok: false, found: false, queued: true, message: "No prediction found — queued" });
       }
 
-      // Parse horizons from metaJson if present
+      // Parse horizons and meta from metaJson if present
       let horizons: Record<string, any> | null = null;
+      let parsedMeta: Record<string, any> | null = null;
       if (row.metaJson) {
         try {
           const meta = JSON.parse(row.metaJson);
           if (meta.horizonsJson) horizons = JSON.parse(meta.horizonsJson);
+          // Strip horizonsJson (large) before sending to client; keep featureCoverage etc.
+          const { horizonsJson: _h, featuresUsed: _f, ...metaRest } = meta;
+          parsedMeta = metaRest;
         } catch { /* non-fatal */ }
       }
 
@@ -1665,6 +1669,7 @@ export async function registerRoutes(
         symbol:     row.symbol,
         market:     row.market,
         horizons,
+        meta:       parsedMeta ?? {},
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
