@@ -307,5 +307,27 @@ def main():
             print(f"[news-cron] Batch {i//BATCH_SIZE + 1} POST failed {tickers}: {e}")
     print(f"[news-cron] Done. Synced {total_saved}/{len(digests)} stocks.")
 
+    # Step 5: Fetch macro sentiment (SPY + QQQ) for market-wide news
+    # SPY covers S&P500 / macro economy; QQQ covers tech/growth sector
+    print("[news-cron] Fetching macro sentiment (SPY + QQQ)...")
+    macro_items = []
+    for ticker, name in [("SPY", "S&P 500 ETF macro economy"), ("QQQ", "NASDAQ 100 ETF tech growth")]:
+        item = fetch_ticker_digest(ticker, name)
+        if item:
+            macro_items.append({"ticker": ticker, "summaryRaw": item["summaryRaw"]})
+        import time
+        time.sleep(2)
+
+    if macro_items:
+        try:
+            resp = http_post_json(
+                f"{base_url}/api/internal/macro-sentiment-sync",
+                macro_items,
+                headers={"X-Sync-Secret": SYNC_SECRET},
+            )
+            print(f"[news-cron] Macro sentiment synced: {resp}")
+        except Exception as e:
+            print(f"[news-cron] Macro sentiment POST failed: {e}")
+
 if __name__ == "__main__":
     main()

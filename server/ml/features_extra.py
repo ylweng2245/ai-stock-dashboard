@@ -249,6 +249,22 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
             result["sector_rs_5d"] = float("nan")
             result["sector_rs_20d"] = float("nan")
 
+        # === Layer 3c: Macro Sentiment (SPY+QQQ LLM-scored, from market_indicators) ===
+        macro_rows = conn.execute("""
+            SELECT date, value FROM market_indicators
+            WHERE indicator_key='macro_sentiment'
+              AND date <= ?
+            ORDER BY date DESC LIMIT 5
+        """, (as_of_date.isoformat(),)).fetchall()
+
+        if macro_rows and macro_rows[0]["value"] is not None:
+            result["macro_sentiment_score"] = float(macro_rows[0]["value"])
+            recent = [float(r["value"]) for r in macro_rows[:3] if r["value"] is not None]
+            result["macro_sentiment_3d_avg"] = sum(recent) / len(recent) if recent else float("nan")
+        else:
+            result["macro_sentiment_score"] = float("nan")
+            result["macro_sentiment_3d_avg"] = float("nan")
+
         # === Layer 4: News Sentiment (from finance digest, server-scored) ===
         # Use a 7-day lookback window so weekend/non-trading-day digests are included.
         # News sentiment is updated daily regardless of trading calendar.

@@ -165,6 +165,7 @@ FEATURES = [
     # Layer 3: Market + Sector
     "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
     "sector_rs_5d", "sector_rs_20d",
+    "macro_sentiment_score", "macro_sentiment_3d_avg",
     # Layer 4: News Sentiment (Alpha Vantage)
     "news_sentiment_score", "news_bullish_ratio",
     "news_sentiment_3d_avg", "news_article_count",
@@ -218,6 +219,8 @@ FEATURE_LABELS = {
     "vix_5d_change":        "VIX5日變化",
     "sector_rs_5d":         "板塊5日RS",
     "sector_rs_20d":        "板塊20日RS",
+    "macro_sentiment_score":   "宏觀情緒分",
+    "macro_sentiment_3d_avg":  "宏觀3日情緒均值",
     # Layer 4: News Sentiment
     "news_sentiment_score":   "新聞情緒分",
     "news_bullish_ratio":     "新聞看多比率",
@@ -301,6 +304,7 @@ def run():
         "eps_qoq", "days_since_earnings", "days_to_earnings",
         "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
         "sector_rs_5d", "sector_rs_20d",
+        "macro_sentiment_score", "macro_sentiment_3d_avg",
         "news_sentiment_score", "news_bullish_ratio",
         "news_sentiment_3d_avg", "news_article_count",
     ]

@@ -191,6 +191,54 @@ export async function saveDigestData(item: DigestSyncItem): Promise<DigestResult
   }
 }
 
+// ─── Macro sentiment scoring ─────────────────────────────────────────────────
+// Combines SPY + QQQ LLM sentiment scores into a single macro_sentiment value.
+// Written to market_indicators table (same as fear_greed / vix).
+
+export async function saveMacroSentiment(
+  items: { ticker: string; summaryRaw: string }[],
+  date: string
+): Promise<{ ok: boolean; score: number; method: string }> {
+  const scores: number[] = [];
+
+  for (const item of items) {
+    try {
+      const { sentimentScore } = await computeSentimentScore(item.summaryRaw, item.ticker);
+      scores.push(sentimentScore);
+    } catch (e: any) {
+      console.warn(`[macroSentiment] scoring failed for ${item.ticker}:`, e.message);
+    }
+  }
+
+  if (scores.length === 0) return { ok: false, score: 0, method: "none" };
+
+  // Weighted average: SPY (0.6) + QQQ (0.4) if both present, else simple mean
+  let macroScore: number;
+  if (scores.length === 2) {
+    macroScore = scores[0] * 0.6 + scores[1] * 0.4;
+  } else {
+    macroScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  }
+  macroScore = Math.max(-1, Math.min(1, parseFloat(macroScore.toFixed(4))));
+
+  // Write to market_indicators table
+  await storage.upsertIndicatorHistory([{
+    indicatorKey: "macro_sentiment",
+    market:       "US",
+    frequency:    "daily",
+    date,
+    value:        macroScore,
+    value2:       null,
+    metaJson:     JSON.stringify({ tickers: items.map(i => i.ticker), scores }),
+    source:       "llm",
+    createdAt:    new Date().toISOString(),
+    updatedAt:    new Date().toISOString(),
+  }]);
+
+  console.log(`[macroSentiment] saved macro_sentiment=${macroScore} for ${date} (tickers: ${items.map(i => i.ticker).join(",")})`);
+  return { ok: true, score: macroScore, method: "llm" };
+}
+
 // ─── Kept for UI "更新新聞彙總" button compat ─────────────────────────────────
 export async function generateAllDigests(): Promise<{
   results:   DigestResult[];

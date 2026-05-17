@@ -43,6 +43,8 @@ const FEATURE_LABELS: Record<string, string> = {
   vix_5d_change: 'VIX5日變化',
   sector_rs_5d: '板塊5日RS',
   sector_rs_20d: '板塊20日RS',
+  macro_sentiment_score: '宏觀情緒分',
+  macro_sentiment_3d_avg: '宏觀3日情緒均值',
   news_sentiment_score: '新聞情緒分',
   news_bullish_ratio: '新聞看多比率',
   news_sentiment_3d_avg: '情緒3日均值',

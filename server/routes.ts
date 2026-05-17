@@ -7,7 +7,7 @@ import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type Ins
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
-import { generateAllDigests, saveDigestData, type DigestSyncItem } from "./newsDigestService";
+import { generateAllDigests, saveDigestData, saveMacroSentiment, type DigestSyncItem } from "./newsDigestService";
 import { runPrediction } from "./mlPredictionService";
 import { ensurePrediction, getSchedulerStatus, triggerSweepNow } from "./predictionScheduler";
 import { buildPersonalPositionState, generatePersonalAdvice, DEFAULT_STRATEGY } from "./personalAdviceService";
@@ -1284,6 +1284,31 @@ export async function registerRoutes(
    *
    * Body: Array of DigestSyncItem
    */
+  /**
+   * POST /api/internal/macro-sentiment-sync
+   * Called by news_digest_cron.py Step 5 to write macro sentiment (SPY+QQQ) into market_indicators.
+   * Body: [{ ticker, summaryRaw }]
+   */
+  app.post("/api/internal/macro-sentiment-sync", async (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const items = req.body as { ticker: string; summaryRaw: string }[];
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Expected non-empty array" });
+    }
+    // Use today's date in ET (same convention as news digest)
+    const todayET = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    try {
+      const result = await saveMacroSentiment(items, todayET);
+      res.json({ ok: result.ok, score: result.score, method: result.method, date: todayET });
+    } catch (e: any) {
+      console.error("[macro-sentiment-sync] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/internal/news-digest-sync", async (req, res) => {
     const secret = process.env.INTERNAL_SYNC_SECRET;
     if (!secret || req.headers["x-sync-secret"] !== secret) {
