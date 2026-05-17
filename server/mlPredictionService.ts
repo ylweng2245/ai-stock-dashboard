@@ -145,7 +145,11 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
     }, 120_000);
 
     child.stdout.on("data", (chunk: Buffer) => { stdoutBuf += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk: Buffer) => { stderrBuf += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      stderrBuf += text;
+      if (text.trim()) console.warn("[predict.py stderr]", text.trim().slice(0, 500));
+    });
 
     child.on("close", (code: number | null) => {
       if (settled) return;

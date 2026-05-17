@@ -283,7 +283,9 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
 
         conn.close()
     except Exception as e:
-        # Never crash predict.py — return NaN for everything
-        pass
+        # Never crash predict.py — log error to stderr for debugging
+        import sys, traceback
+        print(f"[features_extra] ERROR for {symbol}/{market}: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
 
     return result
