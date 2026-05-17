@@ -305,6 +305,29 @@ def run():
     base_date   = str(last_bar["date"])[:10]
     base_price  = float(last_bar["close"])
 
+    # Feature coverage: check last bar for NaN values in extra features
+    _TECHNICAL_FEATURES = {
+        "ret_1d","ret_3d","close_pct_5d","close_pct_20d",
+        "rsi_14","vol_ratio_20d","atr_14_pct","ma20_dist_pct",
+        "ma60_dist_pct","bb_z","lag_ret_1","lag_ret_2",
+        "lag_ret_3","lag_ret_5","macd_norm","macd_hist_norm",
+        "weekday","month","hl_pct",
+    }
+    missing_features = [
+        c for c in feature_cols
+        if c not in _TECHNICAL_FEATURES
+        and (
+            last_bar.get(c) is None
+            or (isinstance(last_bar.get(c), float) and math.isnan(last_bar.get(c)))
+            or pd.isna(last_bar.get(c))
+        )
+    ]
+    feature_coverage = {
+        "total":     len(feature_cols),
+        "available": len(feature_cols) - len(missing_features),
+        "missing":   missing_features,
+    }
+
     # OOS split -- time-ordered, no shuffle
     n_total      = len(df)
     oos_size     = max(20, int(n_total * 0.2))
@@ -436,12 +459,13 @@ def run():
 
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     meta   = {
-        "barsUsed":     n_total,
-        "trainSize":    train_cutoff,
-        "oosSize":      oos_size,
-        "modelVersion": "HGB_v4",
-        "featuresUsed": feature_cols,
-        "useAnalyst":   use_analyst,
+        "barsUsed":         n_total,
+        "trainSize":        train_cutoff,
+        "oosSize":          oos_size,
+        "modelVersion":     "HGB_v4",
+        "featuresUsed":     feature_cols,
+        "useAnalyst":       use_analyst,
+        "featureCoverage":  feature_coverage,
     }
     if warning:
         meta["warning"] = warning
