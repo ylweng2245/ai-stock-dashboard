@@ -398,22 +398,25 @@ export async function registerRoutes(
         `SELECT info_json, quarterly_income_json, eps_history_json, calendar_json FROM fundamental_data WHERE symbol=? AND market=? LIMIT 1`
       ).get(symbol, market) as { info_json: string; quarterly_income_json: string; eps_history_json: string; calendar_json: string } | undefined;
       if (fd) {
-        const info   = JSON.parse(fd.info_json || "{}");
-        const cal    = JSON.parse(fd.calendar_json || "{}");
-        const qInc   = JSON.parse(fd.quarterly_income_json || "[]") as any[];
+        const info    = JSON.parse(fd.info_json || "{}");
+        const cal     = JSON.parse(fd.calendar_json || "{}");
+        const qInc    = JSON.parse(fd.quarterly_income_json || "[]") as any[];
         const epsHist = JSON.parse(fd.eps_history_json || "[]") as any[];
-        // Build date -> epsActual lookup from eps_history_json
-        // Use YYYY-MM prefix match because Yahoo earningsHistory quarter date
-        // may differ from qInc date by a few days (e.g. 2026-03-30 vs 2026-03-31)
+
+        // Convert date string to "YYYYQn" label — same logic as fundamentalService.ts
+        function toQLabel(dateStr: string): string {
+          const d = new Date(dateStr);
+          if (isNaN(d.getTime())) return "";
+          return `${d.getFullYear()}Q${Math.ceil((d.getMonth() + 1) / 3)}`;
+        }
+
+        // Build YYYYQn -> epsActual map
         const epsMap = new Map<string, number>();
         for (const e of epsHist) {
-          if (e.quarter && e.epsActual !== undefined && e.epsActual !== null) {
-            // Store by full date AND by YYYY-MM prefix for fuzzy matching
-            const d = e.quarter.slice(0, 10);
-            epsMap.set(d, e.epsActual);
-            epsMap.set(d.slice(0, 7), e.epsActual); // YYYY-MM key
-          }
+          const label = toQLabel(e.quarter || "");
+          if (label && e.epsActual != null) epsMap.set(label, e.epsActual);
         }
+
         lines.push(`\n【基本面】`);
         if (info.pe_ratio)    lines.push(`本益比(PE)：${info.pe_ratio}x`);
         if (info.eps_ttm)     lines.push(`EPS(TTM)：${cur}${info.eps_ttm}`);
@@ -422,17 +425,17 @@ export async function registerRoutes(
         if (info.market_cap)  lines.push(`市值：${cur}${(info.market_cap / 1e9).toFixed(1)}B`);
         if (info.sector)      lines.push(`產業：${info.sector}`);
         if (cal.earnings_date) lines.push(`下次財報日：${cal.earnings_date}`);
-        // Latest 2 quarters: revenue from qInc, EPS from epsMap by date
+
+        // Latest 2 quarters — join revenue + EPS by YYYYQn label
         if (qInc.length >= 1) {
           const recent = qInc.slice(0, 2);
           const qStr = recent.map((q: any) => {
-            const date = (q.date || q.period || q.quarter || "—").slice(0, 10);
-            const rev  = q.totalRevenue ?? q.revenue;
+            const label  = toQLabel(q.date || q.quarter || "");
+            const rev    = q.totalRevenue ?? q.revenue;
             const revStr = rev ? `${cur}${(rev / 1e9).toFixed(2)}B` : "N/A";
-            // Try exact date, then YYYY-MM prefix
-            const eps = epsMap.get(date) ?? epsMap.get(date.slice(0, 7));
-            const epsStr = eps !== undefined ? `${cur}${eps}` : "N/A";
-            return `${date}: 營收${revStr} EPS${epsStr}`;
+            const eps    = label ? epsMap.get(label) : undefined;
+            const epsStr = eps != null ? `${cur}${eps}` : "N/A";
+            return `${label || "—"}: 營收${revStr} EPS${epsStr}`;
           }).join(" | ");
           lines.push(`近期季報：${qStr}`);
         }
