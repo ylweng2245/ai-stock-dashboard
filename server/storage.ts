@@ -896,6 +896,18 @@ export class DatabaseStorage implements IStorage {
     return !!row;
   }
 
+  upsertNewsSentiment(symbol: string, market: string, date: string, sentimentScore: number, bullishRatio: number, articleCount: number): void {
+    sqlite.prepare(`
+      INSERT INTO news_sentiment (symbol, market, date, sentiment_score, bullish_ratio, article_count, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, market, date) DO UPDATE SET
+        sentiment_score = excluded.sentiment_score,
+        bullish_ratio   = excluded.bullish_ratio,
+        article_count   = excluded.article_count,
+        fetched_at      = excluded.fetched_at
+    `).run(symbol, market, date, sentimentScore, bullishRatio, articleCount, new Date().toISOString());
+  }
+
   getStockNote(symbol: string, market: string): string {
     const row = sqlite.prepare(
       "SELECT content FROM stock_notes WHERE symbol = ? AND market = ?"

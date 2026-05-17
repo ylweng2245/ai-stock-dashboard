@@ -195,83 +195,6 @@ def derive_sentiment(content: str) -> str:
     return "neutral"
 
 
-# ── Sentiment scoring (structured extraction from Bull/Bear analysis) ──────────
-
-# Positive/negative signal words found in bull and bear case text
-_BULL_SIGNALS = [
-    r'beat\b', r'exceed', r'surpass', r'raise[sd]?\s+guidance', r'raised\s+\w+\s+guidance',
-    r'record\s+\w*(revenue|sales|profit|earnings)', r'upgrad', r'strong\s+(growth|demand|beat)',
-    r'exceptional', r'outperform', r'accelerat', r'expand', r'momentum',
-    r'bullish', r'positive\s+catalyst', r'upside', r'conviction', r'growth\s+driver',
-]
-_BEAR_SIGNALS = [
-    r'downgrad', r'miss', r'cut\s+(price\s+)?target', r'concern', r'risk\b', r'headwind',
-    r'decline', r'disappoint', r'compress', r'slowdown', r'cautious', r'warning',
-    r'pressure', r'uncertainty', r'bearish', r'selling', r'downside',
-]
-
-
-def _count_signals(text: str, patterns: list) -> float:
-    """Count total regex matches in text, capped at patterns count for normalization."""
-    return sum(1 for p in patterns if re.search(p, text, re.IGNORECASE))
-
-
-def compute_sentiment_score(content: str) -> dict:
-    """
-    Parse structured Bull/Bear analysis from finance_ticker_sentiment content.
-    Returns {sentiment_score: float[-1,1], bullish_ratio: float[0,1], article_count: int}.
-
-    Algorithm:
-    1. Split into Issues, each with a Bull section and Bear section
-    2. For each section: score = base_weight(citations) + signal_words
-    3. Final score = (sum_bull - sum_bear) / (sum_bull + sum_bear + ε)
-    """
-    # Split into bull and bear sections by emoji markers
-    bull_sections = re.findall(
-        r'🐂[^🐻🐂]*',
-        content, re.DOTALL
-    )
-    bear_sections = re.findall(
-        r'🐻[^🐂🐻]*',
-        content, re.DOTALL
-    )
-
-    # Count Issues for article_count proxy
-    issue_count = len(re.findall(r'\*\*Issue \d+', content))
-    article_count = max(issue_count, len(bull_sections), 1)
-
-    def section_weight(sections: list, signal_patterns: list) -> float:
-        total = 0.0
-        for sec in sections:
-            # Base weight: number of cited sources [N, M, ...]
-            cited = len(re.findall(r'\[\d+\]', sec))
-            base = 1.0 + min(cited * 0.3, 1.5)  # 1.0 to 2.5
-            # Signal words boost
-            signals = _count_signals(sec, signal_patterns)
-            boost = min(signals * 0.2, 0.8)      # 0 to 0.8
-            total += base + boost
-        return total
-
-    bull_weight = section_weight(bull_sections, _BULL_SIGNALS)
-    bear_weight = section_weight(bear_sections, _BEAR_SIGNALS)
-    total = bull_weight + bear_weight
-
-    if total < 0.01:
-        score = 0.0
-    else:
-        # Range: -1.0 (all bear) to +1.0 (all bull)
-        raw = (bull_weight - bear_weight) / total
-        # Dampen slightly — market news rarely hits ±1.0
-        score = round(max(-1.0, min(1.0, raw * 1.2)), 4)
-
-    bullish_ratio = round(bull_weight / total, 4) if total > 0 else 0.5
-
-    return {
-        "sentiment_score": score,
-        "bullish_ratio":   bullish_ratio,
-        "article_count":   article_count,
-    }
-
 def extract_summary(content: str) -> str:
     """Keep the analysis body, cut before the Sources block."""
     m = re.search(r'\n\*?\*?Sources:\*?\*?\n|\n\[0\]', content)
@@ -301,15 +224,14 @@ def fetch_ticker_digest(ticker: str, company_name: str) -> dict | None:
         summary_en = extract_summary(content)
         sentiment  = derive_sentiment(content)
         sources    = parse_sources(content)
-        sent_score = compute_sentiment_score(content)  # structured -1~+1 score
 
         # Translate summary to Traditional Chinese
         try:
             summary = translate_to_zh(summary_en)
-            print(f"[news-cron] {ticker}: sentiment={sentiment}, score={sent_score['sentiment_score']:.3f}, {len(sources)} sources, translated OK")
+            print(f"[news-cron] {ticker}: sentiment={sentiment}, {len(sources)} sources, translated OK")
         except Exception as te:
             summary = summary_en  # fallback to English if translation fails
-            print(f"[news-cron] {ticker}: sentiment={sentiment}, score={sent_score['sentiment_score']:.3f}, {len(sources)} sources, translation FAILED ({te}) — keeping English")
+            print(f"[news-cron] {ticker}: sentiment={sentiment}, {len(sources)} sources, translation FAILED ({te}) — keeping English")
 
         return {
             "ticker":           ticker,
@@ -317,13 +239,10 @@ def fetch_ticker_digest(ticker: str, company_name: str) -> dict | None:
             "generatedAt":      int(datetime.now(timezone.utc).timestamp() * 1000),
             "priceClose":       None,
             "priceChangePct":   None,
-            "summaryText":      summary,
+            "summaryText":      summary,       # zh-TW translated, for UI display
+            "summaryRaw":       summary_en,    # English original, for server-side sentiment scoring
             "sentimentLabel":   sentiment,
             "sources":          sources,
-            # Structured sentiment score for ML features (replaces AV)
-            "sentimentScore":   sent_score["sentiment_score"],
-            "bullishRatio":     sent_score["bullish_ratio"],
-            "articleCount":     sent_score["article_count"],
         }
     except Exception as e:
         print(f"[news-cron] {ticker} ERROR: {e}")
@@ -387,31 +306,6 @@ def main():
             tickers = [d['ticker'] for d in batch]
             print(f"[news-cron] Batch {i//BATCH_SIZE + 1} POST failed {tickers}: {e}")
     print(f"[news-cron] Done. Synced {total_saved}/{len(digests)} stocks.")
-
-    # Step 5: POST sentiment scores to news-sentiment-sync (replaces AV cron)
-    # Only include digests that have a valid score
-    sentiment_rows = [
-        {
-            "symbol":          d["ticker"],
-            "market":          "US",
-            "date":            d["digestDate"],
-            "sentiment_score": d["sentimentScore"],
-            "bullish_ratio":   d["bullishRatio"],
-            "article_count":   d["articleCount"],
-        }
-        for d in digests
-        if d.get("sentimentScore") is not None
-    ]
-    if sentiment_rows:
-        try:
-            resp2 = http_post_json(
-                f"{base_url}/api/internal/news-sentiment-sync",
-                sentiment_rows,
-                headers={"X-Sync-Secret": SYNC_SECRET},
-            )
-            print(f"[news-cron] Sentiment sync: {resp2}")
-        except Exception as e:
-            print(f"[news-cron] Sentiment sync failed: {e}")
 
 if __name__ == "__main__":
     main()
