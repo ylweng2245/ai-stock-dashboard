@@ -242,15 +242,29 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
             result["sector_rs_5d"] = float("nan")
             result["sector_rs_20d"] = float("nan")
 
-        # === Layer 4: Alpha Vantage News Sentiment ===
-        # Get most recent 3 trading days of sentiment for rolling avg
+        # === Layer 4: News Sentiment (from finance digest, server-scored) ===
+        # Use a 7-day lookback window so weekend/non-trading-day digests are included.
+        # News sentiment is updated daily regardless of trading calendar.
+        from datetime import timedelta
+        lookback_start = (as_of_date - timedelta(days=7)).isoformat()
         sent_rows = conn.execute("""
             SELECT date, sentiment_score, bullish_ratio, article_count
             FROM news_sentiment
             WHERE symbol=? AND market=?
-              AND date <= ?
+              AND date >= ? AND date <= ?
             ORDER BY date DESC LIMIT 5
-        """, (symbol, market, as_of_date.isoformat())).fetchall()
+        """, (symbol, market, lookback_start, as_of_date.isoformat())).fetchall()
+
+        # If no rows within 7d before as_of_date, try up to 3 days after (weekend update case)
+        if not sent_rows:
+            lookahead_end = (as_of_date + timedelta(days=3)).isoformat()
+            sent_rows = conn.execute("""
+                SELECT date, sentiment_score, bullish_ratio, article_count
+                FROM news_sentiment
+                WHERE symbol=? AND market=?
+                  AND date <= ?
+                ORDER BY date DESC LIMIT 5
+            """, (symbol, market, lookahead_end)).fetchall()
 
         if sent_rows and sent_rows[0]["sentiment_score"] is not None:
             # Most recent day score
