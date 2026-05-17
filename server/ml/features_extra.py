@@ -242,6 +242,31 @@ def get_extra_features(symbol: str, market: str, as_of_date: date, db_path: str 
             result["sector_rs_5d"] = float("nan")
             result["sector_rs_20d"] = float("nan")
 
+        # === Layer 4: Alpha Vantage News Sentiment ===
+        # Get most recent 3 trading days of sentiment for rolling avg
+        sent_rows = conn.execute("""
+            SELECT date, sentiment_score, bullish_ratio, article_count
+            FROM news_sentiment
+            WHERE symbol=? AND market=?
+              AND date <= ?
+            ORDER BY date DESC LIMIT 5
+        """, (symbol, market, as_of_date.isoformat())).fetchall()
+
+        if sent_rows and sent_rows[0]["sentiment_score"] is not None:
+            # Most recent day score
+            result["news_sentiment_score"] = float(sent_rows[0]["sentiment_score"])
+            result["news_bullish_ratio"] = float(sent_rows[0]["bullish_ratio"]) if sent_rows[0]["bullish_ratio"] is not None else float("nan")
+            result["news_article_count"] = float(sent_rows[0]["article_count"]) if sent_rows[0]["article_count"] else float("nan")
+
+            # 3-day rolling average sentiment
+            recent_scores = [float(r["sentiment_score"]) for r in sent_rows[:3] if r["sentiment_score"] is not None]
+            result["news_sentiment_3d_avg"] = sum(recent_scores) / len(recent_scores) if recent_scores else float("nan")
+        else:
+            result["news_sentiment_score"] = float("nan")
+            result["news_bullish_ratio"] = float("nan")
+            result["news_article_count"] = float("nan")
+            result["news_sentiment_3d_avg"] = float("nan")
+
         conn.close()
     except Exception as e:
         # Never crash predict.py — return NaN for everything

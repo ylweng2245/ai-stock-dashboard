@@ -149,6 +149,9 @@ FEATURES = [
     # Layer 3: Market + Sector
     "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
     "sector_rs_5d", "sector_rs_20d",
+    # Layer 4: News Sentiment (Alpha Vantage)
+    "news_sentiment_score", "news_bullish_ratio",
+    "news_sentiment_3d_avg", "news_article_count",
 ]
 
 
@@ -198,6 +201,11 @@ FEATURE_LABELS = {
     "vix_5d_change":        "VIX5日變化",
     "sector_rs_5d":         "板塊5日RS",
     "sector_rs_20d":        "板塊20日RS",
+    # Layer 4: News Sentiment
+    "news_sentiment_score":   "新聞情緒分",
+    "news_bullish_ratio":     "新聞看多比率",
+    "news_sentiment_3d_avg":  "情緒3日均值",
+    "news_article_count":     "新聞熱度",
 }
 
 
@@ -276,6 +284,8 @@ def run():
         "eps_qoq", "days_since_earnings",
         "fear_greed", "fear_greed_delta_7d", "vix_level", "vix_5d_change",
         "sector_rs_5d", "sector_rs_20d",
+        "news_sentiment_score", "news_bullish_ratio",
+        "news_sentiment_3d_avg", "news_article_count",
     ]
     for key in extra_keys:
         df[key] = df["date"].map(lambda d, k=key: extra_cache.get(d, {}).get(k, float("nan")))

@@ -16,7 +16,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, asc, and, gte, lte, max, desc } from "drizzle-orm";
 
-const sqlite = new Database("data.db");
+export const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
 
 // Ensure core tables exist (fresh DB on first run)
@@ -1022,6 +1022,24 @@ try {
     updated_at INTEGER NOT NULL
   )`);
   sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS fund_sym_market ON fundamental_data (symbol, market)`);
+} catch {
+  // Already exists
+}
+
+// Ensure news_sentiment table exists (AV daily sentiment)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS news_sentiment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL DEFAULT 'US',
+    date TEXT NOT NULL,
+    sentiment_score REAL,
+    bullish_ratio REAL,
+    article_count INTEGER,
+    fetched_at TEXT,
+    UNIQUE(symbol, market, date)
+  )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS news_sentiment_sym_date ON news_sentiment (symbol, market, date)`);
 } catch {
   // Already exists
 }

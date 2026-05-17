@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import multer from "multer";
 import * as XLSX from "xlsx";
-import { storage } from "./storage";
+import { storage, sqlite } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction, type InsertAnalystTarget } from "@shared/schema";
 import Anthropic from "@anthropic-ai/sdk";
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
@@ -1364,6 +1364,51 @@ export async function registerRoutes(
       console.error("[analyst-sync] error:", e.message);
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // POST /api/internal/news-sentiment-sync
+  // Body: [{ symbol, market, date, sentiment_score, bullish_ratio, article_count }]
+  app.post("/api/internal/news-sentiment-sync", (req, res) => {
+    const secret = req.headers["x-sync-secret"];
+    if (secret !== process.env.INTERNAL_SYNC_SECRET) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const rows: any[] = req.body;
+    if (!Array.isArray(rows)) {
+      return res.status(400).json({ error: "expected array" });
+    }
+
+    const now = new Date().toISOString();
+    const stmt = sqlite.prepare(`
+      INSERT INTO news_sentiment (symbol, market, date, sentiment_score, bullish_ratio, article_count, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, market, date) DO UPDATE SET
+        sentiment_score = excluded.sentiment_score,
+        bullish_ratio = excluded.bullish_ratio,
+        article_count = excluded.article_count,
+        fetched_at = excluded.fetched_at
+    `);
+
+    let synced = 0;
+    for (const row of rows) {
+      try {
+        stmt.run(
+          row.symbol,
+          row.market || "US",
+          row.date,
+          row.sentiment_score ?? null,
+          row.bullish_ratio ?? null,
+          row.article_count ?? null,
+          now
+        );
+        synced++;
+      } catch (e) {
+        // skip bad rows
+      }
+    }
+
+    return res.json({ synced });
   });
 
   /**
