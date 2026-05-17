@@ -31,32 +31,32 @@ interface QuotesResponse {
 interface QuickPrompt {
   label: string;
   icon: React.ElementType;
-  questionType: "trade" | "news" | "macro" | "default";
+  questionType: string;
   color: string;
 }
 
 // ─── 一鍵提問定義 ──────────────────────────────────────────────────────────────
 
 const TRADE_PROMPTS: QuickPrompt[] = [
-  { label: "該進場嗎？",   icon: TrendingUp,    questionType: "trade", color: "text-gain" },
-  { label: "該獲利了結？", icon: DollarSign,    questionType: "trade", color: "text-gain" },
-  { label: "該低接嗎？",   icon: TrendingDown,  questionType: "trade", color: "text-loss" },
-  { label: "該攤平嗎？",   icon: RefreshCw,     questionType: "trade", color: "text-loss" },
-  { label: "該停損嗎？",   icon: ShieldAlert,   questionType: "trade", color: "text-loss" },
-  { label: "估值溢價？",   icon: AlertTriangle, questionType: "trade", color: "text-muted-foreground" },
+  { label: "該進場嗎？",   icon: TrendingUp,    questionType: "trade_enter",    color: "text-gain" },
+  { label: "該獲利了結？", icon: DollarSign,    questionType: "trade_profit",   color: "text-gain" },
+  { label: "該低接嗎？",   icon: TrendingDown,  questionType: "trade_dip",      color: "text-loss" },
+  { label: "該攤平嗎？",   icon: RefreshCw,     questionType: "trade_average",  color: "text-loss" },
+  { label: "該停損嗎？",   icon: ShieldAlert,   questionType: "trade_stoploss", color: "text-loss" },
+  { label: "估值溢價？",   icon: AlertTriangle, questionType: "trade_valuation",color: "text-muted-foreground" },
 ];
 
 const NEWS_PROMPTS: QuickPrompt[] = [
-  { label: "消息多空判斷", icon: Newspaper,     questionType: "news", color: "text-[#1cb8be]" },
-  { label: "基本面影響？", icon: BarChart3,     questionType: "news", color: "text-[#1cb8be]" },
-  { label: "財報前後策略", icon: Activity,      questionType: "news", color: "text-[#1cb8be]" },
-  { label: "個股風險預警", icon: AlertTriangle, questionType: "news", color: "text-[#1cb8be]" },
+  { label: "消息多空判斷", icon: Newspaper,     questionType: "news",             color: "text-[#1cb8be]" },
+  { label: "基本面影響？", icon: BarChart3,     questionType: "news_fundamental", color: "text-[#1cb8be]" },
+  { label: "財報前後策略", icon: Activity,      questionType: "news_earnings",    color: "text-[#1cb8be]" },
+  { label: "個股風險預警", icon: AlertTriangle, questionType: "news_risk",        color: "text-[#1cb8be]" },
 ];
 
 const MACRO_PROMPTS: QuickPrompt[] = [
-  { label: "大盤趨勢分析", icon: Globe,       questionType: "macro", color: "text-purple-400" },
-  { label: "崩盤預警",     icon: ShieldAlert, questionType: "macro", color: "text-purple-400" },
-  { label: "板塊輪動分析", icon: RefreshCw,   questionType: "macro", color: "text-purple-400" },
+  { label: "大盤趨勢分析", icon: Globe,       questionType: "macro",          color: "text-purple-400" },
+  { label: "崩盤預警",     icon: ShieldAlert, questionType: "macro_crash",    color: "text-purple-400" },
+  { label: "板塊輪動分析", icon: RefreshCw,   questionType: "macro_rotation", color: "text-purple-400" },
 ];
 
 // ─── Component ──────────────────────────────────────────────────────────────

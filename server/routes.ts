@@ -341,14 +341,17 @@ export async function registerRoutes(
     // ── 持倉資訊 ──
     try {
       const holding = sqlite.prepare(
-        `SELECT shares, cost_basis, current_value FROM holdings WHERE symbol=? AND market=? LIMIT 1`
-      ).get(symbol, market) as { shares: number; cost_basis: number; current_value: number } | undefined;
+        `SELECT shares, avg_cost FROM holdings WHERE symbol=? AND market=? LIMIT 1`
+      ).get(symbol, market) as { shares: number; avg_cost: number } | undefined;
       if (holding) {
-        const cost = holding.cost_basis;
-        const value = price * holding.shares;
+        const cost = holding.avg_cost;
         const pnl = ((price - cost) / cost * 100);
+        const currentValue = price * holding.shares;
         lines.push(`\n【持倉】`);
-        lines.push(`持有股數：${holding.shares.toLocaleString()} | 平均成本：${cur}${cost.toFixed(2)} | 未實現損益：${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`);
+        lines.push(`持有股數：${holding.shares.toLocaleString()} | 平均成本：${cur}${cost.toFixed(2)} | 現值：${cur}${currentValue.toLocaleString(undefined, {maximumFractionDigits:0})} | 未實現損益：${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`);
+      } else {
+        lines.push(`\n【持倉】`);
+        lines.push(`目前未持有此股票`);
       }
     } catch { /* no holding */ }
 
@@ -408,15 +411,27 @@ export async function registerRoutes(
       ).get(symbol, market) as { meta_json: string; run_at: string } | undefined;
       if (pred) {
         const meta = JSON.parse(pred.meta_json || "{}");
+        // horizons stored as JSON string in horizonsJson field
+        const horizons: Record<string, any> = meta.horizonsJson
+          ? JSON.parse(meta.horizonsJson)
+          : {};
         lines.push(`\n【ML 預測（${pred.run_at.slice(0,10)}）】`);
-        if (meta.predictions) {
-          const horizons = [5, 10, 20];
-          for (const h of horizons) {
-            const p = meta.predictions[h] || meta.predictions[String(h)];
-            if (p) lines.push(`${h}日：${p.predicted_return >= 0 ? "+" : ""}${(p.predicted_return * 100).toFixed(2)}% | 上漲機率：${(p.up_probability * 100).toFixed(0)}%`);
+        const displayHorizons = [5, 10, 20];
+        let hasPredData = false;
+        for (const h of displayHorizons) {
+          const hp = horizons[String(h)];
+          if (hp) {
+            hasPredData = true;
+            const ret = hp.medianReturn ?? 0;
+            const prob = hp.upProbability ?? 0;
+            lines.push(`${h}日預測：${ret >= 0 ? "+" : ""}${ret.toFixed(2)}% | 上漲機率：${(prob * 100).toFixed(0)}%`);
           }
         }
-        if (meta.modelVersion) lines.push(`模型：${meta.modelVersion}（特徵數：${meta.featureCount ?? "N/A"}）`);
+        if (!hasPredData) lines.push(`（預測資料待更新）`);
+        const featCount = Array.isArray(meta.featuresUsed) ? meta.featuresUsed.length : (meta.featureCount ?? "N/A");
+        const weights = meta.ensembleWeights;
+        const wStr = weights ? ` HGB:${weights.hgb} LGB:${weights.lgb} RF:${weights.rf}` : "";
+        if (meta.modelVersion) lines.push(`模型：${meta.modelVersion}（特徵數：${featCount}）${wStr}`);
       }
     } catch { /* no prediction */ }
 
@@ -495,12 +510,48 @@ export async function registerRoutes(
   /** Build a ready-to-paste Perplexity prompt from DB context + question intent */
   function buildUserPrompt(ctx: string, questionType: string, customQuestion?: string): string {
     const searchInstructions: Record<string, string> = {
-      trade: `請搜尋該公司最近 7 天的最新新聞、主要競爭對手的最新動態，以及任何可能影響股價的重大事件。
-結合上述持倉數據，回答：現在該買進 / 加碼 / 持有 / 減碼 / 停損？給出具體建議與操作區間，若有估值溢價風險請特別警示。`,
+      // ── 買賣決策類 ──
+      trade_enter: `請搜尋該公司最近 7 天最新新聞與競爭對手動態。
+結合上述數據，分析現在是否適合買進建立持股：目前估值是否合理（PE、目標價潛在空間）？技術面是否在相對低點或突破位置？ML預測方向是否支持？給出建議進場區間與分批策略。`,
+
+      trade_profit: `請搜尋該公司最近 7 天最新新聞與競爭對手動態。
+結合上述持倉成本與未實現損益，分析是否應獲利了結：目前距分析師目標價還有多少空間？估值是否已過高？ML預測短期有無回調風險？建議全出、部分了結還是續抱？`,
+
+      trade_dip: `請搜尋該公司最近 7 天最新新聞，確認下跌原因是消息面還是基本面惡化。
+結合上述數據，分析現在是否適合低接：下跌是暫時性還是趨勢性？技術面支撐在哪？基本面是否仍健全？給出建議低接區間與風險提示。`,
+
+      trade_average: `請搜尋該公司最近 7 天最新新聞，確認是否有影響長期基本面的重大負面消息。
+結合上述持倉成本與虧損幅度，分析是否值得攤平：公司基本面是否仍支持長期持有？攤平後新成本合理嗎？還是應設停損？給出明確建議。`,
+
+      trade_stoploss: `請搜尋該公司最近 7 天最新新聞，確認是否有基本面惡化或重大利空。
+結合上述持倉成本與技術面，判斷是否出現停損訊號：技術面關鍵支撐是否已破？基本面是否改變？建議停損點位在哪？繼續持有的最大風險是什麼？`,
+
+      trade_valuation: `請搜尋該公司最近財報、分析師報告與同業估值比較。
+結合上述PE、EPS、分析師目標價，分析目前估值是否合理：與歷史估值區間相比是高是低？與同業相比溢價多少？若利率或成長預期改變，估值下修空間多大？`,
+
+      // ── 消息面判斷類 ──
       news: `請搜尋該公司最近 7 天的最新新聞、財報發布情況、競爭對手動態。
 判斷：1.多空方向與強度 2.消息是否改變營運基本面或技術競爭力 3.財報前後操作建議 4.有無個股風險預警。`,
+
+      news_fundamental: `請搜尋該公司最近的財報、法說會內容、產品管線更新與競爭對手消息。
+分析：近期消息是否實質改變公司的營收成長潛力、毛利率趨勢或技術競爭優勢？是正面還是負面影響？影響是短期還是長期？`,
+
+      news_earnings: `請搜尋該公司最近的財報結果、法說會指引與分析師反應。
+結合上述財報日期與近期季報數據，提供財報前後操作策略：財報前應持有/減碼/加碼？財報後根據結果如何應對？預期落差風險多大？`,
+
+      news_risk: `請搜尋該公司最近的負面消息、監管風險、訴訟、競爭威脅與市場份額變化。
+結合上述新聞情緒與基本面數據，列出目前最值得警惕的個股風險因子，評估每項風險的嚴重程度與發生機率。`,
+
+      // ── 大盤趨勢類 ──
       macro: `請搜尋目前全球最新的政經新聞、貨幣政策動向、地緣政治風險與板塊輪動趨勢。
 分析：1.大盤環境是順風還是逆風 2.有無崩盤預警 3.板塊輪動對持股的影響，給出明確倉位建議。`,
+
+      macro_crash: `請搜尋目前美股最新市場情緒指標、信用利差、VIX走勢、資金流向與機構風險預警報告。
+結合上述 Fear & Greed 與 Macro 情緒分數，判斷：目前是否出現系統性風險訊號？歷史上類似指標組合後市場表現如何？持股應如何調整倉位對沖？`,
+
+      macro_rotation: `請搜尋目前美股各板塊資金流向、ETF 進出資金、機構持倉變化與板塊輪動分析報告。
+結合上述板塊相對強弱數據，分析：目前資金是否正在流入或流出此股票所在板塊？板塊輪動趨勢對此持股是利多還是利空？`,
+
       default: `請搜尋相關最新資訊，結合以上數據給出整合性回答。`,
     };
 
