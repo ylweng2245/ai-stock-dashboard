@@ -829,15 +829,19 @@ export default function TechnicalAnalysis() {
   });
 
   // Fetch a historical run by run_id for comparison
-  const { isFetching: isCompareFetching } = useQuery<PredictionRun>({
+  const { isFetching: isCompareFetching, data: compareRunData } = useQuery<PredictionRun>({
     queryKey: ["/api/predictions/run", compareRunId],
     queryFn: () =>
       apiRequest("GET", `/api/predictions/run/${compareRunId}`)
         .then(r => r.json()),
     staleTime: Infinity,
     enabled: !!compareRunId,
-    onSuccess: (data: PredictionRun) => setComparePrediction(data),
-  } as any);
+  });
+
+  // TanStack Query v5: onSuccess removed — use useEffect instead
+  useEffect(() => {
+    if (compareRunData) setComparePrediction(compareRunData);
+  }, [compareRunData]);
 
   // Trigger a new prediction run
   const triggerPredMutation = useMutation({
