@@ -112,11 +112,13 @@ function parseSummaryText(raw: string): QuestionBlock[] {
 }
 
 function extractBullsBears(chunk: string) {
+  // Match 🐂 followed by any bold label (e.g. **多頭觀點：**, **多頭市場狀況：**, **看漲：** etc.)
   const bullMatch = chunk.match(
-    /(?:🐂\s*\*\*(?:多頭|看漲)觀點[：:]?\*\*|🐂\s*(?:多頭|看漲)觀點[：:]?|\*\*(?:多頭|看漲)觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
+    /(?:🐂\s*\*\*[^*]+\*\*\s*[：:]?|🐂\s*(?:多頭|看漲)[^\n]*?[：:]?|\*\*(?:多頭|看漲)觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
   );
+  // Match 🐻 followed by any bold label
   const bearMatch = chunk.match(
-    /(?:🐻\s*\*\*(?:空頭|看跌|熊市)觀點?[：:]?\*\*|🐻\s*(?:空頭|看跌|熊市)觀點?[：:]?|\*\*(?:空頭|看跌|熊市)觀點?[：:]\*\*)(.*?)(?=$)/s
+    /(?:🐻\s*\*\*[^*]+\*\*\s*[：:]?|🐻\s*(?:空頭|看跌|熊市)[^\n]*?[：:]?|\*\*(?:空頭|看跌|熊市)觀點?[：:]\*\*)(.*?)(?=$)/s
   );
   const cleanBull = bullMatch ? cleanSegment(bullMatch[1]) : "";
   const cleanBear = bearMatch ? cleanSegment(bearMatch[1]) : "";
