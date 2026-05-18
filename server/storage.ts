@@ -728,11 +728,8 @@ export class DatabaseStorage implements IStorage {
 
   /** Insert a prediction row — deletes any existing row for same symbol+market+date first (keep one per day). */
   insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number }): void {
-    // Delete existing predictions for same symbol+market+date (keep only latest per day)
-    sqlite.prepare(`
-      DELETE FROM modelpredictions
-      WHERE symbol = ? AND market = ? AND date(run_at) = date(?)
-    `).run(row.symbol, row.market, row.runAt);
+    // INSERT new record first, THEN delete older same-day records.
+    // This avoids a flash where the chart has no prediction while the new one is being computed.
     sqlite.prepare(`
       INSERT INTO modelpredictions
         (symbol, market, model_name, horizon_days, run_at, start_date, end_date,
@@ -759,6 +756,12 @@ export class DatabaseStorage implements IStorage {
       baseDate:       (row as any).baseDate ?? null,
       basePrice:      (row as any).basePrice ?? null,
     });
+    // After successful insert, remove older same-day records (keep only the one just inserted)
+    const newId = sqlite.prepare(`SELECT last_insert_rowid() as id`).get() as { id: number };
+    sqlite.prepare(`
+      DELETE FROM modelpredictions
+      WHERE symbol = ? AND market = ? AND date(run_at) = date(?) AND id != ?
+    `).run(row.symbol, row.market, row.runAt, newId.id);
   }
 
   /** Query prediction runs within a date window, newest first. */
