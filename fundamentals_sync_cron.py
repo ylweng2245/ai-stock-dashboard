@@ -168,7 +168,7 @@ def parse_financials(content: str) -> tuple[list[dict], list[dict]]:
 def fetch_fundamentals(symbol: str) -> tuple[list[dict], list[dict]]:
     result = call_tool("finance", "finance_company_financials", {
         "ticker": symbol,
-        "period": "quarterly",
+        "period": "quarter",
         "limit": 12,
     })
     content = result.get("content", "")
