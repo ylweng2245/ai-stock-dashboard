@@ -3,7 +3,6 @@ import { useTheme } from "@/lib/themeProvider";
 import {
   LayoutDashboard,
   TrendingUp,
-  Brain,
   Sparkles,
   Briefcase,
   Bell,
@@ -21,7 +20,6 @@ const navItems = [
   { path: "/news-digest", label: "個股每日新聞", icon: Newspaper },
   { path: "/fundamentals", label: "基本面分析", icon: BarChart2 },
   { path: "/analysis", label: "技術分析", icon: TrendingUp },
-  { path: "/prediction", label: "ML 預測", icon: Brain },
   { path: "/insights", label: "AI 洞察", icon: Sparkles },
   { path: "/portfolio", label: "投資組合", icon: Briefcase },
   { path: "/alerts", label: "價格警報", icon: Bell },

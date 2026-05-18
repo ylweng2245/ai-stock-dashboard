@@ -11,7 +11,6 @@ import { ActiveSymbolProvider } from "@/context/ActiveSymbolContext";
 import Dashboard from "@/pages/Dashboard";
 import FundamentalAnalysis, { EXCLUDED_FUNDAMENTAL_SYMBOLS } from "@/pages/FundamentalAnalysis";
 import TechnicalAnalysis from "@/pages/TechnicalAnalysis";
-import MLPrediction from "@/pages/MLPrediction";
 import AIInsights from "@/pages/AIInsights";
 import Portfolio from "@/pages/Portfolio";
 import Alerts from "@/pages/Alerts";
@@ -36,11 +35,6 @@ function AppRouter() {
         <Route path="/analysis">
           <StockAnalysisLayout>
             <TechnicalAnalysis />
-          </StockAnalysisLayout>
-        </Route>
-        <Route path="/prediction">
-          <StockAnalysisLayout>
-            <MLPrediction />
           </StockAnalysisLayout>
         </Route>
         <Route path="/insights">
