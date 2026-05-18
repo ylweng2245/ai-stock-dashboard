@@ -9,7 +9,7 @@ import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayloa
 import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, saveMacroSentiment, type DigestSyncItem } from "./newsDigestService";
 import { runPrediction } from "./mlPredictionService";
-import { ensurePrediction, getSchedulerStatus, triggerSweepNow } from "./predictionScheduler";
+import { ensurePrediction, getSchedulerStatus, triggerSweepNow, triggerForceAll } from "./predictionScheduler";
 import { buildPersonalPositionState, generatePersonalAdvice, DEFAULT_STRATEGY } from "./personalAdviceService";
 import { buildAnalystConsensusFeatures } from "./analystConsensusService";
 
@@ -2080,6 +2080,13 @@ ${search}${questionPart}
   app.post("/api/predictions/sweep", (_req, res) => {
     triggerSweepNow();
     res.json({ ok: true, message: "Sweep triggered" });
+  });
+
+  // POST /api/predictions/run-all — force re-predict ALL symbols (ignores today's existing)
+  // DB keeps only latest per day; old same-day records are deleted before insert.
+  app.post("/api/predictions/run-all", (_req, res) => {
+    triggerForceAll();
+    res.json({ ok: true, message: "Force re-predict all symbols triggered" });
   });
 
   // V6.1: GET /api/personal-advice

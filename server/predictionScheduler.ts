@@ -138,17 +138,19 @@ async function runOne(item: QueueItem): Promise<void> {
 }
 
 /**
- * Run a sweep over all watchlist symbols, skipping those already done today.
- * Respects MAX_CONCURRENT concurrency limit.
+ * Run a sweep over all watchlist symbols.
+ * @param label  Log label for this sweep.
+ * @param force  If true, re-predict even symbols that already have a today prediction.
+ *               Each force-run deletes the existing same-day record (DB keeps only latest per day).
  */
-async function runSweep(label = "sweep"): Promise<void> {
+async function runSweep(label = "sweep", force = false): Promise<void> {
   if (state.running) {
     console.log(`[predSched] ${label} skipped — already running`);
     return;
   }
   state.running     = true;
   state.lastSweepAt = new Date().toISOString();
-  console.log(`[predSched] ${label} started`);
+  console.log(`[predSched] ${label} started (force=${force})`);
 
   try {
     const watchlist = await storage.getWatchlist();
@@ -158,9 +160,9 @@ async function runSweep(label = "sweep"): Promise<void> {
       return;
     }
 
-    // Build queue: only items without a today prediction
+    // Build queue: skip symbols already done today (unless force=true)
     const newItems: QueueItem[] = watchlist
-      .filter(w => !hasTodayPrediction(w.symbol, w.market))
+      .filter(w => force || !hasTodayPrediction(w.symbol, w.market))
       .map(w => ({ symbol: w.symbol, market: w.market, status: "pending" as QueueItemStatus }));
 
     if (!newItems.length) {
@@ -169,12 +171,17 @@ async function runSweep(label = "sweep"): Promise<void> {
       return;
     }
 
-    // Merge into global queue (avoid duplicating items already queued/running)
-    const existingKeys = new Set(state.queue.filter(q => q.status === "pending" || q.status === "running").map(q => `${q.symbol}:${q.market}`));
-    const toAdd = newItems.filter(i => !existingKeys.has(`${i.symbol}:${i.market}`));
-    state.queue.push(...toAdd);
-
-    console.log(`[predSched] ${label} — queued ${toAdd.length} symbols (${watchlist.length - newItems.length} already done today)`);
+    if (force) {
+      // Force: reset queue entirely so UI shows fresh progress
+      state.queue = [...newItems];
+      console.log(`[predSched] ${label} (force) — queued all ${newItems.length} symbols`);
+    } else {
+      // Normal: only add symbols not already pending/running
+      const existingKeys = new Set(state.queue.filter(q => q.status === "pending" || q.status === "running").map(q => `${q.symbol}:${q.market}`));
+      const toAdd = newItems.filter(i => !existingKeys.has(`${i.symbol}:${i.market}`));
+      state.queue.push(...toAdd);
+      console.log(`[predSched] ${label} — queued ${toAdd.length} symbols (${watchlist.length - newItems.length} already done today)`);
+    }
 
     // Process queue with concurrency limit
     const pending = () => state.queue.filter(q => q.status === "pending");
@@ -365,11 +372,20 @@ export function startPredictionScheduler(): void {
 }
 
 /**
- * Trigger an immediate sweep (e.g. called from an API route).
+ * Trigger an immediate sweep for symbols missing today's prediction.
  * Non-blocking — returns immediately.
  */
 export function triggerSweepNow(): void {
   runSweep("manual").catch(e => console.error("[predSched] manual sweep error:", e));
+}
+
+/**
+ * Force re-predict ALL watchlist symbols (ignoring today's existing predictions).
+ * DB keeps only the latest per day (insertModelPrediction deletes same-day records).
+ * Non-blocking — returns immediately.
+ */
+export function triggerForceAll(): void {
+  runSweep("force-all", true).catch(e => console.error("[predSched] force-all error:", e));
 }
 
 /**

@@ -862,6 +862,21 @@ export default function TechnicalAnalysis() {
     },
   });
 
+  // Force re-predict ALL watchlist symbols
+  const runAllMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", "/api/predictions/run-all", {})
+        .then(r => r.json()),
+    onSuccess: () => {
+      // Refresh current symbol's prediction after a short delay
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["/api/predictions/latest"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/predictions/history"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/predictions/queue-status"] });
+      }, 3000);
+    },
+  });
+
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
   const isLoading = data === undefined;
 
@@ -1217,11 +1232,22 @@ export default function TechnicalAnalysis() {
               {/* Trigger new prediction button */}
               <button
                 onClick={() => triggerPredMutation.mutate()}
-                disabled={triggerPredMutation.isPending}
+                disabled={triggerPredMutation.isPending || runAllMutation.isPending}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-[#F97316]/40 text-[#F97316] hover:bg-[#F97316]/10 transition-colors disabled:opacity-40"
               >
                 <RefreshCw size={10} className={triggerPredMutation.isPending ? "animate-spin" : ""} />
                 {triggerPredMutation.isPending ? "預測中..." : "重新預測"}
+              </button>
+
+              {/* Force re-predict all watchlist symbols */}
+              <button
+                onClick={() => runAllMutation.mutate()}
+                disabled={runAllMutation.isPending || triggerPredMutation.isPending}
+                title="強制所有個股重新預測（當日只保留最後一筆）"
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-muted-foreground/30 text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
+              >
+                <RefreshCw size={10} className={runAllMutation.isPending ? "animate-spin" : ""} />
+                {runAllMutation.isPending ? "預測中..." : "全部重新預測"}
               </button>
 
               {/* Feature coverage badge */}
