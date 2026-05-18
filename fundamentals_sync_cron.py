@@ -2,8 +2,14 @@
 """
 Daily fundamentals sync cron script.
 Reads ngrok URL from GitHub Gist → fetches watchlist →
-  - finance_earnings_history  → quarterlyIncome + epsHistory
+  - finance_earnings_history  → quarterly_income_json + eps_history_json
 POSTs to /api/internal/fundamentals-sync
+
+quarterlyIncome format expected by routes.ts:
+  { fiscalYear, fiscalQuarter, revenue, grossProfit, netIncome, basicEPS, dilutedEPS }
+
+epsHistory format (for future use):
+  { date, epsActual, epsEstimate, epsSurprise }
 
 Schedule: run daily at UTC 13:30 (CST 21:30)
 """
@@ -11,9 +17,9 @@ Schedule: run daily at UTC 13:30 (CST 21:30)
 import json
 import subprocess
 import sys
+import re
 import urllib.request
 import urllib.error
-import re
 from datetime import datetime, timezone
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -58,14 +64,13 @@ def now_utc() -> str:
 # ── Markdown table parser ─────────────────────────────────────────────────────
 
 def parse_md_table(content: str) -> list[dict]:
-    """Parse first markdown table found in content into list of dicts."""
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     table_lines = [l for l in lines if l.startswith("|")]
     if len(table_lines) < 3:
         return []
     headers = [h.strip() for h in table_lines[0].strip("|").split("|")]
     rows = []
-    for line in table_lines[2:]:  # skip header + separator
+    for line in table_lines[2:]:
         vals = [v.strip() for v in line.strip("|").split("|")]
         if len(vals) == len(headers):
             rows.append(dict(zip(headers, vals)))
@@ -79,7 +84,20 @@ def safe_float(val) -> float | None:
     except (ValueError, TypeError):
         return None
 
-# ── Step 1: Get ngrok URL ─────────────────────────────────────────────────────
+def parse_fiscal_period(period: str) -> tuple[int | None, int | None]:
+    """
+    Parse "Q1 2026" or "FY2026 Q1" → (2026, 1)
+    Returns (fiscalYear, fiscalQuarter) or (None, None) if unparseable.
+    """
+    m = re.search(r'Q(\d)\s+(\d{4})', period)
+    if m:
+        return int(m.group(2)), int(m.group(1))
+    m = re.search(r'(\d{4})\s*Q(\d)', period)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
+# ── Steps ─────────────────────────────────────────────────────────────────────
 
 def get_ngrok_url() -> str:
     try:
@@ -92,8 +110,6 @@ def get_ngrok_url() -> str:
         pass
     return FIXED_SERVER_URL
 
-# ── Step 2: Get watchlist ─────────────────────────────────────────────────────
-
 def get_watchlist(base_url: str) -> list[dict]:
     data = http_get_json(f"{base_url}/api/watchlist")
     if not isinstance(data, list):
@@ -102,20 +118,20 @@ def get_watchlist(base_url: str) -> list[dict]:
     print(f"[fundamentals-cron] {len(items)} symbols: {[w['symbol'] for w in items]}")
     return items
 
-# ── Step 3: Fetch earnings history ───────────────────────────────────────────
-
 def fetch_earnings_history(symbol: str) -> tuple[list[dict], list[dict]]:
     """
-    Returns (quarterlyIncome, epsHistory) from finance_earnings_history.
-    quarterlyIncome: [{quarter, revenue, eps, ...}]
-    epsHistory:      [{date, eps, epsEstimate, surprise, surprisePct}]
+    Returns:
+      quarterlyIncome: [{ fiscalYear, fiscalQuarter, revenue, grossProfit, netIncome, basicEPS, dilutedEPS }]
+      epsHistory:      [{ date, epsActual, epsEstimate, epsSurprise }]
+
+    Format matches what routes.ts expects for buildStockContext() quarterly display.
     """
     result = call_tool("finance", "finance_earnings_history", {
         "ticker": symbol,
         "limit": 12,
     })
     content = result.get("content", "")
-    if not content or "No " in content[:60]:
+    if not content or content.strip().startswith("No "):
         return [], []
 
     rows = parse_md_table(content)
@@ -126,47 +142,39 @@ def fetch_earnings_history(symbol: str) -> tuple[list[dict], list[dict]]:
     eps_history = []
 
     for row in rows:
-        period  = row.get("period", "")       # e.g. "Q1 2026"
-        date    = (row.get("date") or "")[:10]  # ISO date
-        revenue = safe_float(row.get("actualRevenue"))
-        eps_act = safe_float(row.get("actualEps"))
-        eps_est = safe_float(row.get("estimatedEps"))
-        rev_est = safe_float(row.get("estimatedRevenue"))
-        eps_sur = safe_float(row.get("epsSurprise"))
+        period   = row.get("period", "")
+        date_raw = (row.get("date") or "")[:10]
+        revenue  = safe_float(row.get("actualRevenue"))
+        eps_act  = safe_float(row.get("actualEps"))
+        eps_est  = safe_float(row.get("estimatedEps"))
+        eps_sur  = safe_float(row.get("epsSurprise"))
 
-        # Skip future quarters (no actual data)
+        # Skip future quarters (no actual data yet)
         if revenue is None and eps_act is None:
             continue
 
-        # quarterlyIncome row
+        fy, fq = parse_fiscal_period(period)
+
+        # quarterlyIncome — matches { fiscalYear, fiscalQuarter, revenue, grossProfit, netIncome, basicEPS, dilutedEPS }
         quarterly_income.append({
-            "quarter":          period,
-            "revenue":          revenue,
-            "grossProfit":      None,
-            "operatingIncome":  None,
-            "netIncome":        None,
-            "eps":              eps_act,
-            "grossMargin":      None,
-            "operatingMargin":  None,
-            "netMargin":        None,
+            "fiscalYear":    fy,
+            "fiscalQuarter": fq,
+            "revenue":       revenue,
+            "grossProfit":   None,   # not available from earnings_history
+            "netIncome":     None,   # not available from earnings_history
+            "basicEPS":      eps_act,
+            "dilutedEPS":    eps_act,
         })
 
-        # epsHistory row
-        surprise_pct = None
-        if eps_sur is not None and eps_est and eps_est != 0:
-            surprise_pct = round(eps_sur / abs(eps_est) * 100, 2)
-
+        # epsHistory — matches { date, epsActual, epsEstimate, epsSurprise }
         eps_history.append({
-            "date":         date,
-            "eps":          eps_act,
-            "epsEstimate":  eps_est,
-            "surprise":     eps_sur,
-            "surprisePct":  surprise_pct,
+            "date":        date_raw,
+            "epsActual":   eps_act,
+            "epsEstimate": eps_est,
+            "epsSurprise": eps_sur,
         })
 
     return quarterly_income, eps_history
-
-# ── Step 4: POST to server ────────────────────────────────────────────────────
 
 def push_to_server(base_url: str, items: list[dict]) -> dict:
     resp = http_post_json(
@@ -187,7 +195,6 @@ def main():
         print(f"[fundamentals-cron] FATAL: cannot get server URL: {e}")
         sys.exit(1)
 
-    # Check server is reachable
     try:
         http_get_json(f"{base_url}/api/health")
     except Exception:
@@ -221,12 +228,16 @@ def main():
                 skipped.append(symbol)
                 continue
             payload.append({
-                "symbol":         symbol,
-                "market":         market,
+                "symbol":          symbol,
+                "market":          market,
                 "quarterlyIncome": q_income,
                 "epsHistory":      eps_hist,
             })
-            print(f"[fundamentals-cron] {symbol}: {len(q_income)} quarters, {len(eps_hist)} EPS rows OK")
+            # Show first entry for verification
+            first = q_income[0] if q_income else {}
+            fy, fq = first.get("fiscalYear"), first.get("fiscalQuarter")
+            label = f"{fy}Q{fq}" if fy else "?"
+            print(f"[fundamentals-cron] {symbol}: latest={label} rev={first.get('revenue')} eps={first.get('basicEPS')} | {len(q_income)} quarters OK")
         except Exception as e:
             print(f"[fundamentals-cron] {symbol}: ERROR: {e}")
             skipped.append(symbol)
