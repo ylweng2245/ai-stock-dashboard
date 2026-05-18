@@ -1222,24 +1222,31 @@ export async function syncTodayTechnicalBarFromQuote(
   try {
     const today = todayForMarket(market);  // correct timezone per market
     const quoteDate = timestampToMarketDate(quote.dataTimestamp, market);
-    // Only write if the quote is actually from today
-    if (quoteDate !== today) return;
+
+    // Accept quoteDate = today OR yesterday (handles TW stocks viewed after midnight Taipei time —
+    // TW market closes 13:30, but users often access the dashboard late at night when "today"
+    // has already rolled over to the next calendar day).
+    const yesterday = new Date(Date.now() - 86400_000)
+      .toLocaleDateString("sv-SE", { timeZone: market === "TW" ? "Asia/Taipei" : "America/New_York" });
+    if (quoteDate !== today && quoteDate !== yesterday) return;
+
     // Only write during REGULAR, POST, or CLOSED (final bar) — skip PRE to avoid early noise
     if (quote.marketState === "PRE" || quote.marketState === "PREPRE") return;
-    // Fetch existing today bar from DB to carry forward open/high/low
+
+    // Fetch existing bar for this quoteDate from DB to carry forward open/high/low
     const dbRows = await storage.getHistoricalPrices(symbol, market);
-    const existingToday = dbRows.find(r => r.date === today);
-    const open   = existingToday?.open  ?? quote.open  ?? quote.price;
-    const curHigh = existingToday?.high ?? quote.price;
-    const curLow  = existingToday?.low  ?? quote.price;
+    const existingBar = dbRows.find(r => r.date === quoteDate);
+    const open    = existingBar?.open  ?? quote.open  ?? quote.price;
+    const curHigh = existingBar?.high  ?? quote.price;
+    const curLow  = existingBar?.low   ?? quote.price;
     await storage.upsertHistoricalPrices([{
       symbol, market,
-      date:   today,
+      date:   quoteDate,          // write to quoteDate, not "today"
       open:   +open.toFixed(2),
       high:   +Math.max(curHigh, quote.price, quote.high ?? 0).toFixed(2),
       low:    +Math.min(curLow,  quote.price, quote.low  ?? Infinity).toFixed(2),
       close:  +quote.price.toFixed(2),
-      volume: quote.volume ?? existingToday?.volume ?? 0,
+      volume: quote.volume ?? existingBar?.volume ?? 0,
       updatedAt: Date.now(),
     }]);
   } catch (e: any) {
