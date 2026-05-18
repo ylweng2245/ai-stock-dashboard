@@ -1046,8 +1046,10 @@ async function injectTodayBar(
   const existingQuote = quoteCache.get(cacheKey2);
   const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
   console.log(`[injectTodayBar] ${symbol} today=${today} lastBar=${lastBar?.time} quoteAge=${Math.round(quoteAge/1000)}s`);
-  if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
-    console.log(`[injectTodayBar] ${symbol} skipped — fresh cache`);
+  const marketYesterday = new Date(Date.now() - 86400_000)
+    .toLocaleDateString("sv-SE", { timeZone: market === "TW" ? "Asia/Taipei" : "America/New_York" });
+  if ((lastBar?.time === today || lastBar?.time === marketYesterday) && quoteAge < QUOTE_TTL_MS) {
+    console.log(`[injectTodayBar] ${symbol} skipped — fresh cache (lastBar=${lastBar?.time})`);
     return { result, isLive: true };
   }
 
@@ -1072,16 +1074,19 @@ async function injectTodayBar(
       return { result, isLive: false };
     }
 
-    // Verify the quote is actually from today in the market's own timezone
+    // Verify the quote is actually from today OR yesterday in the market's own timezone.
+    // TW stocks close at 13:30; users viewing after midnight Taipei will have quoteDate = yesterday.
     const quoteDate = timestampToMarketDate(quote.dataTimestamp, market);
-    console.log(`[injectTodayBar] ${symbol} quoteDate=${quoteDate} today=${today} match=${quoteDate === today} price=${quote.price} marketState=${quote.marketState}`);
-    if (quoteDate !== today) {
+    const yesterdayInMarket = new Date(Date.now() - 86400_000)
+      .toLocaleDateString("sv-SE", { timeZone: market === "TW" ? "Asia/Taipei" : "America/New_York" });
+    console.log(`[injectTodayBar] ${symbol} quoteDate=${quoteDate} today=${today} yesterday=${yesterdayInMarket} price=${quote.price} marketState=${quote.marketState}`);
+    if (quoteDate !== today && quoteDate !== yesterdayInMarket) {
       console.log(`[injectTodayBar] ${symbol} skipped — quoteDate mismatch`);
       return { result, isLive: false };
     }
 
     const todayBar: CandleBar = {
-      time:   today,
+      time:   quoteDate,   // use quoteDate (may be yesterday for TW after midnight)
       open:   quote.open   || lastBar?.close || quote.price,
       high:   quote.high   || quote.price,
       low:    quote.low    || quote.price,
@@ -1089,10 +1094,10 @@ async function injectTodayBar(
       volume: quote.volume || 0,
     };
 
-    // Write today's bar to DB (upsert — same date key can be overwritten on next refresh)
+    // Write bar to DB using quoteDate (may be yesterday for TW after midnight)
     await storage.upsertHistoricalPrices([{
       symbol, market,
-      date:   today,
+      date:   quoteDate,
       open:   todayBar.open,
       high:   todayBar.high,
       low:    todayBar.low,
@@ -1101,14 +1106,13 @@ async function injectTodayBar(
       updatedAt: Date.now(),
     }]);
 
-    // Filter out any existing today bar from DB result before appending live bar
-    // (prevents duplicate when today was already written to DB by syncTodayTechnicalBarFromQuote)
-    const barsWithoutToday = result.bars.filter((b) => b.time !== today);
+    // Filter out any existing bar for quoteDate before appending
+    const barsWithoutToday = result.bars.filter((b) => b.time !== quoteDate);
     const updatedResult: HistoryResult = {
       ...result,
       bars: [...barsWithoutToday, todayBar],
-      dataTo: today,
-      source: result.source + "（含今日盤中）",
+      dataTo: quoteDate,
+      source: result.source + "（含最新盤中）",
     };
 
     return { result: updatedResult, isLive: true };
@@ -1534,7 +1538,24 @@ export async function getHistory(
   const cached = historyCache.get(cacheKey);
   // Use short TTL when last cached result was a live bar
   const effectiveTtl = cached?.data?.source?.includes("盤中") ? QUOTE_TTL_MS : HISTORY_TTL_MS;
-  if (isCacheValid(cached, effectiveTtl)) return { ...cached!.data, fromCache: true };
+
+  if (isCacheValid(cached, effectiveTtl)) {
+    // Even if cache is fresh, bypass it if the latest bar in the cached result
+    // is behind by >= 1 trading day (handles TW stocks checked after midnight
+    // where 30-min cache would otherwise serve stale data all night).
+    const cachedLastBar = cached!.data.bars[cached!.data.bars.length - 1]?.time;
+    if (cachedLastBar) {
+      const gap = countTradingDaysSince(cachedLastBar, market);
+      if (gap >= 1) {
+        // Cache is stale data-wise — force DB-first refresh
+        historyCache.delete(cacheKey);
+      } else {
+        return { ...cached!.data, fromCache: true };
+      }
+    } else {
+      return { ...cached!.data, fromCache: true };
+    }
+  }
 
   // Use DB-first strategy: getOrSyncHistoricalData handles fetch, DB upsert, slicing, and today-bar injection
   return getOrSyncHistoricalData(symbol, market, range);
