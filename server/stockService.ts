@@ -1541,50 +1541,62 @@ export async function getPortfolioQuotes(
 
   const results: StockQuote[] = [];
 
-  // TW: batch TWSE — with cache fallback on failure
+  // TW: check cache first — reuse getAllQuotes cache if still fresh
   if (twSymbols.length > 0) {
-    try {
-      const twQuotes = await fetchTWSEQuotes(twSymbols);
-      // Update cache with fresh data
-      twQuotes.forEach((q) => quoteCache.set(`${q.symbol}_TW`, { data: q, fetchedAt: Date.now() }));
-      results.push(...twQuotes);
-      // Fallback for symbols not returned by TWSE
-      for (const s of twSymbols) {
-        if (!results.find((r) => r.symbol === s.symbol)) {
+    const now = Date.now();
+    const twCached = twSymbols.map((s) => quoteCache.get(`${s.symbol}_TW`));
+    const allTWCached = twCached.every((c) => c && now - c.fetchedAt < QUOTE_TTL_MS);
+
+    if (allTWCached) {
+      twCached.forEach((c) => { if (c) results.push(c.data); });
+    } else {
+      try {
+        const twQuotes = await fetchTWSEQuotes(twSymbols);
+        twQuotes.forEach((q) => quoteCache.set(`${q.symbol}_TW`, { data: q, fetchedAt: Date.now() }));
+        results.push(...twQuotes);
+        for (const s of twSymbols) {
+          if (!results.find((r) => r.symbol === s.symbol)) {
+            const cached = quoteCache.get(`${s.symbol}_TW`);
+            if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
+          }
+        }
+      } catch (e: any) {
+        console.error("getPortfolioQuotes TW error:", e.message);
+        for (const s of twSymbols) {
           const cached = quoteCache.get(`${s.symbol}_TW`);
           if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
         }
       }
-    } catch (e: any) {
-      console.error("getPortfolioQuotes TW error:", e.message);
-      // Serve stale cache for all TW symbols
-      for (const s of twSymbols) {
-        const cached = quoteCache.get(`${s.symbol}_TW`);
-        if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
-      }
     }
   }
 
-  // US: Yahoo Finance Spark API（個股即時，與 getAllQuotes 一致）
+  // US: check cache first — reuse getAllQuotes cache if still fresh
   if (usSymbols.length > 0) {
-    try {
-      const fetchedUS = await fetchUSQuotesSpark(usSymbols);
-      for (const q of fetchedUS) {
-        results.push(q);
-        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
-      }
-      // Fallback for symbols not returned
-      for (const s of usSymbols) {
-        if (!results.find((r) => r.symbol === s.symbol)) {
+    const now = Date.now();
+    const usCached = usSymbols.map((s) => quoteCache.get(`${s.symbol}_US`));
+    const allUSCached = usCached.every((c) => c && now - c.fetchedAt < QUOTE_TTL_MS);
+
+    if (allUSCached) {
+      usCached.forEach((c) => { if (c) results.push(c.data); });
+    } else {
+      try {
+        const fetchedUS = await fetchUSQuotesSpark(usSymbols);
+        for (const q of fetchedUS) {
+          results.push(q);
+          quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+        }
+        for (const s of usSymbols) {
+          if (!results.find((r) => r.symbol === s.symbol)) {
+            const cached = quoteCache.get(`${s.symbol}_US`);
+            if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
+          }
+        }
+      } catch (e: any) {
+        console.error("getPortfolioQuotes US error:", e.message);
+        for (const s of usSymbols) {
           const cached = quoteCache.get(`${s.symbol}_US`);
           if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
         }
-      }
-    } catch (e: any) {
-      console.error("getPortfolioQuotes US error:", e.message);
-      for (const s of usSymbols) {
-        const cached = quoteCache.get(`${s.symbol}_US`);
-        if (cached) results.push({ ...cached.data, isStale: true, quoteStatus: "error", isFallbackCache: true, name: s.name || cached.data.name });
       }
     }
   }
