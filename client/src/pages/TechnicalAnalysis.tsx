@@ -843,6 +843,12 @@ export default function TechnicalAnalysis() {
     if (compareRunData) setComparePrediction(compareRunData);
   }, [compareRunData]);
 
+  // Clear compare state when switching symbols
+  useEffect(() => {
+    setComparePrediction(null);
+    setCompareRunId(null);
+  }, [activeSymbol]);
+
   // Trigger a new prediction run
   const triggerPredMutation = useMutation({
     mutationFn: () =>
