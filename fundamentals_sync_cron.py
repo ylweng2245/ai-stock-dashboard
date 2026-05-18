@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Daily fundamentals sync cron script.
-Reads ngrok URL from GitHub Gist → fetches watchlist → calls
-finance_company_financials per symbol → POSTs to /api/internal/fundamentals-sync
+Reads ngrok URL from GitHub Gist → fetches watchlist →
+  - finance_earnings_history  → quarterlyIncome + epsHistory
+POSTs to /api/internal/fundamentals-sync
 
-Schedule: run daily at UTC 13:30 (CST 21:30) — after US market close.
+Schedule: run daily at UTC 13:30 (CST 21:30)
 """
 
 import json
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import urllib.request
 import urllib.error
+import re
 from datetime import datetime, timezone
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -22,16 +24,15 @@ GIST_RAW_URL = (
 SYNC_SECRET = "9852b0916353d94bbe935965e85afe129b8452bfd31157d0313e2c4184648ab2"
 FIXED_SERVER_URL = "https://angling-ashes-punctured.ngrok-free.dev"
 
-# Symbols that don't have meaningful quarterly financials (ETFs, bonds, etc.)
+# ETF/bond symbols with no meaningful quarterly earnings
 SKIP_SYMBOLS = {"00981A", "00988A", "00403A", "00830", "00719B"}
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-def http_get_json(url: str, headers: dict = None) -> dict:
-    req = urllib.request.Request(url, headers=headers or {})
+def http_get_json(url: str) -> any:
+    req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
-
 
 def http_post_json(url: str, payload, headers: dict = None) -> dict:
     data = json.dumps(payload).encode()
@@ -44,25 +45,39 @@ def http_post_json(url: str, payload, headers: dict = None) -> dict:
         body = e.read().decode(errors="replace")
         raise RuntimeError(f"HTTP {e.code}: {body}") from e
 
-
 def call_tool(source_id: str, tool_name: str, arguments: dict) -> dict:
-    params = json.dumps({
-        "source_id": source_id,
-        "tool_name": tool_name,
-        "arguments": arguments
-    })
-    result = subprocess.run(
-        ["external-tool", "call", params],
-        capture_output=True, text=True
-    )
+    params = json.dumps({"source_id": source_id, "tool_name": tool_name, "arguments": arguments})
+    result = subprocess.run(["external-tool", "call", params], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"external-tool error: {result.stderr}")
     return json.loads(result.stdout)
 
-
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+# ── Markdown table parser ─────────────────────────────────────────────────────
+
+def parse_md_table(content: str) -> list[dict]:
+    """Parse first markdown table found in content into list of dicts."""
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    table_lines = [l for l in lines if l.startswith("|")]
+    if len(table_lines) < 3:
+        return []
+    headers = [h.strip() for h in table_lines[0].strip("|").split("|")]
+    rows = []
+    for line in table_lines[2:]:  # skip header + separator
+        vals = [v.strip() for v in line.strip("|").split("|")]
+        if len(vals) == len(headers):
+            rows.append(dict(zip(headers, vals)))
+    return rows
+
+def safe_float(val) -> float | None:
+    if val is None or str(val).strip() in ("", "-", "N/A", "null"):
+        return None
+    try:
+        return float(str(val).replace(",", "").replace("%", "").strip())
+    except (ValueError, TypeError):
+        return None
 
 # ── Step 1: Get ngrok URL ─────────────────────────────────────────────────────
 
@@ -77,7 +92,6 @@ def get_ngrok_url() -> str:
         pass
     return FIXED_SERVER_URL
 
-
 # ── Step 2: Get watchlist ─────────────────────────────────────────────────────
 
 def get_watchlist(base_url: str) -> list[dict]:
@@ -88,94 +102,69 @@ def get_watchlist(base_url: str) -> list[dict]:
     print(f"[fundamentals-cron] {len(items)} symbols: {[w['symbol'] for w in items]}")
     return items
 
+# ── Step 3: Fetch earnings history ───────────────────────────────────────────
 
-# ── Step 3: Fetch financials via finance connector ────────────────────────────
-
-def safe_float(val) -> float | None:
-    if val is None:
-        return None
-    try:
-        return float(str(val).replace(",", "").replace("%", "").strip())
-    except (ValueError, TypeError):
-        return None
-
-
-def parse_financials(content: str) -> tuple[list[dict], list[dict]]:
+def fetch_earnings_history(symbol: str) -> tuple[list[dict], list[dict]]:
     """
-    Parse finance_company_financials markdown content.
-    Returns (quarterlyIncome, epsHistory) in the format expected by
-    POST /api/internal/fundamentals-sync → storage.updateCronData()
+    Returns (quarterlyIncome, epsHistory) from finance_earnings_history.
+    quarterlyIncome: [{quarter, revenue, eps, ...}]
+    epsHistory:      [{date, eps, epsEstimate, surprise, surprisePct}]
     """
-    quarterly_income = []
-    eps_history = []
-
-    lines = content.splitlines()
-    current_table = None
-    headers = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            current_table = None
-            headers = []
-            continue
-
-        # Detect table section by nearby heading
-        lower = line.lower()
-        if "quarterly" in lower and "income" in lower:
-            current_table = "quarterly_income"
-            continue
-        if "eps" in lower and ("history" in lower or "quarterly" in lower):
-            current_table = "eps"
-            continue
-
-        if line.startswith("|"):
-            cols = [c.strip() for c in line.strip("|").split("|")]
-            if not headers:
-                headers = [h.lower().replace(" ", "_") for h in cols]
-                continue
-            if set(cols) == {"-", "---", "--", "----"} or all(c.replace("-", "") == "" for c in cols):
-                continue
-            if len(cols) != len(headers):
-                continue
-
-            row = dict(zip(headers, cols))
-
-            if current_table == "quarterly_income":
-                quarterly_income.append({
-                    "quarter": row.get("quarter") or row.get("period") or "",
-                    "revenue": safe_float(row.get("revenue") or row.get("total_revenue")),
-                    "grossProfit": safe_float(row.get("gross_profit") or row.get("gross_income")),
-                    "operatingIncome": safe_float(row.get("operating_income") or row.get("ebit")),
-                    "netIncome": safe_float(row.get("net_income")),
-                    "eps": safe_float(row.get("eps") or row.get("diluted_eps")),
-                    "grossMargin": safe_float(row.get("gross_margin")),
-                    "operatingMargin": safe_float(row.get("operating_margin")),
-                    "netMargin": safe_float(row.get("net_margin")),
-                })
-            elif current_table == "eps":
-                eps_history.append({
-                    "date": row.get("date") or row.get("period") or row.get("quarter") or "",
-                    "eps": safe_float(row.get("eps") or row.get("actual_eps") or row.get("reported_eps")),
-                    "epsEstimate": safe_float(row.get("estimate") or row.get("eps_estimate")),
-                    "surprise": safe_float(row.get("surprise") or row.get("eps_surprise")),
-                    "surprisePct": safe_float(row.get("surprise_pct") or row.get("surprise_%")),
-                })
-
-    return quarterly_income, eps_history
-
-
-def fetch_fundamentals(symbol: str) -> tuple[list[dict], list[dict]]:
-    result = call_tool("finance", "finance_company_financials", {
+    result = call_tool("finance", "finance_earnings_history", {
         "ticker": symbol,
-        "period": "quarter",
         "limit": 12,
     })
     content = result.get("content", "")
-    if not content:
-        raise RuntimeError("Empty response from finance_company_financials")
-    return parse_financials(content)
+    if not content or "No " in content[:60]:
+        return [], []
 
+    rows = parse_md_table(content)
+    if not rows:
+        return [], []
+
+    quarterly_income = []
+    eps_history = []
+
+    for row in rows:
+        period  = row.get("period", "")       # e.g. "Q1 2026"
+        date    = (row.get("date") or "")[:10]  # ISO date
+        revenue = safe_float(row.get("actualRevenue"))
+        eps_act = safe_float(row.get("actualEps"))
+        eps_est = safe_float(row.get("estimatedEps"))
+        rev_est = safe_float(row.get("estimatedRevenue"))
+        eps_sur = safe_float(row.get("epsSurprise"))
+
+        # Skip future quarters (no actual data)
+        if revenue is None and eps_act is None:
+            continue
+
+        # quarterlyIncome row
+        quarterly_income.append({
+            "quarter":          period,
+            "revenue":          revenue,
+            "grossProfit":      None,
+            "operatingIncome":  None,
+            "netIncome":        None,
+            "eps":              eps_act,
+            "grossMargin":      None,
+            "operatingMargin":  None,
+            "netMargin":        None,
+        })
+
+        # epsHistory row
+        surprise_pct = None
+        if eps_sur is not None and eps_est and eps_est != 0:
+            surprise_pct = round(eps_sur / abs(eps_est) * 100, 2)
+
+        eps_history.append({
+            "date":         date,
+            "eps":          eps_act,
+            "epsEstimate":  eps_est,
+            "surprise":     eps_sur,
+            "surprisePct":  surprise_pct,
+        })
+
+    return quarterly_income, eps_history
 
 # ── Step 4: POST to server ────────────────────────────────────────────────────
 
@@ -186,7 +175,6 @@ def push_to_server(base_url: str, items: list[dict]) -> dict:
         headers={"X-Sync-Secret": SYNC_SECRET},
     )
     return resp
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -227,18 +215,18 @@ def main():
             continue
 
         try:
-            q_income, eps_hist = fetch_fundamentals(symbol)
+            q_income, eps_hist = fetch_earnings_history(symbol)
             if not q_income and not eps_hist:
-                print(f"[fundamentals-cron] {symbol}: no data returned, skipping")
+                print(f"[fundamentals-cron] {symbol}: no data, skipping")
                 skipped.append(symbol)
                 continue
             payload.append({
-                "symbol": symbol,
-                "market": market,
+                "symbol":         symbol,
+                "market":         market,
                 "quarterlyIncome": q_income,
-                "epsHistory": eps_hist,
+                "epsHistory":      eps_hist,
             })
-            print(f"[fundamentals-cron] {symbol}: {len(q_income)} quarters, {len(eps_hist)} EPS rows")
+            print(f"[fundamentals-cron] {symbol}: {len(q_income)} quarters, {len(eps_hist)} EPS rows OK")
         except Exception as e:
             print(f"[fundamentals-cron] {symbol}: ERROR: {e}")
             skipped.append(symbol)
@@ -256,7 +244,6 @@ def main():
     except Exception as e:
         print(f"[fundamentals-cron] ERROR pushing to server: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
