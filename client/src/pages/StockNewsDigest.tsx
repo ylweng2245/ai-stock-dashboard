@@ -77,8 +77,8 @@ function parseSummaryText(raw: string): QuestionBlock[] {
   if (!raw) return [];
   const text = raw.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 
-  // Match both Traditional (問題) and Simplified (问题) Chinese, Arabic and Chinese numerals
-  const questionPattern = /\*\*(?:問題|问题|问題|問题)\s*(?:\d+|[一二三四五六七八九十])[：:][^*]*\*\*/g;
+  // Match Chinese (問題/问题) or English (Issue N) section headers
+  const questionPattern = /\*\*(?:(?:問題|问题|问題|問题)\s*(?:\d+|[一二三四五六七八九十])|Issue\s*\d+)[\uff1a:：][^*]*\*\*/gi;
   const matches = [...text.matchAll(questionPattern)];
 
   if (matches.length === 0) {
@@ -112,13 +112,13 @@ function parseSummaryText(raw: string): QuestionBlock[] {
 }
 
 function extractBullsBears(chunk: string) {
-  // Match 🐂 followed by any bold label (e.g. **多頭觀點：**, **多頭市場狀況：**, **看漲：** etc.)
+  // Match 🐂 followed by ANY bold label (樂觀案例、多頭觀點、多頭市場狀況、Bull Case, etc.)
   const bullMatch = chunk.match(
-    /(?:🐂\s*\*\*[^*]+\*\*\s*[：:]?|🐂\s*(?:多頭|看漲)[^\n]*?[：:]?|\*\*(?:多頭|看漲)觀點[：:]\*\*)(.*?)(?=(?:🐻|$))/s
+    /🐂\s*\*\*[^*]+\*\*\s*[：:：]?(.*?)(?=(?:🐻|$))/s
   );
-  // Match 🐻 followed by any bold label
+  // Match 🐻 followed by ANY bold label
   const bearMatch = chunk.match(
-    /(?:🐻\s*\*\*[^*]+\*\*\s*[：:]?|🐻\s*(?:空頭|看跌|熊市)[^\n]*?[：:]?|\*\*(?:空頭|看跌|熊市)觀點?[：:]\*\*)(.*?)(?=$)/s
+    /🐻\s*\*\*[^*]+\*\*\s*[：:：]?(.*?)(?=$)/s
   );
   const cleanBull = bullMatch ? cleanSegment(bullMatch[1]) : "";
   const cleanBear = bearMatch ? cleanSegment(bearMatch[1]) : "";
