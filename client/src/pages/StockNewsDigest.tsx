@@ -77,8 +77,8 @@ function parseSummaryText(raw: string): QuestionBlock[] {
   if (!raw) return [];
   const text = raw.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 
-  // Match both Arabic numerals (問題 1) and Chinese numerals (問題一、問題二...)
-  const questionPattern = /\*\*問題\s*(?:\d+|[一二三四五六七八九十])[：:][^*]*\*\*/g;
+  // Match both Traditional (問題) and Simplified (问题) Chinese, Arabic and Chinese numerals
+  const questionPattern = /\*\*(?:問題|问题|问題|問题)\s*(?:\d+|[一二三四五六七八九十])[：:][^*]*\*\*/g;
   const matches = [...text.matchAll(questionPattern)];
 
   if (matches.length === 0) {
