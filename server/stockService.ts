@@ -306,15 +306,10 @@ function isDataFromPreviousDay(dataTimestampSec: number): boolean {
   const nowMs = Date.now();
   // Clamp to current time (future timestamps = not stale)
   if (dataTimestampSec * 1000 > nowMs) return false;
-  // Convert both to YYYY-MM-DD in Asia/Taipei
-  const toTPEDate = (ms: number) => {
-    const d = new Date(ms);
-    // UTC+8 offset: add 8 hours
-    const tpe = new Date(ms + 8 * 3600 * 1000);
-    return tpe.toISOString().slice(0, 10);
-  };
-  const dataDate = toTPEDate(dataTimestampSec * 1000);
-  const nowDate  = toTPEDate(nowMs);
+  // Convert both to YYYY-MM-DD in Asia/Taipei via Intl (consistent with other market date helpers)
+  const fmt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" });
+  const dataDate = fmt.format(new Date(dataTimestampSec * 1000));
+  const nowDate  = fmt.format(new Date(nowMs));
   return dataDate < nowDate;
 }
 
@@ -998,32 +993,49 @@ function todayTPE(): string {
 }
 
 /**
+ * Returns the correct UTC offset (ms) for US Eastern time, dynamically
+ * switching between EDT (UTC-4) and EST (UTC-5) based on approximate DST rules.
+ * Used only in the Intl fallback path — Node.js 13+ should never reach this.
+ * DST: 2nd Sunday of March 02:00 → 1st Sunday of November 02:00 (approx: Mar 8 → Nov 1).
+ */
+function getUSOffsetMs(): number {
+  const now = new Date();
+  const m = now.getUTCMonth() + 1; // 1–12
+  const d = now.getUTCDate();
+  const isEDT =
+    (m > 3 && m < 11) ||
+    (m === 3 && d >= 8) ||
+    (m === 11 && d < 1);
+  return isEDT ? -4 * 3600_000 : -5 * 3600_000;
+}
+
+/**
  * Returns today's date string for the given market.
- * TW  → Asia/Taipei (UTC+8)
- * US  → America/New_York (UTC-5 EST / UTC-4 EDT, auto-DST)
- * Uses Intl.DateTimeFormat with fallback to fixed UTC offsets.
+ * TW  → Asia/Taipei (UTC+8, no DST)
+ * US  → America/New_York (UTC-5 EST / UTC-4 EDT, auto-DST via Intl)
+ * Uses Intl.DateTimeFormat with DST-aware fallback.
  */
 function todayForMarket(market: "TW" | "US"): string {
   try {
     const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
     return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date());
   } catch {
-    // Fallback: TW=UTC+8, US=UTC-4 (EDT approximation)
-    const offsetMs = market === "TW" ? 8 * 3600_000 : -4 * 3600_000;
+    // Fallback: only reached on environments with missing ICU data (e.g. slim Docker images)
+    const offsetMs = market === "TW" ? 8 * 3600_000 : getUSOffsetMs();
     return new Date(Date.now() + offsetMs).toISOString().slice(0, 10);
   }
 }
 
 /**
  * Convert a Unix timestamp (seconds) to a YYYY-MM-DD date string in the correct market timezone.
- * Uses Intl.DateTimeFormat with fallback to fixed UTC offsets.
+ * Uses Intl.DateTimeFormat with DST-aware fallback.
  */
 function timestampToMarketDate(tsSec: number, market: "TW" | "US"): string {
   try {
     const tz = market === "TW" ? "Asia/Taipei" : "America/New_York";
     return new Intl.DateTimeFormat("sv-SE", { timeZone: tz }).format(new Date(tsSec * 1000));
   } catch {
-    const offsetMs = market === "TW" ? 8 * 3600_000 : -4 * 3600_000;
+    const offsetMs = market === "TW" ? 8 * 3600_000 : getUSOffsetMs();
     return new Date(tsSec * 1000 + offsetMs).toISOString().slice(0, 10);
   }
 }
@@ -1046,8 +1058,6 @@ async function injectTodayBar(
   const existingQuote = quoteCache.get(cacheKey2);
   const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
   console.log(`[injectTodayBar] ${symbol} today=${today} lastBar=${lastBar?.time} quoteAge=${Math.round(quoteAge/1000)}s`);
-  const marketYesterday = new Date(Date.now() - 86400_000)
-    .toLocaleDateString("sv-SE", { timeZone: market === "TW" ? "Asia/Taipei" : "America/New_York" });
   if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
     console.log(`[injectTodayBar] ${symbol} skipped — fresh cache (lastBar=${lastBar?.time})`);
     return { result, isLive: true };
