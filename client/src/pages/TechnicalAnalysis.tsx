@@ -868,13 +868,23 @@ export default function TechnicalAnalysis() {
       apiRequest("POST", "/api/predictions/run-all", {})
         .then(r => r.json()),
     onSuccess: () => {
-      // Refresh current symbol's prediction after a short delay
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ["/api/predictions/latest"] });
         queryClient.invalidateQueries({ queryKey: ["/api/predictions/history"] });
         queryClient.invalidateQueries({ queryKey: ["/api/predictions/queue-status"] });
       }, 3000);
     },
+  });
+
+  // Poll queue status every 4s while running
+  const { data: queueStatus } = useQuery<{
+    isRunning: boolean;
+    queue: { total: number; done: number; running: number; pending: number; errored: number };
+  }>({
+    queryKey: ["/api/predictions/queue-status"],
+    queryFn: () => apiRequest("GET", "/api/predictions/queue-status").then(r => r.json()),
+    refetchInterval: (query) => query.state.data?.isRunning ? 4000 : false,
+    staleTime: 0,
   });
 
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
@@ -1240,15 +1250,26 @@ export default function TechnicalAnalysis() {
               </button>
 
               {/* Force re-predict all watchlist symbols */}
-              <button
-                onClick={() => runAllMutation.mutate()}
-                disabled={runAllMutation.isPending || triggerPredMutation.isPending}
-                title="強制所有個股重新預測（當日只保留最後一筆）"
-                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-muted-foreground/30 text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
-              >
-                <RefreshCw size={10} className={runAllMutation.isPending ? "animate-spin" : ""} />
-                {runAllMutation.isPending ? "預測中..." : "全部重新預測"}
-              </button>
+              {(() => {
+                const qs = queueStatus;
+                const isQueueRunning = qs?.isRunning && (qs?.queue?.pending ?? 0) + (qs?.queue?.running ?? 0) > 0;
+                const done = (qs?.queue?.done ?? 0) + (qs?.queue?.errored ?? 0);
+                const total = qs?.queue?.total ?? 0;
+                return (
+                  <button
+                    onClick={() => { if (!isQueueRunning) runAllMutation.mutate(); }}
+                    disabled={triggerPredMutation.isPending}
+                    title="強制所有個股重新預測（當日只保留最後一筆）"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border border-muted-foreground/30 text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors disabled:opacity-40"
+                  >
+                    <RefreshCw size={10} className={isQueueRunning ? "animate-spin" : ""} />
+                    {isQueueRunning
+                      ? `預測中 ${done}/${total}`
+                      : "全部重新預測"
+                    }
+                  </button>
+                );
+              })()}
 
               {/* Feature coverage badge */}
               {latestPrediction?.meta?.featureCoverage && (() => {
