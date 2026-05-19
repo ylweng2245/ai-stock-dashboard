@@ -1048,7 +1048,7 @@ async function injectTodayBar(
   console.log(`[injectTodayBar] ${symbol} today=${today} lastBar=${lastBar?.time} quoteAge=${Math.round(quoteAge/1000)}s`);
   const marketYesterday = new Date(Date.now() - 86400_000)
     .toLocaleDateString("sv-SE", { timeZone: market === "TW" ? "Asia/Taipei" : "America/New_York" });
-  if ((lastBar?.time === today || lastBar?.time === marketYesterday) && quoteAge < QUOTE_TTL_MS) {
+  if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
     console.log(`[injectTodayBar] ${symbol} skipped — fresh cache (lastBar=${lastBar?.time})`);
     return { result, isLive: true };
   }
