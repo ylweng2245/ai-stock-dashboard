@@ -82,17 +82,25 @@ function parseSummaryText(raw: string): QuestionBlock[] {
   const matches = [...text.matchAll(questionPattern)];
 
   if (matches.length === 0) {
-    const { bulls, bears, bullSources, bearSources } = extractBullsBears(text);
-    if (bulls || bears) {
-      return [{
-        title: "",
-        bulls,
-        bears,
-        bullSourceIds: parseSourceIds(bullSources),
-        bearSourceIds: parseSourceIds(bearSources),
-      }];
+    // Fallback: no recognizable section headers — split by 🐂 occurrences.
+    // Each 🐂 starts a new issue block; 🐻 within that block is the bear side.
+    // This handles unknown title formats gracefully.
+    const bullSplits = text.split(/(?=🐂)/);
+    const blocks: QuestionBlock[] = [];
+    for (const segment of bullSplits) {
+      if (!segment.trim()) continue;
+      const { bulls, bears, bullSources, bearSources } = extractBullsBears(segment);
+      if (bulls || bears) {
+        blocks.push({
+          title: "",
+          bulls,
+          bears,
+          bullSourceIds: parseSourceIds(bullSources),
+          bearSourceIds: parseSourceIds(bearSources),
+        });
+      }
     }
-    return [];
+    return blocks;
   }
 
   return matches.map((match, i) => {
