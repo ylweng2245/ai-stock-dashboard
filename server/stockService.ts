@@ -1059,8 +1059,26 @@ async function injectTodayBar(
   const quoteAge = existingQuote ? Date.now() - existingQuote.fetchedAt : Infinity;
   console.log(`[injectTodayBar] ${symbol} today=${today} lastBar=${lastBar?.time} quoteAge=${Math.round(quoteAge/1000)}s`);
   if (lastBar?.time === today && quoteAge < QUOTE_TTL_MS) {
-    console.log(`[injectTodayBar] ${symbol} skipped — fresh cache (lastBar=${lastBar?.time})`);
-    return { result, isLive: true };
+    // Today's bar already exists and quote is fresh — patch close/high/low in-place from cached quote
+    // This ensures K-line close tracks the live price without re-fetching from Yahoo.
+    const cachedQuote = existingQuote!.data;
+    const patchedBar: CandleBar = {
+      ...lastBar!,
+      close:  cachedQuote.price,
+      high:   Math.max(lastBar!.high,  cachedQuote.price, cachedQuote.high  ?? 0),
+      low:    Math.min(lastBar!.low,   cachedQuote.price, cachedQuote.low   ?? Infinity),
+      volume: cachedQuote.volume ?? lastBar!.volume,
+    };
+    const barsWithoutToday = result.bars.slice(0, -1); // remove last (today) bar
+    const liveResult: HistoryResult = {
+      ...result,
+      bars: [...barsWithoutToday, patchedBar],
+      source: result.source.includes("盤中")
+        ? result.source
+        : result.source + "（含最新盤中）",
+    };
+    console.log(`[injectTodayBar] ${symbol} patched from cache: close=${cachedQuote.price}`);
+    return { result: liveResult, isLive: true };
   }
 
   try {
