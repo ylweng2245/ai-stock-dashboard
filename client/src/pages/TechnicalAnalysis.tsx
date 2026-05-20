@@ -796,6 +796,24 @@ export default function TechnicalAnalysis() {
 
   // Stock notes — query 移至 StockNoteCard 內部自治
 
+  // Live quote for the active symbol — shared cache with sidebar, no extra network request
+  const { data: quotesData } = useQuery<{ quotes: Array<{ symbol: string; price: number; high: number; low: number; open: number; volume: number; marketState: string; dataTimestamp: number }> }>({
+    queryKey: ["/api/quotes"],
+    queryFn: () => apiRequest("GET", "/api/quotes").then((r) => r.json()),
+    staleTime: 55_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    placeholderData: (prev) => prev,
+  });
+  // Only use liveQuote for patching when market is active (REGULAR / POST / PRE)
+  // CLOSED means the official close is already baked into history bars — no patch needed.
+  const liveQuote = useMemo(() => {
+    const q = quotesData?.quotes?.find((q) => q.symbol === activeSymbol) ?? null;
+    if (!q) return null;
+    const liveStates = ["REGULAR", "POST", "PRE", "PREPRE"];
+    return liveStates.includes(q.marketState) ? q : null;
+  }, [quotesData, activeSymbol]);
+
   // ─── ML Prediction state ──────────────────────────────────
   const [comparePrediction, setComparePrediction] = useState<PredictionRun | null>(null);
   const [compareRunId, setCompareRunId] = useState<string | null>(null);
@@ -930,35 +948,48 @@ export default function TechnicalAnalysis() {
     return map;
   }, [analystData]);
 
-  const chartData = useMemo(
-    () =>
-      candleData.map((d, i) => {
-        const tradeInfo   = tradeDotMap.get(d.time) ?? null;
-        const analystEvent = analystEventMap.get(d.time) ?? null;
-        return {
-          date: d.time.slice(5),
-          fullDate: d.time,
-          open: d.open,
-          high: d.high,
-          low: d.low,
-          close: d.close,
-          volume: d.volume,
-          rsi: rsi[i] ?? null,
-          macd: macdData.macd[i] ?? null,
-          signal: macdData.signal[i] ?? null,
-          histogram: macdData.histogram[i] ?? null,
-          bbUpper: bollingerData.upper[i] ?? null,
-          bbMiddle: bollingerData.middle[i] ?? null,
-          bbLower: bollingerData.lower[i] ?? null,
-          tradeDot: tradeInfo ? tradeInfo.price : null,
-          tradeInfo,
-          analystEvent,
-          // analystDot: targetPrice when there's an event, so T-marker sits at correct price level
-          analystDot: analystEvent?.targetPrice ?? null,
-        };
-      }),
-    [candleData, rsi, macdData, bollingerData, tradeDotMap, analystEventMap]
-  );
+  const chartData = useMemo(() => {
+    const mapped = candleData.map((d, i) => {
+      const tradeInfo    = tradeDotMap.get(d.time) ?? null;
+      const analystEvent = analystEventMap.get(d.time) ?? null;
+      return {
+        date: d.time.slice(5),
+        fullDate: d.time,
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+        volume: d.volume,
+        rsi: rsi[i] ?? null,
+        macd: macdData.macd[i] ?? null,
+        signal: macdData.signal[i] ?? null,
+        histogram: macdData.histogram[i] ?? null,
+        bbUpper: bollingerData.upper[i] ?? null,
+        bbMiddle: bollingerData.middle[i] ?? null,
+        bbLower: bollingerData.lower[i] ?? null,
+        tradeDot: tradeInfo ? tradeInfo.price : null,
+        tradeInfo,
+        analystEvent,
+        analystDot: analystEvent?.targetPrice ?? null,
+      };
+    });
+
+    // Patch the last bar with the live quote price so K-line close stays in
+    // sync with the right-panel current price without waiting for history refetch.
+    if (liveQuote && mapped.length > 0) {
+      const last = mapped[mapped.length - 1];
+      const lp = liveQuote.price;
+      mapped[mapped.length - 1] = {
+        ...last,
+        close:  lp,
+        high:   Math.max(last.high  ?? lp, lp, liveQuote.high  ?? 0),
+        low:    Math.min(last.low   ?? lp, lp, liveQuote.low   ?? Infinity),
+        volume: liveQuote.volume ?? last.volume,
+      };
+    }
+
+    return mapped;
+  }, [candleData, rsi, macdData, bollingerData, tradeDotMap, analystEventMap, liveQuote]);
 
   // ─── Build merged chart data = historical + future prediction points ──────
   const showPredOverlay = ["3mo", "6mo", "1y"].includes(range);
