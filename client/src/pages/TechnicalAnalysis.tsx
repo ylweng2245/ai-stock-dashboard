@@ -1220,10 +1220,13 @@ export default function TechnicalAnalysis() {
           {showPredOverlay && (
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               {/* Latest prediction label */}
-              {latestPrediction?.found && latestPrediction.baseDate && (
+              {latestPrediction?.found && latestPrediction.runAt && (
                 <span className="text-[11px] text-[#F97316] font-medium flex items-center gap-1">
                   <span className="inline-block w-4 h-0.5 bg-[#F97316] opacity-70 mr-0.5" style={{borderTop: '2px dashed #F97316', background: 'none'}} />
-                  預測 {latestPrediction.baseDate}
+                  預測 {latestPrediction.runAt.slice(0, 10)}
+                  {latestPrediction.baseDate && latestPrediction.baseDate !== latestPrediction.runAt.slice(0, 10) && (
+                    <span className="text-muted-foreground font-normal">（基準 {latestPrediction.baseDate}）</span>
+                  )}
                 </span>
               )}
               {/* Background queued: show pulsing indicator */}
