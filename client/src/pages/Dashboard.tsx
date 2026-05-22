@@ -1363,16 +1363,10 @@ function MarketOverviewSection() {
   return (
     <div className="space-y-3" data-testid="market-overview-section">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold">市場指標</h2>
-          {updatedTime && <span className="text-[10px] text-muted-foreground tabular-nums">更新 {updatedTime}</span>}
-        </div>
-        <button onClick={() => refetch()} disabled={isFetching}
-          className="p-1.5 rounded hover:bg-muted/40 transition-colors disabled:opacity-50"
-          title="刷新市場指標" data-testid="btn-refresh-market-overview">
-          <RefreshCw className={cn("w-3.5 h-3.5 text-muted-foreground", isFetching && "animate-spin")} />
-        </button>
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold">市場指標</h2>
+        {updatedTime && <span className="text-[10px] text-muted-foreground tabular-nums">更新 {updatedTime}</span>}
+        {isFetching && <RefreshCw className="w-3 h-3 text-muted-foreground animate-spin" />}
       </div>
 
       {isError && (
@@ -1860,18 +1854,18 @@ export default function Dashboard() {
             </span>
           )}
           <button
-            onClick={() => refetch()}
+            onClick={() => {
+              refetch();
+              queryClient.invalidateQueries({ queryKey: ["/api/market-overview"] });
+            }}
             disabled={isFetching}
-            className="p-1.5 rounded hover:bg-muted/40 transition-colors disabled:opacity-50"
-            title="手動刷新"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded hover:bg-muted/40 transition-colors disabled:opacity-50 text-xs text-muted-foreground border border-border/40"
+            title="手動刷新所有數據"
             data-testid="btn-refresh-quotes"
           >
-            <RefreshCw className={cn("w-3.5 h-3.5 text-muted-foreground", isFetching && "animate-spin")} />
-          </button>
-          <Badge variant="outline" className="text-xs tabular-nums gap-1">
-            <Activity className="w-3 h-3" />
+            <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
             即時更新
-          </Badge>
+          </button>
         </div>
       </div>
 
