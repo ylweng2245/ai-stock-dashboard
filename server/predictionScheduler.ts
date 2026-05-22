@@ -21,8 +21,9 @@ import { runPrediction } from "./mlPredictionService";
 
 const MAX_CONCURRENT   = 2;    // at most N Python processes simultaneously
 const STARTUP_DELAY_MS = 90_000; // wait 90s after boot before first sweep
-// Daily trigger: 21:00 Taipei (UTC+8) = 13:00 UTC
-const DAILY_HOUR_UTC   = 13;
+// Daily trigger: 22:00 Taipei (UTC+8) = 14:00 UTC = NY 10:00 EDT
+// Delay 30min after US market open (09:30 ET) so today's bar is already in DB
+const DAILY_HOUR_UTC   = 14;
 const DAILY_MIN_UTC    = 0;
 
 // ─── Queue state ────────────────────────────────────────────────────────────
