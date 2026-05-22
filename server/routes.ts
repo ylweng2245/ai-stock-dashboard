@@ -1127,7 +1127,7 @@ ${search}${questionPart}
 
   async function getOverviewPayload() {
     const now = Date.now();
-    const CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const CACHE_TTL = 90 * 1000; // 90s — keep pace with 60s frontend refetch
     // Return fresh cache immediately
     if (overviewCache && now - overviewCache.fetchedAt < CACHE_TTL) {
       return overviewCache.payload;

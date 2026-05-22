@@ -1347,8 +1347,8 @@ function MarketOverviewSection() {
   const { data, isLoading, isError, refetch, isFetching } = useQuery<MarketOverviewPayload>({
     queryKey: ["/api/market-overview"],
     queryFn: () => apiRequest("GET", "/api/market-overview").then((r) => r.json()),
-    refetchInterval: 5 * 60 * 1000,
-    staleTime: 5 * 60 * 1000,
+    refetchInterval: 60_000,
+    staleTime: 55_000,
     placeholderData: (prev: MarketOverviewPayload | undefined) => prev,
   });
 
