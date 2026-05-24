@@ -21,6 +21,7 @@ import {
 import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
 import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
+import { OptimizeButton } from "@/components/OptimizeButton";
 
 const FEATURE_LABELS: Record<string, string> = {
   analyst_bullish_pct: '分析師樂觀占比',
@@ -1099,6 +1100,7 @@ export default function TechnicalAnalysis() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <OptimizeButton />
           <div className="flex items-center gap-2">
             <AnalysisSymbolSidebarMobile />
             <Select value={range} onValueChange={setRange}>

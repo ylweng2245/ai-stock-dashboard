@@ -11,12 +11,14 @@ import {
   Activity,
   Newspaper,
   BarChart2,
+  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { path: "/", label: "市場總覽", icon: LayoutDashboard },
+  { path: "/market", label: "大盤趨勢", icon: Globe },
   { path: "/news-digest", label: "個股每日新聞", icon: Newspaper },
   { path: "/fundamentals", label: "基本面分析", icon: BarChart2 },
   { path: "/analysis", label: "技術分析", icon: TrendingUp },

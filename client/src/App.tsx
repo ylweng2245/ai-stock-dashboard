@@ -15,6 +15,7 @@ import AIInsights from "@/pages/AIInsights";
 import Portfolio from "@/pages/Portfolio";
 import Alerts from "@/pages/Alerts";
 import StockNewsDigest from "@/pages/StockNewsDigest";
+import MarketTrend from "@/pages/MarketTrend";
 import NotFound from "@/pages/not-found";
 import type { WatchlistItem } from "@/components/AnalysisSymbolSidebar";
 
@@ -42,6 +43,7 @@ function AppRouter() {
             <AIInsights />
           </StockAnalysisLayout>
         </Route>
+        <Route path="/market" component={MarketTrend} />
         <Route path="/portfolio" component={Portfolio} />
         <Route path="/alerts" component={Alerts} />
         <Route path="/news-digest" component={StockNewsDigest} />
