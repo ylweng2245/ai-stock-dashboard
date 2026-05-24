@@ -35,7 +35,7 @@ const STOCK_SECTOR_MAP: Record<string, string> = {
   RKLB: "ARKX", ASTS: "ARKX",
   OKLO: "URNM",
   LLY: "XBI", NTLA: "XBI", TEM: "XBI",
-  VST: "XLU", CEG: "URNM",
+  VST: "URNM", CEG: "URNM",
   ETN: "XLI", BE: "XLI", VRT: "XLI",
 };
 
@@ -324,89 +324,118 @@ function TrendAnalysisSection({ data }: { data: any }) {
   );
 }
 
-// ── Crash Risk Module ──────────────────────────────────────────────────────
+// ── Crash Risk Module (gauge) ──────────────────────────────────────────────
+
+function CrashRiskGauge({ score }: { score: number }) {
+  // SVG semi-circle gauge: viewBox 0 0 200 110
+  // Arc from 180° (left) to 0° (right), radius 80, center (100,100)
+  const cx = 100, cy = 100, r = 80;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+
+  // 5 color zones: 0-20 safe(green), 20-40 low(blue), 40-60 caution(yellow), 60-80 high(orange), 80-100 danger(red)
+  const zones = [
+    { from: 180, to: 144, color: "#10b981" },
+    { from: 144, to: 108, color: "#3b82f6" },
+    { from: 108, to: 72,  color: "#eab308" },
+    { from: 72,  to: 36,  color: "#f97316" },
+    { from: 36,  to: 0,   color: "#ef4444" },
+  ];
+
+  const arcPath = (fromDeg: number, toDeg: number) => {
+    const x1 = cx + r * Math.cos(toRad(fromDeg));
+    const y1 = cy + r * Math.sin(toRad(fromDeg));
+    const x2 = cx + r * Math.cos(toRad(toDeg));
+    const y2 = cy + r * Math.sin(toRad(toDeg));
+    return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
+  };
+
+  // Needle: score 0→180°, score 100→0°
+  const needleDeg = 180 - (score / 100) * 180;
+  const needleLen = 68;
+  const nx = cx + needleLen * Math.cos(toRad(needleDeg));
+  const ny = cy + needleLen * Math.sin(toRad(needleDeg));
+
+  const scoreColor = score >= 80 ? "#ef4444" : score >= 60 ? "#f97316" : score >= 40 ? "#eab308" : score >= 20 ? "#3b82f6" : "#10b981";
+
+  return (
+    <svg viewBox="0 0 200 105" className="w-full max-w-[200px]">
+      {/* Track */}
+      <path d={arcPath(180, 0)} fill="none" stroke="#333" strokeWidth="14" strokeLinecap="butt" />
+      {/* Color zones */}
+      {zones.map((z, i) => (
+        <path key={i} d={arcPath(z.from, z.to)} fill="none" stroke={z.color} strokeWidth="14" strokeLinecap="butt" opacity="0.85" />
+      ))}
+      {/* Needle */}
+      <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="white" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r="5" fill="white" />
+      {/* Score label */}
+      <text x={cx} y={cy - 8} textAnchor="middle" fill={scoreColor} fontSize="20" fontWeight="bold" fontFamily="monospace">{score}</text>
+      {/* Scale labels */}
+      <text x="14" y="102" fill="#666" fontSize="8" textAnchor="middle">0</text>
+      <text x="100" y="18" fill="#666" fontSize="8" textAnchor="middle">50</text>
+      <text x="186" y="102" fill="#666" fontSize="8" textAnchor="middle">100</text>
+    </svg>
+  );
+}
 
 function CrashRiskSection({ data }: { data: any }) {
   if (!data) {
     return (
       <Card className="border-border">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-[#1cb8be]" />
-            崩盤風險指數
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">資料不足</p>
+        <CardContent className="py-3 px-4">
+          <p className="text-sm text-muted-foreground">崩盤風險資料不足</p>
         </CardContent>
       </Card>
     );
   }
 
   const scoreColor =
-    data.score >= 80 ? "text-gain" :
+    data.score >= 80 ? "text-[#ef4444]" :
     data.score >= 60 ? "text-orange-400" :
     data.score >= 40 ? "text-yellow-400" :
     data.score >= 20 ? "text-blue-400" :
-    "text-loss";
+    "text-[#10b981]";
+
+  // Split factors into two columns
+  const factors = data.factors ?? [];
+  const half = Math.ceil(factors.length / 2);
+  const col1 = factors.slice(0, half);
+  const col2 = factors.slice(half);
 
   return (
     <Card className="border-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-[#1cb8be]" />
-          崩盤風險指數
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col items-center mb-4">
-          <div className={cn("text-5xl font-bold tabular-nums", scoreColor)}>
-            {data.score}
+      <CardContent className="py-3 px-4">
+        <div className="flex items-center gap-4">
+          {/* Left: gauge + title + level */}
+          <div className="flex flex-col items-center shrink-0 w-[200px]">
+            <div className="flex items-center gap-1.5 mb-1 self-start">
+              <AlertTriangle className="w-3.5 h-3.5 text-[#1cb8be]" />
+              <span className="text-xs font-medium text-muted-foreground">崩盤風險指數</span>
+            </div>
+            <CrashRiskGauge score={data.score} />
+            <div className={cn("text-xs font-semibold -mt-1", scoreColor)}>{data.level}</div>
           </div>
-          <div className={cn("text-sm font-medium mt-1", scoreColor)}>
-            {data.level}
-          </div>
-          <div className="w-full max-w-xs mt-2 h-2 rounded-full bg-muted overflow-hidden">
-            <div
-              className={cn("h-full rounded-full transition-all", {
-                "bg-[#10b981]": data.score < 20,
-                "bg-blue-400": data.score >= 20 && data.score < 40,
-                "bg-yellow-400": data.score >= 40 && data.score < 60,
-                "bg-orange-400": data.score >= 60 && data.score < 80,
-                "bg-[#ef4444]": data.score >= 80,
-              })}
-              style={{ width: `${data.score}%` }}
-            />
-          </div>
-        </div>
 
-        <div className="space-y-2">
-          {data.factors?.map((f: any, i: number) => (
-            <div key={i} className="flex items-start gap-2 text-xs">
-              <div className="flex-shrink-0 w-28 flex items-center justify-between">
-                <span className="text-muted-foreground">{f.name}</span>
-                <span className={cn("font-mono tabular-nums",
-                  f.score > f.maxScore * 0.6 ? "text-gain" :
-                  f.score > f.maxScore * 0.3 ? "text-yellow-400" : "text-muted-foreground"
-                )}>
-                  {f.score}/{f.maxScore}
-                </span>
+          {/* Right: factors in two columns */}
+          <div className="flex-1 grid grid-cols-2 gap-x-4 gap-y-1 min-w-0">
+            {[col1, col2].map((col, ci) => (
+              <div key={ci} className="space-y-1">
+                {col.map((f: any, i: number) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[11px]">
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-muted-foreground w-[72px] leading-tight">{f.name}</span>
+                      <span className={cn("font-mono tabular-nums shrink-0",
+                        f.score > f.maxScore * 0.6 ? "text-[#ef4444]" :
+                        f.score > f.maxScore * 0.3 ? "text-yellow-400" : "text-muted-foreground"
+                      )}>{f.score}/{f.maxScore}</span>
+                    </div>
+                    <span className="text-muted-foreground leading-tight">{f.detail}</span>
+                  </div>
+                ))}
               </div>
-              <div className="flex-1 text-muted-foreground">{f.detail}</div>
-            </div>
-          ))}
-        </div>
-
-        {data.score > 60 && (
-          <div className="mt-4 p-3 rounded-md bg-gain/5 border border-gain/20">
-            <div className="text-xs font-medium text-gain mb-2">歷史崩盤前兆參照</div>
-            <div className="text-xs text-muted-foreground space-y-1">
-              <div>2020/03 COVID: VIX 達 85, RSI 背離, 成交量暴增</div>
-              <div>2022/01 升息恐慌: MACD 死叉, 信用利差擴大, VIX 38</div>
-              <div>2018/12 Fed 恐慌: RSI &lt; 30, 布林下破, 全板塊轉負</div>
-            </div>
+            ))}
           </div>
-        )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -876,6 +905,13 @@ export default function MarketTrend() {
         <OptimizeButton />
       </div>
 
+      {/* Crash Risk — full-width above index charts */}
+      {isLoading ? (
+        <Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[100px] w-full" /></CardContent></Card>
+      ) : (
+        <CrashRiskSection data={marketData?.crashRisk} />
+      )}
+
       {/* Module 1: Index Charts */}
       <div>
         <h2 className="text-sm font-medium text-muted-foreground mb-3">四大指數 K 線 + ML 預測</h2>
@@ -897,21 +933,11 @@ export default function MarketTrend() {
         <TrendAnalysisSection data={marketData?.trendAnalysis} />
       )}
 
-      {/* Module 3+5: Crash Risk (40%) + Sentiment (60%) side by side */}
+      {/* Module 5: Sentiment — full width */}
       {isLoading ? (
-        <div className="flex gap-4">
-          <div className="w-[40%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[200px] w-full" /></CardContent></Card></div>
-          <div className="w-[60%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[200px] w-full" /></CardContent></Card></div>
-        </div>
+        <Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[140px] w-full" /></CardContent></Card>
       ) : (
-        <div className="flex gap-4 items-stretch">
-          <div className="w-[40%]">
-            <CrashRiskSection data={marketData?.crashRisk} />
-          </div>
-          <div className="w-[60%]">
-            <SentimentSection data={marketData?.sentiment} />
-          </div>
-        </div>
+        <SentimentSection data={marketData?.sentiment} />
       )}
 
       {/* Module 4: Sector Heatmap with embedded holdings */}

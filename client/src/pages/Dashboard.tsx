@@ -1826,6 +1826,43 @@ function WatchlistEditor({ market }: { market: "TW" | "US" }) {
 }
 
 // ---------------------------------------------------------------------------
+
+// ─── US Market Sentiment Badge ────────────────────────────────────────────────
+
+function UsSentimentBadge() {
+  const { data } = useQuery<any>({
+    queryKey: ["/api/market-trend"],
+    queryFn: () => fetch("/api/market-trend").then(r => r.json()),
+    staleTime: 5 * 60_000,
+  });
+
+  const sentiment = data?.sentiment;
+  if (!sentiment) return null;
+
+  const fgValue = sentiment.fearGreed?.value ?? null;
+  const macroScore = sentiment.macro?.score != null ? Math.round(sentiment.macro.score * 100) : null;
+  const vixCurrent = sentiment.vix?.current ?? null;
+  const tenYCurrent = sentiment.tenYear?.current ?? null;
+
+  const normalizedFG = fgValue != null ? fgValue : 50;
+  const normalizedVix = vixCurrent != null ? Math.max(0, 100 - vixCurrent * 2) : 50;
+  const normalizedMacro = macroScore != null ? macroScore : 50;
+  const normalizedTenY = tenYCurrent != null ? Math.max(0, Math.min(100, 50 + (4.5 - tenYCurrent) * 15)) : null;
+  const inputs = [normalizedFG, normalizedVix, normalizedMacro, ...(normalizedTenY != null ? [normalizedTenY] : [])];
+  const composite = Math.round(inputs.reduce((a, b) => a + b, 0) / inputs.length);
+  const label = composite >= 70 ? "偏樂觀" : composite >= 55 ? "中性偏多" : composite >= 45 ? "中性" : composite >= 30 ? "中性偏空" : "偏悲觀";
+  const colorCls = composite >= 70 ? "text-[#10b981]" : composite >= 55 ? "text-[#10b981] opacity-80" : composite >= 45 ? "text-muted-foreground" : composite >= 30 ? "text-[#ef4444] opacity-80" : "text-[#ef4444]";
+  const borderCls = composite >= 70 ? "border-[#10b981]/40" : composite >= 55 ? "border-[#10b981]/20" : composite >= 45 ? "border-border" : composite >= 30 ? "border-[#ef4444]/20" : "border-[#ef4444]/40";
+
+  return (
+    <div className={cn("flex items-center gap-2 px-2.5 py-1 rounded border text-xs", borderCls)}>
+      <span className="text-muted-foreground">美股市場情緒</span>
+      <span className={cn("font-bold tabular-nums text-sm", colorCls)}>{composite}</span>
+      <span className={cn("text-[11px]", colorCls)}>{label}</span>
+    </div>
+  );
+}
+
 // Dashboard Page
 // ---------------------------------------------------------------------------
 
@@ -1891,7 +1928,9 @@ export default function Dashboard() {
           <h1 className="text-xl font-semibold">市場總覽</h1>
           <p className="text-sm text-muted-foreground mt-0.5">即時台股與美股行情追蹤</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* 美股市場情緒 badge */}
+          <UsSentimentBadge />
           {lastFetchTime && (
             <span className="text-[11px] text-muted-foreground tabular-nums">
               更新於 {lastFetchTime}
