@@ -494,76 +494,61 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border">
-                <th className="text-left py-2 pr-2 font-medium text-muted-foreground">板塊</th>
+                <th className="text-left py-2 pr-1 font-medium text-muted-foreground">板塊</th>
+                <th className="text-left py-2 px-2 font-medium text-muted-foreground">持倉</th>
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">1週</th>
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">1月</th>
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">3月</th>
-                <th className="text-right py-2 px-2 font-medium text-muted-foreground">資金流向</th>
-                <th className="text-left py-2 pl-3 font-medium text-muted-foreground border-l border-border/50">持倉</th>
+                <th className="text-right py-2 pl-2 font-medium text-muted-foreground">資金流向</th>
               </tr>
             </thead>
             <tbody>
               {data.map((etf: any) => {
                 const flow = flowMap.get(etf.symbol);
-                // Find holdings belonging to this ETF
                 const etfHoldings: { sym: string; pct: number | null }[] = [];
                 for (const [sym, pct] of holdingsPnlMap.entries()) {
                   if (STOCK_SECTOR_MAP[sym] === etf.symbol) {
                     etfHoldings.push({ sym, pct });
                   }
                 }
-                const rowSpan = Math.max(1, etfHoldings.length);
-                return etfHoldings.length === 0 ? (
-                  <tr key={etf.symbol} className="border-b border-border/50 hover:bg-muted/30">
-                    <td className="py-1.5 pr-2">
-                      <div className="flex items-center gap-1.5">
+                return (
+                  <tr key={etf.symbol} className="border-b border-border/50 hover:bg-muted/30 align-top">
+                    {/* 板塊欄 */}
+                    <td className="py-2 pr-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-medium">{etf.symbol}</span>
                         <span className="text-muted-foreground">{etf.name}</span>
                         <Badge variant="outline" className="text-[10px] py-0 px-1 h-4">{etf.theme}</Badge>
                       </div>
                     </td>
-                    <td className="text-right py-1.5 px-2">{retCell(etf.ret1w)}</td>
-                    <td className="text-right py-1.5 px-2">{retCell(etf.ret1m)}</td>
-                    <td className="text-right py-1.5 px-2">{retCell(etf.ret3m)}</td>
-                    <td className="text-right py-1.5 px-2">
+                    {/* 持倉欄（縮排個股） */}
+                    <td className="py-2 px-2">
+                      {etfHoldings.length === 0 ? (
+                        <span className="text-muted-foreground text-xs">-</span>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {etfHoldings.map(h => (
+                            <div key={h.sym} className="flex items-center gap-2 pl-2">
+                              <span className="text-xs text-muted-foreground w-10">{h.sym}</span>
+                              {h.pct != null ? (
+                                <span className={cn("text-xs tabular-nums font-medium", h.pct >= 0 ? "text-gain" : "text-loss")}>
+                                  {h.pct.toFixed(1)}%
+                                </span>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">-</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="text-right py-2 px-2">{retCell(etf.ret1w)}</td>
+                    <td className="text-right py-2 px-2">{retCell(etf.ret1m)}</td>
+                    <td className="text-right py-2 px-2">{retCell(etf.ret3m)}</td>
+                    <td className="text-right py-2 pl-2">
                       {flow ? <span className={flow.cls}>{flow.label}</span> : "-"}
                     </td>
-                    <td className="pl-3 border-l border-border/50 text-muted-foreground">-</td>
                   </tr>
-                ) : (
-                  etfHoldings.map((h, hi) => (
-                    <tr key={`${etf.symbol}-${h.sym}`} className={cn("hover:bg-muted/30", hi === etfHoldings.length - 1 ? "border-b border-border/50" : "")}>
-                      {hi === 0 && (
-                        <>
-                          <td className="py-1.5 pr-2 align-top" rowSpan={rowSpan}>
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-medium">{etf.symbol}</span>
-                              <span className="text-muted-foreground">{etf.name}</span>
-                              <Badge variant="outline" className="text-[10px] py-0 px-1 h-4">{etf.theme}</Badge>
-                            </div>
-                          </td>
-                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret1w)}</td>
-                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret1m)}</td>
-                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret3m)}</td>
-                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>
-                            {flow ? <span className={flow.cls}>{flow.label}</span> : "-"}
-                          </td>
-                        </>
-                      )}
-                      <td className="py-1 pl-3 border-l border-border/50">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-muted-foreground">{h.sym}</span>
-                          {h.pct != null ? (
-                            <span className={cn("tabular-nums font-medium", h.pct >= 0 ? "text-gain" : "text-loss")}>
-                              {h.pct.toFixed(1)}%
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
                 );
               })}
             </tbody>
@@ -627,27 +612,29 @@ function SentimentSection({ data }: { data: any }) {
           市場情緒
         </CardTitle>
       </CardHeader>
-      <CardContent className="pb-3">
-        {/* 全寬橫向一行：總分 | FG | Macro | VIX | 10Y */}
-        <div className="grid grid-cols-5 gap-2">
-          {/* 情緒總分 */}
-          <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center">
-            <div className="text-[11px] text-muted-foreground mb-0.5">情緒總分</div>
-            <div className={cn("text-2xl font-bold tabular-nums leading-none", compositeColor)}>{composite}</div>
-            <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0 h-4 mt-1 w-fit", compositeColor)}>{compositeLabel}</Badge>
+      <CardContent className="pb-3 space-y-2">
+        {/* 上方大卡：情緒總分 */}
+        <div className="rounded-md border border-border px-4 py-3 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-muted-foreground mb-0.5">情緒總分</div>
+            <div className={cn("text-4xl font-bold tabular-nums leading-none", compositeColor)}>{composite}</div>
           </div>
+          <Badge variant="outline" className={cn("text-sm px-3 py-1", compositeColor)}>{compositeLabel}</Badge>
+        </div>
 
+        {/* 下方 4 小卡 */}
+        <div className="grid grid-cols-4 gap-2">
           {/* Fear & Greed */}
           <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center text-center">
-            <div className="text-[11px] text-muted-foreground mb-0.5">Fear & Greed</div>
-            <div className={cn("text-2xl font-bold tabular-nums leading-none", fgColor)}>{fgValue ?? "-"}</div>
+            <div className="text-[11px] text-muted-foreground mb-1">Fear & Greed</div>
+            <div className={cn("text-xl font-bold tabular-nums leading-none", fgColor)}>{fgValue ?? "-"}</div>
             <div className={cn("text-[10px] mt-1", fgColor)}>{fgLabel || "-"}</div>
           </div>
 
           {/* Macro */}
           <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center text-center">
-            <div className="text-[11px] text-muted-foreground mb-0.5">Macro 情緒</div>
-            <div className="text-2xl font-bold tabular-nums leading-none">{macroScore ?? "-"}</div>
+            <div className="text-[11px] text-muted-foreground mb-1">Macro 情緒</div>
+            <div className="text-xl font-bold tabular-nums leading-none">{macroScore ?? "-"}</div>
             <div className="text-[10px] mt-1 text-muted-foreground">{data.macro?.date?.slice(5) ?? ""}</div>
           </div>
 
@@ -655,13 +642,13 @@ function SentimentSection({ data }: { data: any }) {
           <div className="rounded-md border border-border px-2 py-2">
             <div className="text-[11px] text-muted-foreground mb-1">VIX&nbsp;{data.vix?.current?.toFixed(1) ?? "-"}</div>
             {vixHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height={40}>
+              <ResponsiveContainer width="100%" height={44}>
                 <LineChart data={vixHistory}>
                   <Line dataKey="value" stroke="#ef4444" dot={false} strokeWidth={1.5} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[40px] flex items-center justify-center text-[10px] text-muted-foreground">-</div>
+              <div className="h-[44px] flex items-center justify-center text-[10px] text-muted-foreground">-</div>
             )}
           </div>
 
@@ -669,13 +656,13 @@ function SentimentSection({ data }: { data: any }) {
           <div className="rounded-md border border-border px-2 py-2">
             <div className="text-[11px] text-muted-foreground mb-1">10Y&nbsp;{tenYCurrent != null ? `${tenYCurrent.toFixed(2)}%` : "-"}</div>
             {tenYHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height={40}>
+              <ResponsiveContainer width="100%" height={44}>
                 <LineChart data={tenYHistory}>
                   <Line dataKey="value" stroke="#66c6df" dot={false} strokeWidth={1.5} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[40px] flex items-center justify-center text-[10px] text-muted-foreground">尚未同步</div>
+              <div className="h-[44px] flex items-center justify-center text-[10px] text-muted-foreground">尚未同步</div>
             )}
           </div>
         </div>
