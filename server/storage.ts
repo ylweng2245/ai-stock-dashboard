@@ -1178,4 +1178,16 @@ try {
   // Already exists
 }
 
+// ── One-time migration: discard pre-V6.1 predictions that lack per-model raw data ──
+// Old predictions only stored blended result (rf_json IS NULL), making them useless
+// for future weight optimization. Run once; new predictions have full rf/gb/lr data.
+try {
+  const result = sqlite.prepare(
+    `DELETE FROM modelpredictions WHERE rf_json IS NULL`
+  ).run();
+  if (result.changes > 0) {
+    console.log(`[storage] one-time migration: removed ${result.changes} legacy predictions (no rf_json)`);
+  }
+} catch { /* ignore */ }
+
 export const storage = new DatabaseStorage();

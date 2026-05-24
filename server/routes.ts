@@ -2581,23 +2581,6 @@ ${search}${questionPart}
         }
       }
 
-      // After optimization: discard old prediction history, keep only latest per symbol
-      // Rule: 舊預測資料直接捨棄，從改版後開始累積
-      try {
-        const deleted = sqlite.prepare(`
-          DELETE FROM modelpredictions
-          WHERE id NOT IN (
-            SELECT id FROM (
-              SELECT id, ROW_NUMBER() OVER (PARTITION BY symbol, market ORDER BY run_at DESC, created_at DESC) AS rn
-              FROM modelpredictions
-            ) ranked WHERE rn = 1
-          )
-        `).run();
-        console.log(`[optimize] cleared ${deleted.changes} old prediction records`);
-      } catch (cleanErr: any) {
-        console.warn(`[optimize] failed to clear old predictions:`, cleanErr.message);
-      }
-
       send({ type: "done", optimizedAt: nowStr });
       res.end();
 
