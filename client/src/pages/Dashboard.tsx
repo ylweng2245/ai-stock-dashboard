@@ -1534,9 +1534,32 @@ function KPICard({
   );
 }
 
+// 決定顯示盤前還是盤後資料
+function getExtendedInfo(stock: StockQuote): {
+  label: string; price: number; changePct: number;
+  colorClass: string; bgClass: string;
+} | null {
+  const state = stock.marketState;
+  if ((state === "PRE" || state === "PREPRE") && stock.preMarketPrice != null) {
+    const pct = stock.preMarketChangePercent ?? 0;
+    return { label: "盤前", price: stock.preMarketPrice, changePct: pct,
+      colorClass: pct >= 0 ? "text-gain" : "text-loss",
+      bgClass: pct >= 0 ? "bg-gain/10 border-gain/20" : "bg-loss/10 border-loss/20" };
+  }
+  if ((state === "POST" || state === "CLOSED") && stock.postMarketPrice != null) {
+    const pct = stock.postMarketChangePercent ?? 0;
+    return { label: "盤後", price: stock.postMarketPrice, changePct: pct,
+      colorClass: pct >= 0 ? "text-gain" : "text-loss",
+      bgClass: pct >= 0 ? "bg-gain/10 border-gain/20" : "bg-loss/10 border-loss/20" };
+  }
+  return null;
+}
+
 function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => void }) {
   const isPositive = stock.changePercent >= 0;
   const financeUrl = getFinanceUrl(stock.symbol, stock.market);
+  const extInfo = stock.market === "US" ? getExtendedInfo(stock) : null;
+
   return (
     <div
       className="flex items-center justify-between py-2.5 px-3 rounded-md hover:bg-muted/30 transition-colors group"
@@ -1548,23 +1571,44 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1">
-            <a href={financeUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-medium truncate hover:text-[#66c6df] hover:underline transition-colors" onClick={(e) => e.stopPropagation()}>{stock.symbol}</a>
+            <a href={financeUrl} target="_blank" rel="noopener noreferrer"
+              className="text-sm font-medium truncate hover:text-[#66c6df] hover:underline transition-colors"
+              onClick={(e) => e.stopPropagation()}>{stock.symbol}</a>
             {stock.quoteStatus === "error" && (
-              <AlertCircle
-                className="w-3 h-3 text-amber-400 shrink-0"
-                aria-label="資料獲取失敗（顯示緩存值）"
-              />
+              <AlertCircle className="w-3 h-3 text-amber-400 shrink-0" aria-label="資料獲取失敗（顯示緩存值）" />
             )}
             {!stock.quoteStatus && stock.isStale && (
-              <AlertCircle
-                className="w-3 h-3 text-muted-foreground/50 shrink-0"
-                aria-label="前一日收盤價"
-              />
+              <AlertCircle className="w-3 h-3 text-muted-foreground/50 shrink-0" aria-label="前一日收盤價" />
             )}
           </div>
           <div className="text-xs text-muted-foreground truncate">{stock.name}</div>
         </div>
       </div>
+
+      {/* 盤前/盤後價格欄 — 美股專屬，置中展示 */}
+      {stock.market === "US" && (
+        <div className="hidden sm:flex flex-1 justify-center px-3">
+          {extInfo ? (
+            <div className={cn(
+              "flex flex-col items-center px-2.5 py-1 rounded border shrink-0 min-w-[68px]",
+              extInfo.bgClass
+            )}>
+              <span className="text-[9px] text-muted-foreground font-medium tracking-wide leading-none mb-0.5">
+                {extInfo.label}
+              </span>
+              <span className={cn("text-xs font-semibold tabular-nums leading-none", extInfo.colorClass)}>
+                ${extInfo.price.toLocaleString()}
+              </span>
+              <span className={cn("text-[10px] tabular-nums leading-none mt-0.5", extInfo.colorClass)}>
+                {extInfo.changePct.toFixed(2)}%
+              </span>
+            </div>
+          ) : (
+            <div className="w-[68px]" />
+          )}
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         <div className="text-right shrink-0">
           <div className="text-sm font-medium tabular-nums">
@@ -2054,6 +2098,64 @@ export default function Dashboard() {
               )}
             </>
           )}
+
+          {/* 美股盤前/盤後漲跌排行 */}
+          {usStocks.length > 0 && (() => {
+            // 決定顯示盤前或盤後：任一股有 PRE/PREPRE 狀態則顯示盤前
+            const hasPreMarket = usStocks.some(s => s.marketState === "PRE" || s.marketState === "PREPRE");
+            const hasPostMarket = usStocks.some(s =>
+              (s.marketState === "POST" || s.marketState === "CLOSED") && s.postMarketPrice != null
+            );
+            if (!hasPreMarket && !hasPostMarket) return null;
+
+            const label = hasPreMarket ? "美股盤前" : "美股盤後";
+            const extStocks = usStocks
+              .map(s => {
+                const info = getExtendedInfo(s);
+                if (!info) return null;
+                return { ...s, _extPct: info.changePct, _extPrice: info.price, _extLabel: info.label };
+              })
+              .filter(Boolean) as (StockQuote & { _extPct: number; _extPrice: number; _extLabel: string })[];
+
+            if (extStocks.length === 0) return null;
+            const sorted = [...extStocks].sort((a, b) => b._extPct - a._extPct);
+
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="text-[11px] font-semibold text-muted-foreground tracking-wide">{label}</div>
+                  <span className="text-[9px] text-muted-foreground/60 border border-border/40 rounded px-1 py-0.5">
+                    相較{hasPreMarket ? "昨收" : "今收"}
+                  </span>
+                </div>
+                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(sorted.length, 8)}, minmax(0, 1fr))` }}>
+                  {sorted.map((stock) => {
+                    const intensity = Math.min(Math.abs(stock._extPct) / 3, 1);
+                    const isPos = stock._extPct >= 0;
+                    return (
+                      <div
+                        key={stock.symbol}
+                        className="rounded-md p-2 text-center"
+                        style={{
+                          backgroundColor: isPos
+                            ? `rgba(239, 68, 68, ${intensity * 0.25})`
+                            : `rgba(34, 197, 94, ${intensity * 0.25})`,
+                        }}
+                      >
+                        <div className="text-[10px] font-semibold truncate leading-tight">{stock.symbol}</div>
+                        <div className={cn("text-[9px] tabular-nums leading-tight text-muted-foreground/70")}>
+                          ${stock._extPrice.toLocaleString()}
+                        </div>
+                        <div className={cn("text-xs font-bold tabular-nums mt-0.5", isPos ? "text-gain" : "text-loss")}>
+                          {stock._extPct.toFixed(1)}%
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 

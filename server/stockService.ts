@@ -45,6 +45,15 @@ export interface StockQuote {
   // v2: 更精細的狀態區分
   quoteStatus: "fresh" | "stale" | "error"; // fresh=正常, stale=超時但有數據, error=完全無資料
   isFallbackCache?: boolean; // true = 來自過期緩存（fetch失敗時）
+  // 盤前/盤後延伸交易 (US only, null when unavailable)
+  preMarketPrice?: number | null;
+  preMarketChange?: number | null;
+  preMarketChangePercent?: number | null;
+  preMarketTime?: number | null;     // Unix seconds
+  postMarketPrice?: number | null;
+  postMarketChange?: number | null;
+  postMarketChangePercent?: number | null;
+  postMarketTime?: number | null;    // Unix seconds
 }
 
 export interface CandleBar {
@@ -506,8 +515,6 @@ async function fetchUSQuotesSpark(
         if (!resp) continue;
         const meta = resp.meta ?? {};
 
-        // Yahoo Spark v7 不提供 preMarketPrice / postMarketPrice
-        // 一律使用 regularMarketPrice：盤中=即時，盤後=收盤價，符合需求
         const price = +(meta.regularMarketPrice ?? 0).toFixed(2);
         const marketState: StockQuote["marketState"] =
           meta.marketState ? normalizeMarketState(meta.marketState) : "CLOSED";
@@ -517,6 +524,14 @@ async function fetchUSQuotesSpark(
         const changePct = prevClose !== 0 ? +((change / prevClose) * 100).toFixed(2) : 0;
         const dataTimestamp = meta.regularMarketTime ?? Math.floor(now / 1000);
         const priceLabel = marketStateLabel(marketState);
+
+        // Pre-market / Post-market extended hours (present only when active)
+        const preP  = meta.preMarketPrice  != null ? +(meta.preMarketPrice).toFixed(2)  : null;
+        const postP = meta.postMarketPrice != null ? +(meta.postMarketPrice).toFixed(2) : null;
+        const preChg  = preP  != null ? +(preP  - prevClose).toFixed(2) : null;
+        const postChg = postP != null ? +(postP - price).toFixed(2)     : null;
+        const preChgPct  = preP  != null && prevClose !== 0 ? +((preP  - prevClose) / prevClose * 100).toFixed(2) : null;
+        const postChgPct = postP != null && price     !== 0 ? +((postP - price)     / price     * 100).toFixed(2) : null;
 
         const usIsStale = isDataFromPreviousDay(dataTimestamp);
         allQuotes.push({
@@ -540,6 +555,14 @@ async function fetchUSQuotesSpark(
           marketState,
           priceLabel,
           quoteStatus: usIsStale ? "stale" : "fresh",
+          preMarketPrice: preP,
+          preMarketChange: preChg,
+          preMarketChangePercent: preChgPct,
+          preMarketTime: meta.preMarketTime ?? null,
+          postMarketPrice: postP,
+          postMarketChange: postChg,
+          postMarketChangePercent: postChgPct,
+          postMarketTime: meta.postMarketTime ?? null,
         });
       }
     } catch (e: any) {

@@ -29,6 +29,15 @@ export interface StockQuote {
   isFallbackCache?: boolean; // true = 來自過期緩存
   marketState?: "PRE" | "REGULAR" | "POST" | "CLOSED" | "PREPRE";
   priceLabel?: string;
+  // 盤前/盤後延伸交易 (US only)
+  preMarketPrice?: number | null;
+  preMarketChange?: number | null;
+  preMarketChangePercent?: number | null;
+  preMarketTime?: number | null;
+  postMarketPrice?: number | null;
+  postMarketChange?: number | null;
+  postMarketChangePercent?: number | null;
+  postMarketTime?: number | null;
 }
 
 export interface CandleData {
