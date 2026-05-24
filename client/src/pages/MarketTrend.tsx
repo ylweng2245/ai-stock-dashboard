@@ -359,28 +359,25 @@ function CrashRiskSection({ data }: { data: any }) {
 
   return (
     <Card className="border-border">
-      <CardContent className="py-4 px-5">
-        <div className="flex gap-6 items-stretch">
-          {/* Left: score block */}
-          <div className="flex flex-col items-center justify-center shrink-0 w-44 gap-1">
-            <div className="flex items-center gap-1.5 self-stretch mb-1">
-              <AlertTriangle className="w-3.5 h-3.5 text-[#1cb8be]" />
-              <span className="text-xs font-medium text-muted-foreground">崩盤風險指數</span>
+      <CardContent className="py-3 px-5">
+        <div className="flex gap-4 items-center">
+          {/* Left: title + score + level */}
+          <div className="flex flex-col items-center justify-center shrink-0 w-52 gap-0.5">
+            <div className="flex items-center gap-1.5 self-stretch mb-2">
+              <AlertTriangle className="w-4 h-4 text-[#1cb8be]" />
+              <span className="text-base font-semibold">崩盤風險指數</span>
             </div>
             <div className={cn("text-6xl font-bold tabular-nums leading-none", scoreColor)}>
               {data.score}
             </div>
             <div className={cn("text-sm font-semibold mt-1", scoreColor)}>{data.level}</div>
-            <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden mt-2">
-              <div className={cn("h-full rounded-full", barColor)} style={{ width: `${data.score}%` }} />
-            </div>
           </div>
 
           {/* Divider */}
           <div className="w-px bg-border/50 self-stretch" />
 
           {/* Right: factors in two columns */}
-          <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-1.5 content-center pl-2">
+          <div className="flex-1 grid grid-cols-2 gap-x-10 gap-y-1.5 content-center pl-4">
             {[col1, col2].map((col, ci) => (
               <div key={ci} className="space-y-1.5">
                 {col.map((f: any, i: number) => (
