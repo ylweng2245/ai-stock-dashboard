@@ -537,7 +537,7 @@ export async function registerRoutes(
          WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`
       ).get() as { value: number; meta_json: string } | undefined;
       if (fg) {
-        const fgMeta = JSON.parse(fg.meta_json || "{}");
+        let fgMeta: any = {}; try { fgMeta = JSON.parse(fg.meta_json || "{}"); } catch { fgMeta = { classification: fg.meta_json ?? "" }; }
         lines.push(`\n【大盤情緒】`);
         lines.push(`Fear & Greed Index：${fg.value}（${fgMeta.classification ?? ""}）`);
       }
@@ -698,7 +698,7 @@ export async function registerRoutes(
          WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`
       ).get() as { value: number; meta_json: string } | undefined;
       if (fg) {
-        const fgMeta = JSON.parse(fg.meta_json || "{}");
+        let fgMeta: any = {}; try { fgMeta = JSON.parse(fg.meta_json || "{}"); } catch { fgMeta = { classification: fg.meta_json ?? "" }; }
         lines.push(`\n【大盤情緒】`);
         lines.push(`Fear & Greed Index：${fg.value}（${fgMeta.classification ?? ""}）`);
       }
@@ -2903,7 +2903,7 @@ ${search}${questionPart}
         WHERE indicator_key='macro_sentiment' ORDER BY date DESC LIMIT 1`).get() as any;
 
       result.sentiment = {
-        fearGreed: fg ? { value: fg.value, label: JSON.parse(fg.meta_json || "{}").classification ?? "", date: fg.date } : null,
+        fearGreed: fg ? { value: fg.value, label: (() => { try { return JSON.parse(fg.meta_json || "{}").classification ?? ""; } catch { return fg.meta_json ?? ""; } })(), date: fg.date } : null,
         vix: vix.length > 0 ? { current: vix[0].value, history: vix.slice(0, 30).reverse() } : null,
         tenYear: tny.length > 0 ? { current: tny[0].value, history: tny.slice(0, 30).reverse() } : null,
         macro: macro ? { score: macro.value, date: macro.date } : null,
