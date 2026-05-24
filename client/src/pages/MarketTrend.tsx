@@ -337,20 +337,13 @@ function CrashRiskSection({ data }: { data: any }) {
     );
   }
 
-  // Taiwan color convention: low score (safe) = red (gain), high score (danger) = green (loss)
+  // Risk color: low = green (safe), high = red (danger)
   const scoreColor =
-    data.score >= 80 ? "text-loss" :     // 極危
-    data.score >= 60 ? "text-loss" :     // 高風險
-    data.score >= 40 ? "text-yellow-400" : // 警戒
-    data.score >= 20 ? "text-muted-foreground" : // 低風險
-    "text-gain";                          // 安全
-
-  const barColor =
-    data.score >= 80 ? "bg-[#10b981]" :
-    data.score >= 60 ? "bg-[#10b981]" :
-    data.score >= 40 ? "bg-yellow-400" :
-    data.score >= 20 ? "bg-muted-foreground" :
-    "bg-[#ef4444]";
+    data.score >= 80 ? "text-[#ef4444]" :
+    data.score >= 60 ? "text-orange-400" :
+    data.score >= 40 ? "text-yellow-400" :
+    data.score >= 20 ? "text-blue-400" :
+    "text-[#10b981]";
 
   const factors = data.factors ?? [];
   const half = Math.ceil(factors.length / 2);
@@ -385,7 +378,7 @@ function CrashRiskSection({ data }: { data: any }) {
                     <div className="shrink-0 flex items-center gap-1.5 min-w-[120px]">
                       <span className="text-muted-foreground">{f.name}</span>
                       <span className={cn("font-mono tabular-nums",
-                        f.score > f.maxScore * 0.6 ? "text-loss" :
+                        f.score > f.maxScore * 0.6 ? "text-[#ef4444]" :
                         f.score > f.maxScore * 0.3 ? "text-yellow-400" : "text-muted-foreground"
                       )}>{f.score}/{f.maxScore}</span>
                     </div>
