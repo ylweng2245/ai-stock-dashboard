@@ -30,6 +30,11 @@ SECTOR_ETFS_UNIQUE = [
     "SPY", "QQQ", "HYG", "LQD", "BIL",
 ]
 
+# Indicators to fetch as market_indicators (key -> ticker)
+INDICATOR_TICKERS = {
+    "10y_yield": "^TNX",  # US 10-Year Treasury Yield
+}
+
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
