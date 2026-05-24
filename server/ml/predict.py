@@ -377,29 +377,26 @@ def run():
     # ---------------------------------------------------------------------------
     horizon_results = {}
 
-    # Ensemble weights — read from DB (dynamic), fall back to defaults
+    # Read per-symbol weights from model_weights table
     import sqlite3 as _sqlite3
     _db_path = os.environ.get("DB_PATH", "data.db")
     try:
         _conn = _sqlite3.connect(_db_path)
         _row = _conn.execute(
-            "SELECT w_hgb, w_lgb, w_rf FROM ensemble_weights ORDER BY id DESC LIMIT 1"
+            "SELECT rf_weight, gb_weight, lr_weight FROM model_weights WHERE symbol=? AND market=?",
+            (symbol, market)
         ).fetchone()
         _conn.close()
         if _row:
-            W_HGB, W_LGB, W_RF = float(_row[0]), float(_row[1]), float(_row[2])
+            W_RF, W_HGB, W_LGB = float(_row[0]), float(_row[1]), float(_row[2])
             if not HAS_LGB:
-                # Redistribute LGB weight to HGB
-                W_HGB = round(W_HGB + W_LGB, 4)
-                W_LGB = 0.0
+                W_HGB = round(W_HGB + W_LGB * 0.5, 4)
+                W_LGB = round(W_LGB * 0.5, 4)
         else:
-            raise ValueError("no rows")
+            raise ValueError("no per-symbol row")
     except Exception:
-        # Default weights (no DB row yet)
-        if HAS_LGB:
-            W_HGB, W_LGB, W_RF = 0.45, 0.35, 0.20
-        else:
-            W_HGB, W_LGB, W_RF = 0.60, 0.00, 0.40
+        # Default weights
+        W_RF, W_HGB, W_LGB = 0.20, 0.30, 0.50
 
     for h in horizons:
         df_h           = df.copy()
@@ -522,6 +519,11 @@ def run():
             for k, v in fi
         ]
 
+        # Per-model raw predictions (return %, not price)
+        raw_rf = round(float(rf.predict(np.nan_to_num(X_seed, nan=0.0))[0]), 6)
+        raw_hgb = round(float(hgb.predict(X_seed)[0]), 6)
+        raw_lgb = round(float(lgb_model.predict(np.nan_to_num(X_seed, nan=0.0))[0]), 6) if HAS_LGB else None
+
         horizon_results[str(h)] = {
             "targetDate":    future_date_map[h].isoformat(),
             "medianPrice":   median_price,
@@ -530,6 +532,11 @@ def run():
             "medianReturn":  round(median_return * 100, 4),
             "upProbability": round(up_probability, 4),
             "topFeatures":   top_features,
+            "rawPredictions": {
+                "hgb": raw_hgb,
+                "lgb": raw_lgb,
+                "rf":  raw_rf,
+            },
         }
 
     # Remove internal key before output

@@ -2373,5 +2373,611 @@ ${search}${questionPart}
     }
   });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // Market Trend API — 大盤趨勢分析
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/predictions/optimize-status
+  app.get("/api/predictions/optimize-status", (_req, res) => {
+    const rows = sqlite.prepare(`
+      SELECT symbol, market, rf_weight, gb_weight, lr_weight,
+             last_optimized_at, sample_count
+      FROM model_weights ORDER BY market, symbol
+    `).all();
+
+    const counts = sqlite.prepare(`
+      SELECT symbol, market, COUNT(*) as total,
+             SUM(CASE WHEN actual_return IS NOT NULL THEN 1 ELSE 0 END) as filled
+      FROM prediction_tracking GROUP BY symbol, market
+    `).all() as any[];
+
+    const countMap = Object.fromEntries(counts.map((r: any) => [`${r.symbol}_${r.market}`, r]));
+
+    const lastOpt = sqlite.prepare(`
+      SELECT MAX(last_optimized_at) as last FROM model_weights
+    `).get() as any;
+
+    res.json({ weights: rows, counts: countMap, lastOptimizedAt: lastOpt?.last ?? null });
+  });
+
+  // POST /api/predictions/optimize — SSE stream
+  app.post("/api/predictions/optimize", async (_req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const send = (data: object) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const symbols = sqlite.prepare(`
+        SELECT DISTINCT pt.symbol, pt.market
+        FROM prediction_tracking pt
+        WHERE pt.actual_return IS NOT NULL
+        ORDER BY pt.market, pt.symbol
+      `).all() as Array<{ symbol: string; market: string }>;
+
+      const indexSymbols = [
+        { symbol: "^DJI", market: "INDEX" },
+        { symbol: "^GSPC", market: "INDEX" },
+        { symbol: "^IXIC", market: "INDEX" },
+        { symbol: "^SOX", market: "INDEX" },
+      ];
+      const allSymbols = [...symbols, ...indexSymbols.filter(i =>
+        !symbols.find(s => s.symbol === i.symbol)
+      )];
+
+      send({ type: "start", total: allSymbols.length });
+
+      const nowStr = new Date().toISOString().slice(0, 10);
+
+      for (let i = 0; i < allSymbols.length; i++) {
+        const { symbol, market } = allSymbols[i];
+
+        try {
+          const rows = sqlite.prepare(`
+            SELECT pt.horizon, pt.base_price, pt.predicted_return, pt.actual_return,
+                   pt.direction_correct,
+                   mp.rf_json, mp.gb_json, mp.lr_json
+            FROM prediction_tracking pt
+            LEFT JOIN modelpredictions mp ON mp.run_id = pt.run_id
+            WHERE pt.symbol = ? AND pt.market = ? AND pt.actual_return IS NOT NULL
+            ORDER BY pt.run_date ASC
+          `).all(symbol, market) as any[];
+
+          if (rows.length < 5) {
+            sqlite.prepare(`
+              INSERT INTO model_weights (symbol, market, rf_weight, gb_weight, lr_weight,
+                                         last_optimized_at, sample_count, notes)
+              VALUES (?, ?, 0.20, 0.50, 0.30, ?, ?, 'insufficient_data')
+              ON CONFLICT(symbol, market) DO UPDATE SET
+                last_optimized_at = excluded.last_optimized_at,
+                notes = excluded.notes
+            `).run(symbol, market, nowStr, rows.length);
+
+            send({ type: "progress", index: i + 1, total: allSymbols.length,
+                   symbol, market, status: "skipped", sampleCount: rows.length });
+            continue;
+          }
+
+          // Grid search: find best rf/gb/lr weights
+          interface GridResult { rf: number; gb: number; lr: number; dirAcc: number }
+          let bestResult: GridResult = { rf: 0.20, gb: 0.50, lr: 0.30, dirAcc: 0 };
+
+          const hasRaw = rows.some((r: any) => r.rf_json !== null && r.rf_json !== undefined);
+
+          if (hasRaw) {
+            for (let wRf = 0; wRf <= 10; wRf++) {
+              for (let wGb = 0; wGb <= 10 - wRf; wGb++) {
+                const wLr = 10 - wRf - wGb;
+                const rf = wRf / 10, gb = wGb / 10, lr = wLr / 10;
+
+                let correct = 0, total = 0;
+                for (const row of rows) {
+                  if (!row.rf_json || !row.gb_json) continue;
+                  try {
+                    const rfPreds = JSON.parse(row.rf_json);
+                    const gbPreds = JSON.parse(row.gb_json);
+                    const lrPreds = JSON.parse(row.lr_json || "{}");
+                    const h = String(row.horizon);
+                    const rfP = rfPreds[h] ?? row.predicted_return;
+                    const gbP = gbPreds[h] ?? row.predicted_return;
+                    const lrP = lrPreds[h] ?? row.predicted_return;
+                    const blended = rf * rfP + gb * gbP + lr * lrP;
+                    const actual = row.actual_return;
+                    if (Math.sign(blended) === Math.sign(actual)) correct++;
+                    total++;
+                  } catch { continue; }
+                }
+                if (total > 0) {
+                  const dirAcc = correct / total;
+                  if (dirAcc > bestResult.dirAcc) {
+                    bestResult = { rf, gb, lr, dirAcc };
+                  }
+                }
+              }
+            }
+          } else {
+            bestResult = { rf: 0.20, gb: 0.50, lr: 0.30, dirAcc: 0 };
+          }
+
+          const dirAccRf = rows.filter((r: any) => r.direction_correct === 1).length / rows.length;
+
+          sqlite.prepare(`
+            INSERT INTO model_weights (symbol, market, rf_weight, gb_weight, lr_weight,
+                                       last_optimized_at, sample_count, dir_acc_rf, dir_acc_gb, dir_acc_lr, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, market) DO UPDATE SET
+              rf_weight = excluded.rf_weight,
+              gb_weight = excluded.gb_weight,
+              lr_weight = excluded.lr_weight,
+              last_optimized_at = excluded.last_optimized_at,
+              sample_count = excluded.sample_count,
+              dir_acc_rf = excluded.dir_acc_rf,
+              dir_acc_gb = excluded.dir_acc_gb,
+              dir_acc_lr = excluded.dir_acc_lr,
+              notes = excluded.notes
+          `).run(
+            symbol, market,
+            bestResult.rf, bestResult.gb, bestResult.lr,
+            nowStr, rows.length,
+            dirAccRf, dirAccRf, dirAccRf,
+            hasRaw ? `grid_search_${rows.length}samples` : `default_no_raw`
+          );
+
+          send({
+            type: "progress", index: i + 1, total: allSymbols.length,
+            symbol, market, status: "ok",
+            sampleCount: rows.length,
+            weights: { rf: bestResult.rf, gb: bestResult.gb, lr: bestResult.lr },
+            dirAcc: bestResult.dirAcc,
+          });
+
+        } catch (err: any) {
+          send({ type: "progress", index: i + 1, total: allSymbols.length,
+                 symbol, market, status: "error", error: err.message });
+        }
+      }
+
+      send({ type: "done", optimizedAt: nowStr });
+      res.end();
+
+    } catch (err: any) {
+      send({ type: "error", message: err.message });
+      res.end();
+    }
+  });
+
+  // ── Trend Analysis helpers ───────────────────────────────────────────────
+
+  function computeTrendAnalysis(
+    bars: Array<{date: string; close: number; high: number; low: number; volume: number}>,
+    qqq: Array<{date: string; close: number}>
+  ) {
+    if (bars.length < 65) return null;
+
+    const closes = bars.map(b => b.close).reverse(); // oldest first
+    const vols = bars.map(b => b.volume).reverse();
+    const n = closes.length;
+
+    const ma = (arr: number[], period: number, idx: number) => {
+      if (idx < period - 1) return null;
+      return arr.slice(idx - period + 1, idx + 1).reduce((a, b) => a + b, 0) / period;
+    };
+
+    const last = n - 1;
+    const ma5  = ma(closes, 5,  last)!;
+    const ma20 = ma(closes, 20, last)!;
+    const ma60 = ma(closes, 60, last)!;
+    const price = closes[last];
+
+    const slope = (period: number, lookback: number = 5) => {
+      const cur = ma(closes, period, last);
+      const prev = ma(closes, period, last - lookback);
+      if (!cur || !prev) return 0;
+      return (cur - prev) / prev * 100;
+    };
+
+    const ma5slope  = slope(5);
+    const ma20slope = slope(20);
+    const ma60slope = slope(60);
+
+    // RSI
+    const rsiPeriod = 14;
+    const gains: number[] = [], losses: number[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      const d = closes[i] - closes[i-1];
+      gains.push(d > 0 ? d : 0);
+      losses.push(d < 0 ? -d : 0);
+    }
+    const avgGain = gains.slice(-rsiPeriod).reduce((a,b)=>a+b,0)/rsiPeriod;
+    const avgLoss = losses.slice(-rsiPeriod).reduce((a,b)=>a+b,0)/rsiPeriod;
+    const rsi = avgLoss === 0 ? 100 : 100 - 100/(1 + avgGain/avgLoss);
+
+    // Volume trend
+    const vol5  = vols.slice(-5).reduce((a,b)=>a+b,0)/5;
+    const vol20 = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
+    const volRatio = vol5 / (vol20 || 1);
+
+    // MACD simplified
+    const ema = (arr: number[], span: number) => {
+      const k = 2/(span+1);
+      let e = arr[0];
+      for (let i = 1; i < arr.length; i++) e = arr[i]*k + e*(1-k);
+      return e;
+    };
+    const ema12 = ema(closes, 12);
+    const ema26 = ema(closes, 26);
+    const macdHist = ema12 - ema26;
+
+    // Support/resistance
+    const highs5  = bars.slice(0, 5).map(b => b.high);
+    const lows5   = bars.slice(0, 5).map(b => b.low);
+    const highs20 = bars.slice(0, 20).map(b => b.high);
+    const lows20  = bars.slice(0, 20).map(b => b.low);
+    const highs60 = bars.slice(0, 60).map(b => b.high);
+    const lows60  = bars.slice(0, 60).map(b => b.low);
+
+    const resistance5  = Math.max(...highs5);
+    const support5     = Math.min(...lows5);
+    const resistance20 = Math.max(...highs20);
+    const support20    = Math.min(...lows20);
+    const resistance60 = Math.max(...highs60);
+    const support60    = Math.min(...lows60);
+
+    function trendLabel(
+      priceVal: number, maVal: number, maSlope: number,
+      rsiVal: number, _volRatio: number, _period: "short"|"medium"|"long"
+    ): { label: string; score: number } {
+      const aboveMa = priceVal > maVal;
+      const slopeStrong = Math.abs(maSlope) > 0.3;
+      const rsiOverbought = rsiVal > 70;
+      const rsiOversold = rsiVal < 30;
+
+      if (aboveMa && maSlope > 0.3 && rsiVal > 55) return { label: "強多", score: 85 };
+      if (aboveMa && maSlope > 0 && !rsiOverbought) return { label: "偏多趨強", score: 70 };
+      if (aboveMa && maSlope <= 0) return { label: "偏多趨弱", score: 55 };
+      if (!aboveMa && !slopeStrong) return { label: "盤整", score: 50 };
+      if (!aboveMa && maSlope < 0 && !rsiOversold) return { label: "偏空趨弱", score: 35 };
+      if (!aboveMa && maSlope < -0.3 && rsiVal < 45) return { label: "強空", score: 20 };
+      return { label: "盤整", score: 50 };
+    }
+
+    const shortLabel = trendLabel(price, ma5, ma5slope, rsi, volRatio, "short");
+    const midLabel   = trendLabel(price, ma20, ma20slope, rsi, volRatio, "medium");
+    const longLabel  = trendLabel(price, ma60, ma60slope, rsi, volRatio, "long");
+
+    function buildDesc(
+      period: string, _label: string, priceVal: number, maVal: number,
+      maSlope: number, rsiVal: number, volR: number,
+      support: number, resistance: number
+    ): string {
+      const distPct = ((priceVal - maVal) / maVal * 100).toFixed(2);
+      const slopeTxt = maSlope > 0.3 ? "向上加速" : maSlope > 0 ? "平穩向上" : maSlope > -0.3 ? "趨於平緩" : "向下走軟";
+      const rsiTxt = rsiVal > 70 ? `RSI ${rsiVal.toFixed(0)}（超買區）` : rsiVal < 30 ? `RSI ${rsiVal.toFixed(0)}（超賣區）` : `RSI ${rsiVal.toFixed(0)}（中性）`;
+      const volTxt = volR > 1.2 ? "成交量明顯放大（動能增強）" : volR < 0.8 ? "成交量萎縮（動能偏弱）" : "成交量正常";
+      return `SPY 現價 ${priceVal.toFixed(2)}，${period}MA ${maVal.toFixed(2)}（乖離 ${distPct}%），均線斜率${slopeTxt}。${rsiTxt}，${volTxt}。關鍵支撐 ${support.toFixed(2)}，壓力 ${resistance.toFixed(2)}。`;
+    }
+
+    return {
+      price, rsi, volRatio, macdHist,
+      short: {
+        ...shortLabel,
+        ma: ma5, maSlope: ma5slope,
+        support: support5, resistance: resistance5,
+        desc: buildDesc("5日", shortLabel.label, price, ma5, ma5slope, rsi, volRatio, support5, resistance5),
+      },
+      medium: {
+        ...midLabel,
+        ma: ma20, maSlope: ma20slope,
+        support: support20, resistance: resistance20,
+        desc: buildDesc("20日", midLabel.label, price, ma20, ma20slope, rsi, volRatio, support20, resistance20),
+      },
+      long: {
+        ...longLabel,
+        ma: ma60, maSlope: ma60slope,
+        support: support60, resistance: resistance60,
+        desc: buildDesc("60日", longLabel.label, price, ma60, ma60slope, rsi, volRatio, support60, resistance60),
+      },
+    };
+  }
+
+  function computeCrashRisk(
+    bars: Array<{date: string; close: number; high: number; low: number; volume: number}>
+  ) {
+    if (bars.length < 30) return null;
+
+    const closes = bars.map(b => b.close).reverse();
+    const vols = bars.map(b => b.volume).reverse();
+    const n = closes.length;
+    const last = n - 1;
+
+    let totalScore = 0;
+    const factors: Array<{name: string; score: number; maxScore: number; detail: string}> = [];
+
+    // 1. VIX (20 pts)
+    const vixRow = sqlite.prepare(`SELECT value FROM market_indicators
+      WHERE indicator_key='vix' ORDER BY date DESC LIMIT 1`).get() as any;
+    const vix5Row = sqlite.prepare(`SELECT value FROM market_indicators
+      WHERE indicator_key='vix' AND date <= date('now', '-5 days') ORDER BY date DESC LIMIT 1`).get() as any;
+    let vixScore = 0;
+    let vixDetail = "VIX 資料不足";
+    if (vixRow) {
+      const vixVal = vixRow.value;
+      const vix5 = vix5Row?.value ?? vixVal;
+      const vixSlope = vixVal - vix5;
+      if (vixVal > 30) vixScore = 20;
+      else if (vixVal > 25) vixScore = 15;
+      else if (vixVal > 20) vixScore = 10;
+      else if (vixVal > 15) vixScore = 5;
+      if (vixSlope > 3) vixScore = Math.min(20, vixScore + 5);
+      vixDetail = `VIX ${vixVal.toFixed(1)}（5日前 ${vix5.toFixed(1)}，斜率 ${vixSlope > 0 ? "+" : ""}${vixSlope.toFixed(1)}）`;
+    }
+    totalScore += vixScore;
+    factors.push({ name: "VIX 恐慌指數", score: vixScore, maxScore: 20, detail: vixDetail });
+
+    // 2. RSI divergence (15 pts)
+    const gains: number[] = [], losses: number[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      const d = closes[i] - closes[i-1];
+      gains.push(d > 0 ? d : 0);
+      losses.push(d < 0 ? -d : 0);
+    }
+    const avgGain14 = gains.slice(-14).reduce((a,b)=>a+b,0)/14;
+    const avgLoss14 = losses.slice(-14).reduce((a,b)=>a+b,0)/14;
+    const crashRsi = avgLoss14 === 0 ? 100 : 100 - 100/(1 + avgGain14/avgLoss14);
+    const avgGain14_prev = gains.slice(-28,-14).reduce((a,b)=>a+b,0)/14;
+    const avgLoss14_prev = losses.slice(-28,-14).reduce((a,b)=>a+b,0)/14;
+    const rsiPrev = avgLoss14_prev === 0 ? 100 : 100 - 100/(1 + avgGain14_prev/avgLoss14_prev);
+    const priceDelta = closes[last] - closes[Math.max(0, last-14)];
+    const rsiDelta = crashRsi - rsiPrev;
+    let rsiScore = 0;
+    let rsiDetail = "";
+    if (priceDelta > 0 && rsiDelta < -5) {
+      rsiScore = 15; rsiDetail = `價格創新高但RSI走弱（背離，RSI ${crashRsi.toFixed(0)} vs 前期 ${rsiPrev.toFixed(0)}）`;
+    } else if (crashRsi > 75) {
+      rsiScore = 10; rsiDetail = `RSI ${crashRsi.toFixed(0)} 超買`;
+    } else if (crashRsi > 65) {
+      rsiScore = 5; rsiDetail = `RSI ${crashRsi.toFixed(0)} 偏高`;
+    } else {
+      rsiDetail = `RSI ${crashRsi.toFixed(0)}（正常）`;
+    }
+    totalScore += rsiScore;
+    factors.push({ name: "RSI 背離", score: rsiScore, maxScore: 15, detail: rsiDetail });
+
+    // 3. Volume divergence (15 pts)
+    const cvol5  = vols.slice(-5).reduce((a,b)=>a+b,0)/5;
+    const cvol20 = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
+    const cvolRatio = cvol5 / (cvol20 || 1);
+    const price5d = (closes[last] - closes[Math.max(0,last-5)]) / closes[Math.max(0,last-5)];
+    let volScore = 0;
+    let volDetail = "";
+    if (price5d > 0.02 && cvolRatio < 0.75) {
+      volScore = 15; volDetail = `上漲但量縮（量比 ${cvolRatio.toFixed(2)}）— 上漲乏力`;
+    } else if (price5d > 0 && cvolRatio < 0.85) {
+      volScore = 8; volDetail = `上漲但量偏縮（量比 ${cvolRatio.toFixed(2)}）`;
+    } else {
+      volDetail = `量比 ${cvolRatio.toFixed(2)}（正常）`;
+    }
+    totalScore += volScore;
+    factors.push({ name: "成交量背離", score: volScore, maxScore: 15, detail: volDetail });
+
+    // 4. Credit spread HYG/LQD (15 pts)
+    const hygBars = sqlite.prepare(`SELECT date, close FROM historical_prices
+      WHERE symbol='HYG' AND market='US' ORDER BY date DESC LIMIT 10`).all() as any[];
+    const lqdBars = sqlite.prepare(`SELECT date, close FROM historical_prices
+      WHERE symbol='LQD' AND market='US' ORDER BY date DESC LIMIT 10`).all() as any[];
+    let creditScore = 0;
+    let creditDetail = "信用利差資料不足";
+    if (hygBars.length >= 5 && lqdBars.length >= 5) {
+      const ratioNow  = hygBars[0].close / lqdBars[0].close;
+      const ratio5    = hygBars[4].close / lqdBars[4].close;
+      const creditChg = (ratioNow - ratio5) / ratio5 * 100;
+      if (creditChg < -1.5) { creditScore = 15; creditDetail = `信用利差擴大（HYG/LQD 5日變化 ${creditChg.toFixed(2)}%）— 違約風險升高`; }
+      else if (creditChg < -0.5) { creditScore = 8; creditDetail = `信用利差略微擴大（${creditChg.toFixed(2)}%）`; }
+      else { creditDetail = `信用利差穩定（${creditChg.toFixed(2)}%）`; }
+    }
+    totalScore += creditScore;
+    factors.push({ name: "信用利差（HYG/LQD）", score: creditScore, maxScore: 15, detail: creditDetail });
+
+    // 5. MACD (10 pts)
+    const cema = (arr: number[], span: number, fromEnd: number = 0) => {
+      const k = 2/(span+1);
+      const slice = fromEnd ? arr.slice(0, arr.length - fromEnd) : arr;
+      let e = slice[0];
+      for (let i = 1; i < slice.length; i++) e = slice[i]*k + e*(1-k);
+      return e;
+    };
+    const cema12 = cema(closes, 12);
+    const cema26 = cema(closes, 26);
+    const cema12p = cema(closes, 12, 5);
+    const cema26p = cema(closes, 26, 5);
+    const macd = cema12 - cema26;
+    const macdPrev = cema12p - cema26p;
+    let macdScore = 0;
+    let macdDetail = "";
+    if (macd < 0 && macdPrev >= 0) { macdScore = 10; macdDetail = "MACD 剛發生死叉（中期轉空訊號）"; }
+    else if (macd < 0) { macdScore = 6; macdDetail = `MACD 持續負值（${macd.toFixed(2)}）`; }
+    else if (macd > 0 && macdPrev <= 0) { macdDetail = "MACD 剛發生金叉（轉多訊號）"; }
+    else { macdDetail = `MACD 正值（${macd.toFixed(2)}）`; }
+    totalScore += macdScore;
+    factors.push({ name: "MACD 狀態", score: macdScore, maxScore: 10, detail: macdDetail });
+
+    // 6. Bollinger band (10 pts)
+    const cma20 = closes.slice(-20).reduce((a,b)=>a+b,0)/20;
+    const std20 = Math.sqrt(closes.slice(-20).reduce((a,b)=>a+(b-cma20)**2,0)/20);
+    const bbUpper = cma20 + 2*std20;
+    let bbScore = 0;
+    let bbDetail = "";
+    const lastClose = closes[last];
+    if (lastClose > bbUpper) { bbScore = 10; bbDetail = "價格突破布林上軌（過熱，均值回歸壓力）"; }
+    else if (lastClose > cma20 + 1.5*std20) { bbScore = 5; bbDetail = "價格接近布林上軌（偏高）"; }
+    else if ((bbUpper - (cma20 - 2*std20)) / cma20 < 0.04) { bbScore = 5; bbDetail = "布林帶收窄（大波動即將出現）"; }
+    else { bbDetail = `布林帶正常（價格 ${((lastClose-cma20)/std20).toFixed(1)} σ）`; }
+    totalScore += bbScore;
+    factors.push({ name: "布林帶位置", score: bbScore, maxScore: 10, detail: bbDetail });
+
+    const finalScore = Math.min(100, Math.round(totalScore));
+
+    let level: string, color: string;
+    if (finalScore >= 80)      { level = "極度危險"; color = "red"; }
+    else if (finalScore >= 60) { level = "高度警戒"; color = "orange"; }
+    else if (finalScore >= 40) { level = "中度警戒"; color = "yellow"; }
+    else if (finalScore >= 20) { level = "低度風險"; color = "blue"; }
+    else                       { level = "安全"; color = "green"; }
+
+    return { score: finalScore, level, color, factors };
+  }
+
+  // GET /api/market-trend — main data endpoint
+  app.get("/api/market-trend", async (_req, res) => {
+    try {
+      const result: any = {};
+
+      // 1. Sector ETF returns
+      const SECTOR_ETFS = [
+        { symbol: "SOXX", name: "美國半導體", theme: "科技" },
+        { symbol: "SMH",  name: "半導體設備與製造", theme: "科技" },
+        { symbol: "XLI",  name: "工業製造", theme: "景氣循環" },
+        { symbol: "XBI",  name: "生技醫療", theme: "防禦/成長" },
+        { symbol: "IBB",  name: "大型生技", theme: "防禦/成長" },
+        { symbol: "CIBR", name: "網路安全", theme: "科技" },
+        { symbol: "HACK", name: "資安科技", theme: "科技" },
+        { symbol: "ARKX", name: "太空探索", theme: "主題成長" },
+        { symbol: "ARKQ", name: "自動化與機器人", theme: "主題成長" },
+        { symbol: "XLU",  name: "公用事業（防禦）", theme: "防禦" },
+        { symbol: "URNM", name: "鈾與核能", theme: "能源" },
+      ];
+
+      const sectorData = [];
+      for (const etf of SECTOR_ETFS) {
+        const bars = sqlite.prepare(`
+          SELECT date, close FROM historical_prices
+          WHERE symbol=? AND market='US' ORDER BY date DESC LIMIT 65
+        `).all(etf.symbol) as Array<{date: string; close: number}>;
+
+        if (bars.length < 2) {
+          sectorData.push({ ...etf, ret1w: null, ret1m: null, ret3m: null, latestClose: null });
+          continue;
+        }
+
+        const latest = bars[0].close;
+        const get = (idx: number) => bars[Math.min(idx, bars.length - 1)]?.close;
+
+        sectorData.push({
+          ...etf,
+          latestClose: latest,
+          ret1w:  get(5)  ? ((latest - get(5))  / get(5)  * 100) : null,
+          ret1m:  get(21) ? ((latest - get(21)) / get(21) * 100) : null,
+          ret3m:  get(63) ? ((latest - get(63)) / get(63) * 100) : null,
+          date: bars[0].date,
+        });
+      }
+      result.sectors = sectorData;
+
+      // 2. Trend analysis for SPY
+      const spyBars = sqlite.prepare(`
+        SELECT date, close, high, low, volume FROM historical_prices
+        WHERE symbol='SPY' AND market='US' ORDER BY date DESC LIMIT 120
+      `).all() as Array<{date: string; close: number; high: number; low: number; volume: number}>;
+
+      const qqqBars = sqlite.prepare(`
+        SELECT date, close FROM historical_prices
+        WHERE symbol='QQQ' AND market='US' ORDER BY date DESC LIMIT 120
+      `).all() as Array<{date: string; close: number}>;
+
+      result.trendAnalysis = computeTrendAnalysis(spyBars, qqqBars);
+
+      // 3. Crash risk index
+      result.crashRisk = computeCrashRisk(spyBars);
+
+      // 4. Market sentiment
+      const fg = sqlite.prepare(`SELECT value, meta_json, date FROM market_indicators
+        WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`).get() as any;
+      const vix = sqlite.prepare(`SELECT value, date FROM market_indicators
+        WHERE indicator_key='vix' ORDER BY date DESC LIMIT 30`).all() as any[];
+      const tny = sqlite.prepare(`SELECT value, date FROM market_indicators
+        WHERE indicator_key='10y_yield' ORDER BY date DESC LIMIT 30`).all() as any[];
+      const macro = sqlite.prepare(`SELECT value, date FROM market_indicators
+        WHERE indicator_key='macro_sentiment' ORDER BY date DESC LIMIT 1`).get() as any;
+
+      result.sentiment = {
+        fearGreed: fg ? { value: fg.value, label: JSON.parse(fg.meta_json || "{}").classification ?? "", date: fg.date } : null,
+        vix: vix.length > 0 ? { current: vix[0].value, history: vix.slice(0, 30).reverse() } : null,
+        tenYear: tny.length > 0 ? { current: tny[0].value, history: tny.slice(0, 30).reverse() } : null,
+        macro: macro ? { score: macro.value, date: macro.date } : null,
+      };
+
+      // 5. HYG/LQD credit spread
+      const hyg = sqlite.prepare(`SELECT date, close FROM historical_prices
+        WHERE symbol='HYG' AND market='US' ORDER BY date DESC LIMIT 5`).all() as any[];
+      const lqd = sqlite.prepare(`SELECT date, close FROM historical_prices
+        WHERE symbol='LQD' AND market='US' ORDER BY date DESC LIMIT 5`).all() as any[];
+      result.creditSpread = hyg.length > 0 && lqd.length > 0 ? {
+        hygClose: hyg[0].close, lqdClose: lqd[0].close,
+        ratio: hyg[0].close / lqd[0].close,
+        date: hyg[0].date,
+      } : null;
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[market-trend] error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/market-trend/index-history/:symbol
+  app.get("/api/market-trend/index-history/:symbol", async (req, res) => {
+    const sym = req.params.symbol;
+    const market = "INDEX";
+    try {
+      const bars = sqlite.prepare(`
+        SELECT date, open, high, low, close, volume FROM historical_prices
+        WHERE symbol=? AND market=? ORDER BY date ASC
+      `).all(sym, market) as any[];
+
+      if (bars.length === 0) {
+        const usBars = sqlite.prepare(`
+          SELECT date, open, high, low, close, volume FROM historical_prices
+          WHERE symbol=? AND market='US' ORDER BY date ASC
+        `).all(sym) as any[];
+        return res.json({ symbol: sym, bars: usBars });
+      }
+      res.json({ symbol: sym, bars });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/market-trend/index-prediction/:symbol
+  app.get("/api/market-trend/index-prediction/:symbol", async (req, res) => {
+    const sym = decodeURIComponent(req.params.symbol);
+    try {
+      const r = sqlite.prepare(`
+        SELECT * FROM modelpredictions
+        WHERE symbol=? AND market='INDEX'
+        ORDER BY run_at DESC, created_at DESC LIMIT 1
+      `).get(sym) as any;
+
+      if (!r) return res.json({ found: false });
+
+      const meta = r.meta_json ? JSON.parse(r.meta_json) : {};
+      const horizons = meta.horizonsJson ? JSON.parse(meta.horizonsJson) : null;
+
+      res.json({
+        found: true,
+        symbol: sym,
+        runAt: r.run_at,
+        baseDate: r.base_date,
+        basePrice: r.base_price,
+        horizons,
+        medianPath: r.median_path ? JSON.parse(r.median_path) : [],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return httpServer;
 }

@@ -165,7 +165,7 @@ export interface IStorage {
   clearAllFundamentals(): void;
 
   // Model Predictions (V6.1) — append-only, never overwrite
-  insertModelPrediction(row: InsertModelPrediction): void;
+  insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number; rfJson?: string | null; gbJson?: string | null; lrJson?: string | null; weightsJson?: string | null }): void;
   getModelPredictions(
     symbol: string,
     market: string,
@@ -727,18 +727,20 @@ export class DatabaseStorage implements IStorage {
   // ─── Model Predictions (V6.1) ────────────────────────────────────────────────────
 
   /** Insert a prediction row — deletes any existing row for same symbol+market+date first (keep one per day). */
-  insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number }): void {
+  insertModelPrediction(row: InsertModelPrediction & { runId?: string; baseDate?: string; basePrice?: number; rfJson?: string | null; gbJson?: string | null; lrJson?: string | null; weightsJson?: string | null }): void {
     // INSERT new record first, THEN delete older same-day records.
     // This avoids a flash where the chart has no prediction while the new one is being computed.
     sqlite.prepare(`
       INSERT INTO modelpredictions
         (symbol, market, model_name, horizon_days, run_at, start_date, end_date,
          median_path, lower_path, upper_path, meta_json, created_at,
-         run_id, base_date, base_price)
+         run_id, base_date, base_price,
+         rf_json, gb_json, lr_json, weights_json)
       VALUES
         (@symbol, @market, @modelName, @horizonDays, @runAt, @startDate, @endDate,
          @medianPathJson, @lowerPathJson, @upperPathJson, @metaJson, @createdAt,
-         @runId, @baseDate, @basePrice)
+         @runId, @baseDate, @basePrice,
+         @rfJson, @gbJson, @lrJson, @weightsJson)
     `).run({
       symbol:         row.symbol,
       market:         row.market,
@@ -755,6 +757,10 @@ export class DatabaseStorage implements IStorage {
       runId:          (row as any).runId ?? null,
       baseDate:       (row as any).baseDate ?? null,
       basePrice:      (row as any).basePrice ?? null,
+      rfJson:         (row as any).rfJson ?? null,
+      gbJson:         (row as any).gbJson ?? null,
+      lrJson:         (row as any).lrJson ?? null,
+      weightsJson:    (row as any).weightsJson ?? null,
     });
     // After successful insert, remove older same-day records (keep only the one just inserted)
     const newId = sqlite.prepare(`SELECT last_insert_rowid() as id`).get() as { id: number };
@@ -951,6 +957,12 @@ safeAlter("ALTER TABLE modelpredictions ADD COLUMN base_price REAL");
 try { sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_predictions_symbol_runAt ON modelpredictions (symbol, market, run_at DESC)`); } catch { /* exists */ }
 try { sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_predictions_run_id ON modelpredictions (run_id)`); } catch { /* exists */ }
 
+// Phase 1: per-model raw predictions + per-symbol weights
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN rf_json TEXT");
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN gb_json TEXT");
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN lr_json TEXT");
+safeAlter("ALTER TABLE modelpredictions ADD COLUMN weights_json TEXT");
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Ensure news digest tables exist (fresh DB or migration)
@@ -1128,6 +1140,39 @@ try {
     mae_lgb       REAL,
     mae_rf        REAL,
     notes         TEXT
+  )`);
+} catch {
+  // Already exists
+}
+
+// ── model_weights table (per-symbol weight optimization) ─────────────────────
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS model_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    market TEXT NOT NULL,
+    rf_weight REAL NOT NULL DEFAULT 0.50,
+    gb_weight REAL NOT NULL DEFAULT 0.30,
+    lr_weight REAL NOT NULL DEFAULT 0.20,
+    last_optimized_at TEXT,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    dir_acc_rf REAL,
+    dir_acc_gb REAL,
+    dir_acc_lr REAL,
+    notes TEXT,
+    UNIQUE(symbol, market)
+  )`);
+} catch {
+  // Already exists
+}
+
+// ── market_trend_cache table ─────────────────────────────────────────────────
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS market_trend_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key TEXT NOT NULL UNIQUE,
+    data_json TEXT NOT NULL,
+    computed_at TEXT NOT NULL
   )`);
 } catch {
   // Already exists

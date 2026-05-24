@@ -59,7 +59,7 @@ let _dailyTimer: ReturnType<typeof setTimeout> | null = null;
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getTodayStr(market: string): string {
-  const tz = market === "US" ? "America/New_York" : "Asia/Taipei";
+  const tz = (market === "US" || market === "INDEX") ? "America/New_York" : "Asia/Taipei";
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date());
@@ -155,14 +155,27 @@ async function runSweep(label = "sweep", force = false): Promise<void> {
 
   try {
     const watchlist = await storage.getWatchlist();
-    if (!watchlist.length) {
+
+    // Add index symbols for market trend analysis
+    const INDEX_SYMBOLS = [
+      { symbol: "^DJI",  market: "INDEX", name: "道瓊工業指數" },
+      { symbol: "^GSPC", market: "INDEX", name: "S&P 500" },
+      { symbol: "^IXIC", market: "INDEX", name: "Nasdaq 綜合指數" },
+      { symbol: "^SOX",  market: "INDEX", name: "費城半導體指數" },
+    ];
+    const allSymbols = [
+      ...watchlist,
+      ...INDEX_SYMBOLS.filter(i => !watchlist.find((w: any) => w.symbol === i.symbol)),
+    ];
+
+    if (!allSymbols.length) {
       console.log("[predSched] watchlist is empty, nothing to do");
       state.running = false;
       return;
     }
 
     // Build queue: skip symbols already done today (unless force=true)
-    const newItems: QueueItem[] = watchlist
+    const newItems: QueueItem[] = allSymbols
       .filter(w => force || !hasTodayPrediction(w.symbol, w.market))
       .map(w => ({ symbol: w.symbol, market: w.market, status: "pending" as QueueItemStatus }));
 

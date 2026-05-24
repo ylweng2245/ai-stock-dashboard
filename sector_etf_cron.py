@@ -29,7 +29,12 @@ SECTOR_ETFS = [
     "ARKQ", "XBI", "SMH", "HACK", "IBB", "SMH",
 ]
 # Deduplicate (SMH appears twice in spec)
-SECTOR_ETFS_UNIQUE = list(dict.fromkeys(SECTOR_ETFS))
+SECTOR_ETFS_UNIQUE = [
+    "SOXX", "CIBR", "XLU", "URNM", "XLI", "ARKX",
+    "ARKQ", "XBI", "SMH", "HACK", "IBB",
+    # New: for trend analysis and macro features
+    "SPY", "QQQ", "HYG", "LQD", "BIL",
+]
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────

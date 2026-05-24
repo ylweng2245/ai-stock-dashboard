@@ -15,6 +15,7 @@ export interface HorizonPoint {
   medianReturn: number;   // % units
   upProbability: number;
   topFeatures: Array<{ feature: string; label: string; importance: number }>;
+  rawPredictions?: { hgb: number | null; lgb: number | null; rf: number | null };
 }
 
 export interface PredictionResult {
@@ -229,6 +230,19 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
       }
     }
 
+    // Extract raw per-model predictions across all horizons
+    const h1 = result.horizons?.["1"];
+    const rfRaw = h1 ? JSON.stringify(
+      Object.fromEntries(Object.keys(result.horizons!).map(k => [k, result.horizons![k].rawPredictions?.rf ?? null]))
+    ) : null;
+    const gbRaw = h1 ? JSON.stringify(
+      Object.fromEntries(Object.keys(result.horizons!).map(k => [k, result.horizons![k].rawPredictions?.hgb ?? null]))
+    ) : null;
+    const lrRaw = h1 ? JSON.stringify(
+      Object.fromEntries(Object.keys(result.horizons!).map(k => [k, result.horizons![k].rawPredictions?.lgb ?? null]))
+    ) : null;
+    const weightsRaw = result.meta?.ensembleWeights ? JSON.stringify(result.meta.ensembleWeights) : null;
+
     try {
       await (storage as any).insertModelPrediction({
         symbol,
@@ -246,6 +260,10 @@ export async function runPrediction(opts: RunPredictionOptions): Promise<Predict
         runId,
         baseDate,
         basePrice,
+        rfJson:         rfRaw,
+        gbJson:         gbRaw,
+        lrJson:         lrRaw,
+        weightsJson:    weightsRaw,
       });
     } catch (dbErr: any) {
       console.error("[mlPredictionService] Failed to save prediction to DB:", dbErr?.message ?? dbErr);
