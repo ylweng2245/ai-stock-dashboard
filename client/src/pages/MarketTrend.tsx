@@ -337,19 +337,20 @@ function CrashRiskSection({ data }: { data: any }) {
     );
   }
 
+  // Taiwan color convention: low score (safe) = red (gain), high score (danger) = green (loss)
   const scoreColor =
-    data.score >= 80 ? "text-[#ef4444]" :
-    data.score >= 60 ? "text-orange-400" :
-    data.score >= 40 ? "text-yellow-400" :
-    data.score >= 20 ? "text-blue-400" :
-    "text-[#10b981]";
+    data.score >= 80 ? "text-loss" :     // 極危
+    data.score >= 60 ? "text-loss" :     // 高風險
+    data.score >= 40 ? "text-yellow-400" : // 警戒
+    data.score >= 20 ? "text-muted-foreground" : // 低風險
+    "text-gain";                          // 安全
 
   const barColor =
-    data.score >= 80 ? "bg-[#ef4444]" :
-    data.score >= 60 ? "bg-orange-400" :
+    data.score >= 80 ? "bg-[#10b981]" :
+    data.score >= 60 ? "bg-[#10b981]" :
     data.score >= 40 ? "bg-yellow-400" :
-    data.score >= 20 ? "bg-blue-400" :
-    "bg-[#10b981]";
+    data.score >= 20 ? "bg-muted-foreground" :
+    "bg-[#ef4444]";
 
   const factors = data.factors ?? [];
   const half = Math.ceil(factors.length / 2);
@@ -361,7 +362,7 @@ function CrashRiskSection({ data }: { data: any }) {
       <CardContent className="py-4 px-5">
         <div className="flex gap-6 items-stretch">
           {/* Left: score block */}
-          <div className="flex flex-col items-center justify-center shrink-0 w-32 gap-1">
+          <div className="flex flex-col items-center justify-center shrink-0 w-44 gap-1">
             <div className="flex items-center gap-1.5 self-stretch mb-1">
               <AlertTriangle className="w-3.5 h-3.5 text-[#1cb8be]" />
               <span className="text-xs font-medium text-muted-foreground">崩盤風險指數</span>
@@ -379,15 +380,15 @@ function CrashRiskSection({ data }: { data: any }) {
           <div className="w-px bg-border/50 self-stretch" />
 
           {/* Right: factors in two columns */}
-          <div className="flex-1 grid grid-cols-2 gap-x-6 gap-y-1.5 content-center">
+          <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-1.5 content-center pl-2">
             {[col1, col2].map((col, ci) => (
               <div key={ci} className="space-y-1.5">
                 {col.map((f: any, i: number) => (
                   <div key={i} className="flex items-start gap-2 text-xs">
-                    <div className="shrink-0 flex items-center gap-1.5 min-w-[110px]">
+                    <div className="shrink-0 flex items-center gap-1.5 min-w-[120px]">
                       <span className="text-muted-foreground">{f.name}</span>
                       <span className={cn("font-mono tabular-nums",
-                        f.score > f.maxScore * 0.6 ? "text-[#ef4444]" :
+                        f.score > f.maxScore * 0.6 ? "text-loss" :
                         f.score > f.maxScore * 0.3 ? "text-yellow-400" : "text-muted-foreground"
                       )}>{f.score}/{f.maxScore}</span>
                     </div>
