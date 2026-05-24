@@ -418,7 +418,18 @@ function DigestTimelineItem({
 
 // ─── Full-Width Stock Card ─────────────────────────────────────────────────────
 
-function StockDigestCard({ stock }: { stock: StockDigestData }) {
+function StockDigestCard({
+  stock,
+  sentimentFilter,
+}: {
+  stock: StockDigestData;
+  sentimentFilter: "all" | "positive" | "negative" | "neutral";
+}) {
+  const filteredDigests =
+    sentimentFilter === "all"
+      ? stock.digests
+      : stock.digests.filter((d) => d.sentimentLabel === sentimentFilter);
+
   return (
     <article className="flex flex-col rounded-[18px] border border-[#66c6df]/20 bg-gradient-to-b from-[rgba(17,29,48,0.97)] to-[rgba(12,22,36,0.98)] shadow-[0_12px_40px_rgba(0,0,0,0.32)]">
       {/* Card Header — compact strip */}
@@ -460,13 +471,15 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
             backgroundPosition: "8px 0",
           }}
         >
-          {stock.digests.length === 0 && (
+          {filteredDigests.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
               <Newspaper className="w-8 h-8 opacity-30" />
-              <p className="text-[13px]">尚未建立今日新聞彙總</p>
+              <p className="text-[13px]">
+                {sentimentFilter === "all" ? "尚未建立今日新聞彙總" : "目前沒有符合的新聞"}
+              </p>
             </div>
           )}
-          {stock.digests.map((entry, i) => (
+          {filteredDigests.map((entry, i) => (
             <DigestTimelineItem key={entry.id} entry={entry} isFirst={i === 0} />
           ))}
         </div>
@@ -479,6 +492,7 @@ function StockDigestCard({ stock }: { stock: StockDigestData }) {
 
 export default function StockNewsDigest() {
   const { activeSymbol } = useActiveSymbol();
+  const [sentimentFilter, setSentimentFilter] = useState<"all" | "positive" | "negative" | "neutral">("all");
 
   const { data, isLoading, isError } = useQuery<PageData>({
     queryKey: ["/api/news-digest/stocks"],
@@ -508,9 +522,59 @@ export default function StockNewsDigest() {
                 多空觀點左右對照，點擊來源標籤查看原始新聞。
               </p>
             </div>
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/8 bg-white/2 text-[12px] text-muted-foreground shrink-0">
-              <Clock className="w-3.5 h-3.5" />
-              {data?.lastUpdated ? `最後更新 ${formatLastUpdated(data.lastUpdated)}` : "尚未更新"} · 每日 Cron 自動更新
+            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+              {/* Sentiment Filter Buttons */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setSentimentFilter("all")}
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded border transition-colors",
+                    sentimentFilter === "all"
+                      ? "border-white/30 bg-white/10 text-foreground"
+                      : "border-white/10 text-muted-foreground hover:border-white/20"
+                  )}
+                >
+                  全部
+                </button>
+                <button
+                  onClick={() => setSentimentFilter("positive")}
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded border transition-colors",
+                    sentimentFilter === "positive"
+                      ? "border-[#ef4444]/50 bg-[#ef4444]/10 text-[#ef4444]"
+                      : "border-white/10 text-muted-foreground hover:border-[#ef4444]/30 hover:text-[#ef4444]/80"
+                  )}
+                >
+                  正面
+                </button>
+                <button
+                  onClick={() => setSentimentFilter("negative")}
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded border transition-colors",
+                    sentimentFilter === "negative"
+                      ? "border-[#10b981]/50 bg-[#10b981]/10 text-[#10b981]"
+                      : "border-white/10 text-muted-foreground hover:border-[#10b981]/30 hover:text-[#10b981]/80"
+                  )}
+                >
+                  負面
+                </button>
+                <button
+                  onClick={() => setSentimentFilter("neutral")}
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded border transition-colors",
+                    sentimentFilter === "neutral"
+                      ? "border-[#1cb8be]/50 bg-[#1cb8be]/10 text-[#1cb8be]"
+                      : "border-white/10 text-muted-foreground hover:border-[#1cb8be]/30"
+                  )}
+                >
+                  中性
+                </button>
+              </div>
+              {/* Last Updated */}
+              <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/8 bg-white/2 text-[12px] text-muted-foreground">
+                <Clock className="w-3.5 h-3.5" />
+                {data?.lastUpdated ? `最後更新 ${formatLastUpdated(data.lastUpdated)}` : "尚未更新"} · 每日 Cron 自動更新
+              </div>
             </div>
           </div>
 
@@ -538,7 +602,7 @@ export default function StockNewsDigest() {
           )}
 
           {!isLoading && stocks.length > 0 && activeStock && (
-            <StockDigestCard stock={activeStock} />
+            <StockDigestCard stock={activeStock} sentimentFilter={sentimentFilter} />
           )}
         </div>
       </div>

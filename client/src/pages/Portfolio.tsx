@@ -9,6 +9,10 @@ import { type StockQuote, formatDataAge } from "@/lib/stockData";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import {
+  ComposedChart, Area, Line,
+  XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from "recharts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +111,13 @@ export default function Portfolio() {
     queryFn: () => apiRequest("GET", "/api/portfolio/computed").then(r => r.json()),
     staleTime: 5 * 60_000,          // 5 min — pure DB calc, changes only on import
     placeholderData: (prev: ComputedHolding[] | undefined) => prev,  // show stale data while refreshing
+  });
+
+  // Fetch performance curve
+  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;invested:number}> }>({
+    queryKey: ["/api/portfolio/performance"],
+    queryFn: () => apiRequest("GET", "/api/portfolio/performance").then(r => r.json()),
+    staleTime: 10 * 60_000,
   });
 
   // Fetch live prices
@@ -406,6 +417,119 @@ export default function Portfolio() {
               </CardContent>
             </Card>
           )}
+
+          {/* Performance Curve */}
+          {(() => {
+            const curve = perfData?.curve ?? [];
+            const hasCurve = curve.length >= 5;
+            const latestNav = curve[curve.length - 1]?.nav ?? 0;
+            const latestInvested = curve[curve.length - 1]?.invested ?? 0;
+            const totalReturn = latestInvested > 0
+              ? ((latestNav - latestInvested) / latestInvested * 100)
+              : 0;
+            const isPositive = totalReturn >= 0;
+
+            const fmtNTK = (v: number) => {
+              if (v >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
+              if (v >= 1_000_000)  return `NT ${(v / 10_000).toFixed(1)}萬`;
+              if (v >= 1_000)      return `NT ${(v / 1_000).toFixed(0)}k`;
+              return `NT ${v.toFixed(0)}`;
+            };
+
+            return (
+              <Card className="border-border">
+                <CardHeader className="pb-2 pt-4 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">組合淨值曲線</CardTitle>
+                    {hasCurve && (
+                      <span className={cn(
+                        "text-sm font-semibold tabular-nums",
+                        isPositive ? "text-gain" : "text-loss"
+                      )}>
+                        {isPositive ? "+" : ""}{totalReturn.toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="px-2 pb-3">
+                  {!hasCurve ? (
+                    <div className="flex items-center justify-center h-[220px] text-sm text-muted-foreground">
+                      交易明細匯入後即可查看
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <ComposedChart data={curve} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="navFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#1cb8be" stopOpacity={0.18} />
+                            <stop offset="95%" stopColor="#1cb8be" stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                          interval={Math.max(1, Math.floor(curve.length / 4))}
+                          tickFormatter={(v: string) => {
+                            const d = new Date(v);
+                            return `${d.getFullYear()}Q${Math.ceil((d.getMonth() + 1) / 3)}`;
+                          }}
+                        />
+                        <YAxis
+                          tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                          width={70}
+                          domain={["auto", "auto"]}
+                          tickFormatter={fmtNTK}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "hsl(var(--card))",
+                            border: "1px solid hsl(var(--border))",
+                            borderRadius: 8,
+                            fontSize: 12,
+                          }}
+                          formatter={(value: any, name: string) => {
+                            const v = typeof value === "number" ? value : 0;
+                            if (name === "nav") return [fmtNTK(v), "市值"];
+                            if (name === "invested") return [fmtNTK(v), "投入"];
+                            return [value, name];
+                          }}
+                          labelFormatter={(label: string, payload: any[]) => {
+                            const p = payload?.[0]?.payload;
+                            const nav = p?.nav ?? 0;
+                            const inv = p?.invested ?? 0;
+                            const ret = inv > 0 ? ((nav - inv) / inv * 100) : 0;
+                            return `${label}  報酬 ${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%`;
+                          }}
+                        />
+                        {/* Fill area between nav and invested */}
+                        <Area
+                          type="monotone"
+                          dataKey="nav"
+                          stroke="#1cb8be"
+                          strokeWidth={2}
+                          fill="url(#navFill)"
+                          activeDot={false}
+                          isAnimationActive={false}
+                          name="nav"
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="invested"
+                          stroke="hsl(var(--muted-foreground))"
+                          strokeWidth={1.5}
+                          strokeDasharray="5 4"
+                          dot={false}
+                          activeDot={false}
+                          isAnimationActive={false}
+                          name="invested"
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           {/* Allocation Bar Chart */}
           {barData.length > 0 && (

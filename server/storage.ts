@@ -1178,6 +1178,15 @@ try {
   // Already exists
 }
 
+// ── Alerts schema migration ─────────────────────────────────────────────────────
+safeAlter("ALTER TABLE alerts ADD COLUMN alert_type TEXT NOT NULL DEFAULT 'price'");
+safeAlter("ALTER TABLE alerts ADD COLUMN indicator_threshold REAL");
+safeAlter("ALTER TABLE alerts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+safeAlter("ALTER TABLE alerts ADD COLUMN last_checked_at INTEGER");
+try {
+  sqlite.exec(`ALTER TABLE alerts ALTER COLUMN target_price DROP NOT NULL`);
+} catch { /* SQLite doesn't support DROP NOT NULL, it's OK — just allow NULL in inserts */ }
+
 // ── One-time migration: discard pre-V6.1 predictions that lack per-model raw data ──
 // Old predictions only stored blended result (rf_json IS NULL), making them useless
 // for future weight optimization. Run once; new predictions have full rf/gb/lr data.

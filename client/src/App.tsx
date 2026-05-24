@@ -16,6 +16,7 @@ import Portfolio from "@/pages/Portfolio";
 import Alerts from "@/pages/Alerts";
 import StockNewsDigest from "@/pages/StockNewsDigest";
 import MarketTrend from "@/pages/MarketTrend";
+import EarningsCalendar from "@/pages/EarningsCalendar";
 import NotFound from "@/pages/not-found";
 import type { WatchlistItem } from "@/components/AnalysisSymbolSidebar";
 
@@ -47,6 +48,7 @@ function AppRouter() {
         <Route path="/portfolio" component={Portfolio} />
         <Route path="/alerts" component={Alerts} />
         <Route path="/news-digest" component={StockNewsDigest} />
+        <Route path="/earnings" component={EarningsCalendar} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

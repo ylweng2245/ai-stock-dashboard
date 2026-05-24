@@ -21,10 +21,14 @@ export const alerts = sqliteTable("alerts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   symbol: text("symbol").notNull(),
   name: text("name").notNull(),
-  targetPrice: real("target_price").notNull(),
-  direction: text("direction").notNull(), // "above" or "below"
+  targetPrice: real("target_price"),               // null for indicator-based alerts
+  direction: text("direction").notNull(),           // "above" | "below"
   triggered: integer("triggered", { mode: "boolean" }).notNull().default(false),
   market: text("market").notNull(),
+  alertType: text("alert_type").notNull().default("price"), // "price" | "rsi_overbought" | "rsi_oversold" | "macd_cross_up" | "macd_cross_down" | "pct_change"
+  indicatorThreshold: real("indicator_threshold"), // e.g. RSI level, pct value
+  createdAt: integer("created_at").notNull().default(0),
+  lastCheckedAt: integer("last_checked_at"),
 });
 
 export const insertAlertSchema = createInsertSchema(alerts).omit({ id: true, triggered: true });

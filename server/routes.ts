@@ -121,6 +121,188 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
+  // PATCH /api/alerts/:id/reset — reset triggered state
+  app.patch("/api/alerts/:id/reset", async (req, res) => {
+    sqlite.prepare(`UPDATE alerts SET triggered=0, last_checked_at=? WHERE id=?`)
+      .run(Date.now(), parseInt(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // GET /api/earnings-calendar — next earnings date for all watchlist symbols
+  app.get("/api/earnings-calendar", async (_req, res) => {
+    try {
+      const wl = await storage.getWatchlist();
+      const rows: Array<{symbol:string;name:string;market:string;earningsDate:string|null;epsEstimate:number|null;revenueEstimate:number|null}> = [];
+      for (const item of wl) {
+        const fd = sqlite.prepare(
+          `SELECT calendar_json FROM fundamental_data WHERE symbol=? AND market=? LIMIT 1`
+        ).get(item.symbol, item.market) as { calendar_json: string } | undefined;
+        if (!fd) { rows.push({ symbol: item.symbol, name: item.name, market: item.market, earningsDate: null, epsEstimate: null, revenueEstimate: null }); continue; }
+        const cal = JSON.parse(fd.calendar_json || "{}");
+        rows.push({
+          symbol: item.symbol,
+          name: item.name,
+          market: item.market,
+          earningsDate: cal.earningsDate ?? null,
+          epsEstimate: cal.epsEstimate ?? null,
+          revenueEstimate: cal.revenueEstimate ?? null,
+        });
+      }
+      // Sort: symbols with upcoming earnings first
+      const today = new Date().toISOString().slice(0, 10);
+      rows.sort((a, b) => {
+        if (!a.earningsDate && !b.earningsDate) return 0;
+        if (!a.earningsDate) return 1;
+        if (!b.earningsDate) return -1;
+        const aFuture = a.earningsDate >= today;
+        const bFuture = b.earningsDate >= today;
+        if (aFuture && !bFuture) return -1;
+        if (!aFuture && bFuture) return 1;
+        return a.earningsDate.localeCompare(b.earningsDate);
+      });
+      res.json({ rows, fetchedAt: Date.now() });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/portfolio/performance — NAV curve from transactions + historical prices
+  app.get("/api/portfolio/performance", async (_req, res) => {
+    try {
+      const txns = sqlite.prepare(
+        `SELECT trade_date, symbol, market, side, shares, price, total_cost, currency FROM transactions ORDER BY trade_date ASC`
+      ).all() as Array<{trade_date:string;symbol:string;market:string;side:string;shares:number;price:number;total_cost:number;currency:string}>;
+
+      if (!txns.length) return res.json({ curve: [] });
+
+      const firstDate = txns[0].trade_date;
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Get USD/TWD rate history from market_indicators
+      const fxRows = sqlite.prepare(
+        `SELECT date, value FROM market_indicators WHERE indicator_key='USDTWD' AND date >= ? ORDER BY date ASC`
+      ).all(firstDate) as Array<{date:string;value:number}>;
+      const fxMap = new Map<string, number>(fxRows.map((r: any) => [r.date, r.value]));
+      let lastFx = 31.0;
+
+      // Collect all unique symbols
+      const symbols = [...new Set(txns.map((t: any) => t.symbol))];
+
+      // Get price history for all symbols
+      const priceHistory = new Map<string, Map<string, number>>();
+      for (const sym of symbols) {
+        const rows = sqlite.prepare(
+          `SELECT date, close FROM historical_prices WHERE symbol=? AND date >= ? ORDER BY date ASC`
+        ).all(sym, firstDate) as Array<{date:string;close:number}>;
+        priceHistory.set(sym, new Map(rows.map((r: any) => [r.date, r.close])));
+      }
+
+      // Build all trading dates between firstDate and today
+      const allDates: string[] = [];
+      const d = new Date(firstDate);
+      const end = new Date(today);
+      while (d <= end) {
+        const ds = d.toISOString().slice(0, 10);
+        allDates.push(ds);
+        d.setDate(d.getDate() + 1);
+      }
+
+      // Compute portfolio NAV per day
+      const holdings = new Map<string, {shares:number;market:string;currency:string}>();
+      let cashInvested = 0; // cumulative capital invested (TWD)
+      let txIdx = 0;
+      const curve: Array<{date:string;nav:number;invested:number}> = [];
+
+      for (const date of allDates) {
+        // Apply transactions on this date
+        while (txIdx < txns.length && txns[txIdx].trade_date === date) {
+          const t = txns[txIdx];
+          const key = t.symbol;
+          const cur = holdings.get(key) ?? { shares: 0, market: t.market, currency: t.currency };
+          if (t.side === 'buy') {
+            cur.shares += t.shares;
+            cashInvested += t.currency === 'USD' ? Math.abs(t.total_cost) * (fxMap.get(date) ?? lastFx) : Math.abs(t.total_cost);
+          } else {
+            cur.shares -= t.shares;
+          }
+          holdings.set(key, cur);
+          txIdx++;
+        }
+        if (fxMap.has(date)) lastFx = fxMap.get(date)!;
+
+        // Compute NAV: sum of market values in TWD
+        let nav = 0;
+        let hasAnyPrice = false;
+        for (const [sym, h] of holdings) {
+          if (h.shares <= 0) continue;
+          const symPrices = priceHistory.get(sym);
+          const price = symPrices?.get(date) ?? null;
+          if (price === null) continue; // skip weekends/holidays
+          hasAnyPrice = true;
+          const valueInNative = price * h.shares;
+          nav += h.currency === 'USD' ? valueInNative * lastFx : valueInNative;
+        }
+        if (!hasAnyPrice && curve.length > 0) continue; // skip non-trading days
+        if (nav === 0 && cashInvested === 0) continue;
+        curve.push({ date, nav, invested: cashInvested });
+      }
+
+      res.json({ curve });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/market-anomaly — detect VIX spike, SPY volume surge, 10Y yield jump
+  app.get("/api/market-anomaly", async (_req, res) => {
+    try {
+      const anomalies: Array<{type:string;label:string;value:number;threshold:number;severity:'warning'|'critical';date:string}> = [];
+
+      // VIX spike: latest vs 10-day avg
+      const vixRows = sqlite.prepare(
+        `SELECT date, value FROM market_indicators WHERE indicator_key='vix' ORDER BY date DESC LIMIT 15`
+      ).all() as Array<{date:string;value:number}>;
+      if (vixRows.length >= 5) {
+        const latest = vixRows[0];
+        const avg10 = vixRows.slice(1, 11).reduce((s: number, r: any) => s + r.value, 0) / Math.min(vixRows.length - 1, 10);
+        const spikePct = ((latest.value - avg10) / avg10) * 100;
+        if (spikePct > 15) anomalies.push({ type:'vix_spike', label:'VIX 急升', value: latest.value, threshold: avg10, severity: spikePct > 30 ? 'critical' : 'warning', date: latest.date });
+      }
+
+      // SPY volume surge: latest vs 20-day avg
+      const spyRows = sqlite.prepare(
+        `SELECT date, close, volume FROM historical_prices WHERE symbol='SPY' AND market='US' ORDER BY date DESC LIMIT 25`
+      ).all() as Array<{date:string;close:number;volume:number}>;
+      if (spyRows.length >= 5) {
+        const latest = spyRows[0];
+        const avg20vol = spyRows.slice(1, 21).reduce((s: number, r: any) => s + r.volume, 0) / Math.min(spyRows.length - 1, 20);
+        const volRatio = latest.volume / avg20vol;
+        if (volRatio > 1.8) anomalies.push({ type:'spy_volume', label:'SPY 成交量異常', value: latest.volume, threshold: avg20vol, severity: volRatio > 2.5 ? 'critical' : 'warning', date: latest.date });
+        // SPY single-day drop
+        if (spyRows.length >= 2) {
+          const prev = spyRows[1];
+          const dropPct = ((latest.close - prev.close) / prev.close) * 100;
+          if (dropPct < -2.5) anomalies.push({ type:'spy_drop', label:'SPY 單日大跌', value: dropPct, threshold: -2.5, severity: dropPct < -4 ? 'critical' : 'warning', date: latest.date });
+        }
+      }
+
+      // 10Y yield jump: latest vs 5-day avg
+      const yieldRows = sqlite.prepare(
+        `SELECT date, value FROM market_indicators WHERE indicator_key='10y_yield' ORDER BY date DESC LIMIT 10`
+      ).all() as Array<{date:string;value:number}>;
+      if (yieldRows.length >= 3) {
+        const latest = yieldRows[0];
+        const avg5 = yieldRows.slice(1, 6).reduce((s: number, r: any) => s + r.value, 0) / Math.min(yieldRows.length - 1, 5);
+        const jump = latest.value - avg5;
+        if (jump > 0.15) anomalies.push({ type:'yield_jump', label:'10Y殖利率急升', value: latest.value, threshold: avg5, severity: jump > 0.3 ? 'critical' : 'warning', date: latest.date });
+      }
+
+      res.json({ anomalies, checkedAt: new Date().toISOString() });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ---- Watchlist ----
   app.get("/api/watchlist", async (_req, res) => {
     const items = await storage.getWatchlist();

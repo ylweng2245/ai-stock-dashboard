@@ -873,6 +873,94 @@ function ExposureSection({ sectors }: { sectors: any[] | undefined }) {
   );
 }
 
+// ── Anomaly Detection Module ─────────────────────────────────────────
+
+interface AnomalyItem {
+  type: string;
+  label: string;
+  value: number;
+  threshold: number;
+  severity: "warning" | "critical" | string;
+  date: string;
+}
+
+interface AnomalyData {
+  anomalies: AnomalyItem[];
+  checkedAt: string;
+}
+
+function formatAnomalyDesc(a: AnomalyItem): string {
+  switch (a.type) {
+    case "vix_spike":
+      return `VIX 急升 ${a.value.toFixed(1)} ↑ (均值 ${a.threshold.toFixed(1)})`;
+    case "spy_volume":
+      return `SPY 成交量 ${(a.value / 1e6).toFixed(0)}M，均量 ${(a.threshold / 1e6).toFixed(0)}M (${(a.value / a.threshold).toFixed(1)}x)`;
+    case "spy_drop":
+      return `SPY 單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "yield_jump":
+      return `10Y 殖利率 ${a.value.toFixed(2)}% 急升 (均值 ${a.threshold.toFixed(2)}%)`;
+    default:
+      return `${a.label}：目前 ${a.value.toFixed(2)}，均值 ${a.threshold.toFixed(2)}`;
+  }
+}
+
+function AnomalySection() {
+  const { data } = useQuery<AnomalyData>({
+    queryKey: ["/api/market-anomaly"],
+    queryFn: () => fetch("/api/market-anomaly").then((r) => r.json()),
+    staleTime: 300_000,
+    refetchInterval: 300_000,
+  });
+
+  const anomalies = data?.anomalies ?? [];
+
+  return (
+    <Card className="border-border">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-[#1cb8be]" />
+            市場異常偵測
+          </div>
+          <span className="text-xs font-normal text-muted-foreground">每5分鐘檢查</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pb-4 space-y-2">
+        {anomalies.length === 0 ? (
+          <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-[#10b981]/30 bg-[#10b981]/8">
+            <span className="text-[#10b981] text-[13px] font-medium">✓ 目前無異常訊號，市場運作正常</span>
+          </div>
+        ) : (
+          anomalies.map((a, i) => (
+            <div
+              key={i}
+              className={cn(
+                "flex items-start justify-between gap-3 px-4 py-3 rounded-lg border",
+                a.severity === "critical"
+                  ? "bg-red-500/10 border-red-500/30"
+                  : "bg-orange-500/10 border-orange-500/30"
+              )}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={cn(
+                    "text-[12px] font-bold",
+                    a.severity === "critical" ? "text-[#ef4444]" : "text-orange-400"
+                  )}>
+                    {a.severity === "critical" ? "⚠️" : "⚠"} {a.label}
+                  </span>
+                </div>
+                <p className="text-[12px] text-foreground/80">{formatAnomalyDesc(a)}</p>
+              </div>
+              <span className="text-[11px] text-muted-foreground shrink-0 mt-0.5">{a.date}</span>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 
 export default function MarketTrend() {
@@ -941,6 +1029,9 @@ export default function MarketTrend() {
       ) : (
         <SectorHeatmapSection data={marketData?.sectors} />
       )}
+
+      {/* Module 5: Market Anomaly Detection */}
+      <AnomalySection />
     </div>
   );
 }

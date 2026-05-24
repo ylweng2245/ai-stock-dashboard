@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertCircle, ExternalLink, RefreshCw, ChevronDown, History } from "lucide-react";
+import { AlertCircle, ExternalLink, RefreshCw, ChevronDown, History, Bell, Plus, Trash2, Check } from "lucide-react";
 import {
   type CandleData,
   calculateRSI,
@@ -22,6 +22,20 @@ import { apiRequest } from "@/lib/queryClient";
 import { useActiveSymbol } from "@/context/ActiveSymbolContext";
 import { AnalysisSymbolSidebarMobile } from "@/components/AnalysisSymbolSidebar";
 import { OptimizeButton } from "@/components/OptimizeButton";
+
+// ─── PriceAlert interface (shared with Alerts page) ────────────────────────
+interface PriceAlert {
+  id: number;
+  symbol: string;
+  name: string;
+  targetPrice: number | null;
+  direction: "above" | "below";
+  triggered: boolean;
+  market: "TW" | "US";
+  alertType: "price" | "rsi_overbought" | "rsi_oversold" | "macd_cross_up" | "macd_cross_down" | "pct_change";
+  indicatorThreshold: number | null;
+  createdAt: number;
+}
 
 const FEATURE_LABELS: Record<string, string> = {
   analyst_bullish_pct: '分析師樂觀占比',
@@ -414,6 +428,279 @@ function AnalystWideCard({
   );
 }
 
+
+// ─── StockAlertCard ─────────────────────────────────────────────────────────
+function StockAlertCard({
+  symbol,
+  market,
+  currentPrice,
+  rsiValue,
+  macdCross,
+}: {
+  symbol: string;
+  market: string;
+  currentPrice: number | null;
+  rsiValue: number | null;
+  macdCross: "up" | "down" | null;
+}) {
+  const queryClient = useQueryClient();
+
+  const { data: allAlerts } = useQuery<PriceAlert[]>({
+    queryKey: ["/api/alerts"],
+    queryFn: () => apiRequest("GET", "/api/alerts").then((r) => r.json()),
+    staleTime: 30_000,
+  });
+
+  const symbolAlerts = useMemo(
+    () => (allAlerts ?? []).filter((a) => a.symbol === symbol),
+    [allAlerts, symbol]
+  );
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest("DELETE", `/api/alerts/${id}`).then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/alerts"] }),
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest("PATCH", `/api/alerts/${id}/reset`).then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/alerts"] }),
+  });
+
+  const addMutation = useMutation({
+    mutationFn: (body: Omit<PriceAlert, "id">) =>
+      apiRequest("POST", "/api/alerts", body).then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/alerts"] }),
+  });
+
+  // Inline add form state
+  const [showForm, setShowForm] = useState(false);
+  const [formType, setFormType] = useState<PriceAlert["alertType"]>("price");
+  const [formPrice, setFormPrice] = useState("");
+  const [formDirection, setFormDirection] = useState<"above" | "below">("above");
+  const [formThreshold, setFormThreshold] = useState("");
+
+  const handleAdd = () => {
+    const currencySymbol = market === "US" ? "$" : "NT";
+    let targetPrice: number | null = null;
+    let indicatorThreshold: number | null = null;
+    let direction: "above" | "below" = "above";
+
+    if (formType === "price") {
+      if (!formPrice) return;
+      targetPrice = parseFloat(formPrice);
+      direction = formDirection;
+    } else if (formType === "rsi_overbought") {
+      indicatorThreshold = formThreshold ? parseFloat(formThreshold) : 70;
+    } else if (formType === "rsi_oversold") {
+      indicatorThreshold = formThreshold ? parseFloat(formThreshold) : 30;
+    } else if (formType === "pct_change") {
+      indicatorThreshold = formThreshold ? parseFloat(formThreshold) : 3;
+    }
+
+    // Get name from watchlist or symbol
+    addMutation.mutate({
+      symbol,
+      name: symbol,
+      targetPrice,
+      direction,
+      triggered: false,
+      market: market as "TW" | "US",
+      alertType: formType,
+      indicatorThreshold,
+      createdAt: Date.now(),
+    });
+    setFormPrice("");
+    setFormThreshold("");
+    setShowForm(false);
+  };
+
+  function alertLabel(alert: PriceAlert): string {
+    switch (alert.alertType) {
+      case "price":
+        return `${alert.direction === "above" ? "突破" : "跌破"} ${market === "TW" ? "NT" : "$"}${alert.targetPrice?.toLocaleString() ?? ""}`;
+      case "rsi_overbought":
+        return `RSI 超買 (>${alert.indicatorThreshold ?? 70})`;
+      case "rsi_oversold":
+        return `RSI 超賣 (<${alert.indicatorThreshold ?? 30})`;
+      case "macd_cross_up":
+        return "MACD 金叉";
+      case "macd_cross_down":
+        return "MACD 死叉";
+      case "pct_change":
+        return `漲跌幅 >${alert.indicatorThreshold ?? 3}%`;
+      default:
+        return "";
+    }
+  }
+
+  return (
+    <Card className="border-border mb-4">
+      <CardHeader className="pb-2 pt-3 px-4 flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bell className="w-4 h-4 text-[#1cb8be]" />
+          <CardTitle className="text-xs font-semibold">價格警報 · {symbol}</CardTitle>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-[#1cb8be]/40 text-[#1cb8be] hover:bg-[#1cb8be]/10 transition-colors"
+        >
+          <Plus className="w-3 h-3" />
+          新增警報
+        </button>
+      </CardHeader>
+      <CardContent className="px-3 pb-3">
+        {/* Inline add form */}
+        {showForm && (
+          <div className="mb-3 p-3 rounded-lg border border-[#1cb8be]/30 bg-[#1cb8be]/5 space-y-2">
+            <div className="space-y-1">
+              <label className="text-[11px] text-muted-foreground">警報類型</label>
+              <select
+                value={formType}
+                onChange={(e) => {
+                  setFormType(e.target.value as PriceAlert["alertType"]);
+                  setFormPrice("");
+                  setFormThreshold("");
+                }}
+                className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1cb8be] text-foreground"
+              >
+                <option value="price">價格突破</option>
+                <option value="rsi_overbought">RSI 超買</option>
+                <option value="rsi_oversold">RSI 超賣</option>
+                <option value="macd_cross_up">MACD 金叉</option>
+                <option value="macd_cross_down">MACD 死叉</option>
+                <option value="pct_change">單日漲跌幅</option>
+              </select>
+            </div>
+
+            {formType === "price" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">目標價格</label>
+                  <input
+                    type="number"
+                    value={formPrice}
+                    onChange={(e) => setFormPrice(e.target.value)}
+                    placeholder={currentPrice?.toLocaleString() ?? ""}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1cb8be] text-foreground"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">方向</label>
+                  <select
+                    value={formDirection}
+                    onChange={(e) => setFormDirection(e.target.value as "above" | "below")}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1cb8be] text-foreground"
+                  >
+                    <option value="above">突破 (高於)</option>
+                    <option value="below">跌破 (低於)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {(formType === "rsi_overbought" || formType === "rsi_oversold" || formType === "pct_change") && (
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">
+                  {formType === "rsi_overbought" ? "超買門檻（預設 70）" :
+                   formType === "rsi_oversold" ? "超賣門檻（預設 30）" : "漲跌幅門檻 % (預設 3)"}
+                </label>
+                <input
+                  type="number"
+                  value={formThreshold}
+                  onChange={(e) => setFormThreshold(e.target.value)}
+                  placeholder={formType === "rsi_overbought" ? "70" : formType === "rsi_oversold" ? "30" : "3"}
+                  className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1cb8be] text-foreground"
+                />
+              </div>
+            )}
+
+            {(formType === "macd_cross_up" || formType === "macd_cross_down") && (
+              <p className="text-[11px] text-muted-foreground">
+                {formType === "macd_cross_up" ? "MACD 線上穿訊號線時觸發。" : "MACD 線下穿訊號線時觸發。"}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleAdd}
+                disabled={addMutation.isPending}
+                className="flex items-center gap-1 px-3 py-1 rounded text-[11px] bg-[#1cb8be] text-white hover:bg-[#1cb8be]/80 transition-colors disabled:opacity-50"
+              >
+                <Check className="w-3 h-3" />
+                {addMutation.isPending ? "新增中…" : "確認"}
+              </button>
+              <button
+                onClick={() => setShowForm(false)}
+                className="px-3 py-1 rounded text-[11px] border border-border text-muted-foreground hover:text-foreground transition-colors"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Alert list */}
+        {symbolAlerts.length === 0 ? (
+          <div className="text-center py-4 text-xs text-muted-foreground">尚無此股票的警報</div>
+        ) : (
+          <div className="space-y-1.5">
+            {symbolAlerts.map((alert) => {
+              const isTriggered = alert.triggered;
+              return (
+                <div
+                  key={alert.id}
+                  className={cn(
+                    "flex items-center justify-between px-3 py-2 rounded-md border text-xs",
+                    isTriggered
+                      ? "border-orange-500/30 bg-orange-500/10"
+                      : "border-border"
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    {alert.alertType === "price" ? (
+                      alert.direction === "above"
+                        ? <span className="text-[#ef4444]">↑</span>
+                        : <span className="text-[#10b981]">↓</span>
+                    ) : (
+                      <Bell className="w-3 h-3 text-[#1cb8be]" />
+                    )}
+                    <span className={cn("font-medium", isTriggered ? "text-orange-400" : "text-foreground")}>
+                      {alertLabel(alert)}
+                    </span>
+                    {isTriggered && (
+                      <span className="text-[10px] text-orange-400 font-medium">已觸發</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {isTriggered && (
+                      <button
+                        onClick={() => resetMutation.mutate(alert.id)}
+                        disabled={resetMutation.isPending}
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] border border-[#1cb8be]/40 text-[#1cb8be] hover:bg-[#1cb8be]/10 transition-colors disabled:opacity-50"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        重置
+                      </button>
+                    )}
+                    <button
+                      onClick={() => deleteMutation.mutate(alert.id)}
+                      disabled={deleteMutation.isPending}
+                      className="p-1 rounded hover:bg-muted/40 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3 h-3 text-muted-foreground" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ─── Stock Note Card (自治版) ─────────────────────────────────────────────────
 function StockNoteCard({ symbol, market }: { symbol: string; market: string }) {
@@ -906,6 +1193,19 @@ export default function TechnicalAnalysis() {
     staleTime: 0,
   });
 
+  // Fetch all alerts + filter to current symbol
+  const { data: allAlerts, refetch: refetchAlerts } = useQuery<PriceAlert[]>({
+    queryKey: ["/api/alerts"],
+    queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
+    staleTime: 30_000,
+  });
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _refetchAlerts = refetchAlerts;
+  const symbolAlerts = useMemo(
+    () => (allAlerts ?? []).filter(a => a.symbol === activeSymbol),
+    [allAlerts, activeSymbol]
+  );
+
   // isPending = true only when no cached/placeholder data exists at all (first ever load for this symbol)
   const isLoading = data === undefined;
 
@@ -961,6 +1261,10 @@ export default function TechnicalAnalysis() {
         low: d.low,
         close: d.close,
         volume: d.volume,
+        // 20-day volume moving average
+        vol20ma: i >= 19
+          ? candleData.slice(i - 19, i + 1).reduce((s, c) => s + (c.volume ?? 0), 0) / 20
+          : null,
         rsi: rsi[i] ?? null,
         macd: macdData.macd[i] ?? null,
         signal: macdData.signal[i] ?? null,
@@ -1462,8 +1766,6 @@ export default function TechnicalAnalysis() {
                   name="交易點"
                   legendType="none"
                 />
-                <Bar dataKey="volume" fill="hsl(var(--muted))" opacity={0.3} yAxisId="volume" name="成交量" />
-                <YAxis yAxisId="volume" orientation="right" tick={false} width={0} domain={[0, (max: number) => max * 5]} />
                 {/* Average target price horizontal dashed line */}
                 {hasAnalyst && isFinite(analystData.summary.averageTargetPrice) && (() => {
                   const avg = analystData.summary.averageTargetPrice;
@@ -1513,11 +1815,71 @@ export default function TechnicalAnalysis() {
                 {showPredOverlay && comparePrediction?.baseDate && compareBaseDateVisible && (
                   <ReferenceLine x={comparePrediction.baseDate.slice(5)} stroke="#EAB308" strokeWidth={1} strokeDasharray="3 3" opacity={0.4} label={false} />
                 )}
+                {/* Alert price lines */}
+                {symbolAlerts.filter(a => a.alertType === 'price' && a.targetPrice).map(a => (
+                  <ReferenceLine
+                    key={a.id}
+                    y={a.targetPrice!}
+                    stroke={a.direction === 'above' ? '#ef4444' : '#10b981'}
+                    strokeWidth={1}
+                    strokeDasharray="5 3"
+                    opacity={a.triggered ? 0.35 : 0.75}
+                    label={{ value: `${a.direction === 'above' ? '↑' : '↓'} ${a.targetPrice!.toLocaleString()}`, position: 'right', fontSize: 9, fill: a.direction === 'above' ? '#ef4444' : '#10b981' }}
+                  />
+                ))}
               </ComposedChart>
             </ResponsiveContainer>
           )}
         </CardContent>
       </Card>
+
+      {/* 成交量子圖 */}
+      <Card className="border-border">
+        <CardHeader className="pb-1 pt-3 px-4">
+          <CardTitle className="text-xs font-medium text-muted-foreground">成交量</CardTitle>
+        </CardHeader>
+        <CardContent className="px-2 pb-3">
+          <ResponsiveContainer width="100%" height={80}>
+            <ComposedChart data={extendedChartData} margin={{ top: 2, right: 10, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" tick={false} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} width={45}
+                tickFormatter={(v: number) => v >= 1e6 ? `${(v/1e6).toFixed(0)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : String(v)} />
+              <Tooltip
+                contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 11 }}
+                formatter={(v: any) => [v >= 1e6 ? `${(v/1e6).toFixed(2)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : v, "成交量"]}
+              />
+              <Bar dataKey="volume"
+                fill="#1cb8be"
+                opacity={0.5}
+                radius={[1,1,0,0]}
+                isAnimationActive={false}
+              />
+              {/* 20日均量線 */}
+              <Line dataKey="vol20ma" stroke="hsl(var(--muted-foreground))" strokeWidth={1} dot={false} strokeDasharray="3 3" connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Stock Alert Card */}
+      <StockAlertCard
+        symbol={activeSymbol}
+        market={meta.market}
+        currentPrice={lastClose || null}
+        rsiValue={lastRSI || null}
+        macdCross={
+          (() => {
+            const n = chartData.length;
+            if (n < 2) return null;
+            const prev = chartData[n - 2];
+            const curr = chartData[n - 1];
+            if (prev.macd === null || prev.signal === null || curr.macd === null || curr.signal === null) return null;
+            if (prev.macd < prev.signal && curr.macd >= curr.signal) return 'up';
+            if (prev.macd > prev.signal && curr.macd <= curr.signal) return 'down';
+            return null;
+          })()
+        }
+      />
 
       {/* RSI + MACD */}
       <div className="grid lg:grid-cols-2 gap-4">
