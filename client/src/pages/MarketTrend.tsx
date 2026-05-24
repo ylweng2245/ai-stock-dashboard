@@ -501,11 +501,11 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
 function SentimentSection({ data }: { data: any }) {
   if (!data) {
     return (
-      <Card className="border-border">
+      <Card className="border-border h-full">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Activity className="w-4 h-4 text-[#1cb8be]" />
-            市場情緒儀表板
+            市場情緒
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -531,7 +531,6 @@ function SentimentSection({ data }: { data: any }) {
 
   // Mini chart for VIX
   const vixHistory = data.vix?.history?.slice(-20) ?? [];
-  const tenYHistory = data.tenYear?.history?.slice(-20) ?? [];
 
   // Sentiment composite
   const normalizedFG = fgValue != null ? fgValue : 50;
@@ -539,17 +538,27 @@ function SentimentSection({ data }: { data: any }) {
   const normalizedMacro = macroScore != null ? macroScore : 50;
   const composite = Math.round((normalizedFG + normalizedVix + normalizedMacro) / 3);
   const compositeLabel = composite >= 70 ? "偏樂觀" : composite >= 55 ? "中性偏多" : composite >= 45 ? "中性" : composite >= 30 ? "中性偏空" : "偏悲觀";
+  const compositeColor = composite >= 70 ? "text-gain" : composite >= 55 ? "text-gain opacity-80" : composite >= 45 ? "text-muted-foreground" : composite >= 30 ? "text-loss opacity-80" : "text-loss";
 
   return (
-    <Card className="border-border">
+    <Card className="border-border h-full">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <Activity className="w-4 h-4 text-[#1cb8be]" />
-          市場情緒儀表板
+          市場情緒
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        {/* 情緒總分 — 最上面 */}
+        <div className="rounded-md border border-border p-3 flex items-center justify-between mb-4">
+          <div>
+            <div className="text-xs text-muted-foreground mb-0.5">情緒總分</div>
+            <div className={cn("text-3xl font-bold tabular-nums", compositeColor)}>{composite}</div>
+          </div>
+          <Badge variant="outline" className={cn("text-sm px-3 py-1", compositeColor)}>{compositeLabel}</Badge>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
           {/* Fear & Greed */}
           <div className="rounded-md border border-border p-3 text-center">
             <div className="text-xs text-muted-foreground mb-1">Fear & Greed</div>
@@ -561,7 +570,7 @@ function SentimentSection({ data }: { data: any }) {
 
           {/* Macro Sentiment */}
           <div className="rounded-md border border-border p-3 text-center">
-            <div className="text-xs text-muted-foreground mb-1">Macro 情緒分數</div>
+            <div className="text-xs text-muted-foreground mb-1">Macro 情緒</div>
             <div className="text-2xl font-bold tabular-nums">
               {macroScore ?? "-"}
             </div>
@@ -580,29 +589,6 @@ function SentimentSection({ data }: { data: any }) {
             ) : (
               <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">-</div>
             )}
-          </div>
-
-          {/* 10Y Yield Mini Chart */}
-          <div className="rounded-md border border-border p-3">
-            <div className="text-xs text-muted-foreground mb-1">10Y ({data.tenYear?.current?.toFixed(2) ?? "-"}%)</div>
-            {tenYHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height={50}>
-                <LineChart data={tenYHistory}>
-                  <Line dataKey="value" stroke="#66c6df" dot={false} strokeWidth={1.5} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">-</div>
-            )}
-          </div>
-        </div>
-
-        {/* Composite */}
-        <div className="rounded-md border border-border p-3 flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">情緒總分</span>
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-bold tabular-nums">{composite}</span>
-            <Badge variant="outline" className="text-xs">{compositeLabel}</Badge>
           </div>
         </div>
       </CardContent>
@@ -836,15 +822,21 @@ export default function MarketTrend() {
         <TrendAnalysisSection data={marketData?.trendAnalysis} />
       )}
 
-      {/* Module 3: Crash Risk */}
+      {/* Module 3+5: Crash Risk (40%) + Sentiment (60%) side by side */}
       {isLoading ? (
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <Skeleton className="h-[200px] w-full" />
-          </CardContent>
-        </Card>
+        <div className="flex gap-4">
+          <div className="w-[40%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[200px] w-full" /></CardContent></Card></div>
+          <div className="w-[60%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[200px] w-full" /></CardContent></Card></div>
+        </div>
       ) : (
-        <CrashRiskSection data={marketData?.crashRisk} />
+        <div className="flex gap-4 items-stretch">
+          <div className="w-[40%]">
+            <CrashRiskSection data={marketData?.crashRisk} />
+          </div>
+          <div className="w-[60%]">
+            <SentimentSection data={marketData?.sentiment} />
+          </div>
+        </div>
       )}
 
       {/* Module 4: Sector Heatmap */}
@@ -856,17 +848,6 @@ export default function MarketTrend() {
         </Card>
       ) : (
         <SectorHeatmapSection data={marketData?.sectors} />
-      )}
-
-      {/* Module 5: Sentiment */}
-      {isLoading ? (
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <Skeleton className="h-[200px] w-full" />
-          </CardContent>
-        </Card>
-      ) : (
-        <SentimentSection data={marketData?.sentiment} />
       )}
 
       {/* Module 6: Exposure */}
