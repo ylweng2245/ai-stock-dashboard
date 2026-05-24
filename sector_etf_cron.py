@@ -187,6 +187,16 @@ def push_to_server(base_url: str, symbol: str, prices: list[dict]) -> None:
     print(f"[sector-etf-cron] {symbol}: server response: {resp}")
 
 
+def push_indicator_to_server(base_url: str, indicator_key: str, rows: list[dict]) -> None:
+    """Push time-series rows to /api/internal/market-indicator-sync."""
+    resp = http_post_json(
+        f"{base_url}/api/internal/market-indicator-sync",
+        {"indicatorKey": indicator_key, "market": "US", "rows": rows},
+        headers={"X-Sync-Secret": SYNC_SECRET},
+    )
+    print(f"[sector-etf-cron] indicator {indicator_key}: server response: {resp}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -221,7 +231,29 @@ def main():
         except Exception as e:
             print(f"[sector-etf-cron] {etf}: push failed: {e}")
 
-    print(f"\n[sector-etf-cron] Done. Synced {synced}/{len(SECTOR_ETFS_UNIQUE)} ETFs.")
+    # ── Sync market indicators (10y_yield via ^TNX) ───────────────────────
+    ind_synced = 0
+    for ind_key, ticker in INDICATOR_TICKERS.items():
+        print(f"\n[sector-etf-cron] === indicator: {ind_key} ({ticker}) ===")
+        try:
+            prices = fetch_etf_prices(ticker)
+        except Exception as e:
+            print(f"[sector-etf-cron] {ticker}: fetch failed: {e}")
+            continue
+        if not prices:
+            print(f"[sector-etf-cron] {ticker}: no data, skipping")
+            continue
+        # ^TNX close is already in percent (e.g. 4.35 = 4.35%)
+        rows = [{"date": p["date"], "value": p["close"]} for p in prices]
+        latest = sorted(rows, key=lambda x: x["date"])[-1]["date"]
+        print(f"[sector-etf-cron] {ticker}: {len(rows)} bars (latest: {latest})")
+        try:
+            push_indicator_to_server(base_url, ind_key, rows)
+            ind_synced += 1
+        except Exception as e:
+            print(f"[sector-etf-cron] indicator {ind_key}: push failed: {e}")
+
+    print(f"\n[sector-etf-cron] Done. Synced {synced}/{len(SECTOR_ETFS_UNIQUE)} ETFs, {ind_synced}/{len(INDICATOR_TICKERS)} indicators.")
 
 
 if __name__ == "__main__":

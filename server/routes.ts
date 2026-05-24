@@ -2010,6 +2010,47 @@ ${search}${questionPart}
     }
   });
 
+  /**
+   * POST /api/internal/market-indicator-sync
+   * Called by sector_etf_cron.py to write market indicators (e.g. 10y_yield) into market_indicators table.
+   * Body: { indicatorKey: string, market: string, rows: [{date: string, value: number}] }
+   */
+  app.post("/api/internal/market-indicator-sync", async (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { indicatorKey, market = "US", rows } = req.body as {
+      indicatorKey: string;
+      market?: string;
+      rows: { date: string; value: number }[];
+    };
+    if (!indicatorKey || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: "Expected indicatorKey and non-empty rows" });
+    }
+    try {
+      const now = new Date().toISOString();
+      const insertRows = rows.map(r => ({
+        indicatorKey,
+        market,
+        frequency: "daily",
+        date: r.date,
+        value: r.value,
+        value2: null,
+        metaJson: null,
+        source: "cron",
+        createdAt: now,
+        updatedAt: now,
+      }));
+      await storage.upsertIndicatorHistory(insertRows);
+      console.log(`[market-indicator-sync] ${indicatorKey}: upserted ${insertRows.length} rows`);
+      res.json({ ok: true, synced: insertRows.length });
+    } catch (e: any) {
+      console.error("[market-indicator-sync] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ──────────────────────────────────────────────────────────────────
   // V6.1: POST /api/history/backfill-2y  — backfill all watchlist symbols to 2 years
   // ──────────────────────────────────────────────────────────────────

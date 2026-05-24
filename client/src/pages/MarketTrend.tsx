@@ -417,7 +417,7 @@ function CrashRiskSection({ data }: { data: any }) {
 function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
   if (!data || data.length === 0) {
     return (
-      <Card className="border-border">
+      <Card className="border-border h-full">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-[#1cb8be]" />
@@ -448,7 +448,7 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
   };
 
   return (
-    <Card className="border-border">
+    <Card className="border-border h-full">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <BarChart3 className="w-4 h-4 text-[#1cb8be]" />
@@ -529,14 +529,19 @@ function SentimentSection({ data }: { data: any }) {
 
   const macroScore = data.macro?.score != null ? Math.round(data.macro.score * 100) : null;
 
-  // Mini chart for VIX
+  // Mini charts
   const vixHistory = data.vix?.history?.slice(-20) ?? [];
+  const tenYHistory = data.tenYear?.history?.slice(-20) ?? [];
 
-  // Sentiment composite
+  // Sentiment composite (4 indicators when 10y available)
   const normalizedFG = fgValue != null ? fgValue : 50;
   const normalizedVix = data.vix?.current != null ? Math.max(0, 100 - data.vix.current * 2) : 50;
   const normalizedMacro = macroScore != null ? macroScore : 50;
-  const composite = Math.round((normalizedFG + normalizedVix + normalizedMacro) / 3);
+  // 10Y yield: lower yield = less fear of rate hikes = slightly positive; 4% = neutral 50
+  const tenYCurrent = data.tenYear?.current ?? null;
+  const normalizedTenY = tenYCurrent != null ? Math.max(0, Math.min(100, 50 + (4.5 - tenYCurrent) * 15)) : null;
+  const compositeInputs = [normalizedFG, normalizedVix, normalizedMacro, ...(normalizedTenY != null ? [normalizedTenY] : [])];
+  const composite = Math.round(compositeInputs.reduce((a, b) => a + b, 0) / compositeInputs.length);
   const compositeLabel = composite >= 70 ? "偏樂觀" : composite >= 55 ? "中性偏多" : composite >= 45 ? "中性" : composite >= 30 ? "中性偏空" : "偏悲觀";
   const compositeColor = composite >= 70 ? "text-gain" : composite >= 55 ? "text-gain opacity-80" : composite >= 45 ? "text-muted-foreground" : composite >= 30 ? "text-loss opacity-80" : "text-loss";
 
@@ -558,7 +563,7 @@ function SentimentSection({ data }: { data: any }) {
           <Badge variant="outline" className={cn("text-sm px-3 py-1", compositeColor)}>{compositeLabel}</Badge>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           {/* Fear & Greed */}
           <div className="rounded-md border border-border p-3 text-center">
             <div className="text-xs text-muted-foreground mb-1">Fear & Greed</div>
@@ -588,6 +593,20 @@ function SentimentSection({ data }: { data: any }) {
               </ResponsiveContainer>
             ) : (
               <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">-</div>
+            )}
+          </div>
+
+          {/* 10Y Yield Mini Chart */}
+          <div className="rounded-md border border-border p-3">
+            <div className="text-xs text-muted-foreground mb-1">10Y 公債 ({data.tenYear?.current != null ? `${data.tenYear.current.toFixed(2)}%` : "-"})</div>
+            {tenYHistory.length > 0 ? (
+              <ResponsiveContainer width="100%" height={50}>
+                <LineChart data={tenYHistory}>
+                  <Line dataKey="value" stroke="#66c6df" dot={false} strokeWidth={1.5} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">尚未同步</div>
             )}
           </div>
         </div>
@@ -694,7 +713,7 @@ function ExposureSection({ sectors }: { sectors: any[] | undefined }) {
 
   if (activeHoldings.length === 0) {
     return (
-      <Card className="border-border">
+      <Card className="border-border h-full">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <TrendingDown className="w-4 h-4 text-[#1cb8be]" />
@@ -709,7 +728,7 @@ function ExposureSection({ sectors }: { sectors: any[] | undefined }) {
   }
 
   return (
-    <Card className="border-border">
+    <Card className="border-border h-full">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <TrendingDown className="w-4 h-4 text-[#1cb8be]" />
@@ -839,19 +858,22 @@ export default function MarketTrend() {
         </div>
       )}
 
-      {/* Module 4: Sector Heatmap */}
+      {/* Module 4+6: Sector Heatmap (left) + Exposure (right) */}
       {isLoading ? (
-        <Card className="border-border">
-          <CardContent className="p-4">
-            <Skeleton className="h-[200px] w-full" />
-          </CardContent>
-        </Card>
+        <div className="flex gap-4">
+          <div className="w-[55%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[300px] w-full" /></CardContent></Card></div>
+          <div className="w-[45%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[300px] w-full" /></CardContent></Card></div>
+        </div>
       ) : (
-        <SectorHeatmapSection data={marketData?.sectors} />
+        <div className="flex gap-4 items-stretch">
+          <div className="w-[55%]">
+            <SectorHeatmapSection data={marketData?.sectors} />
+          </div>
+          <div className="w-[45%]">
+            <ExposureSection sectors={marketData?.sectors} />
+          </div>
+        </div>
       )}
-
-      {/* Module 6: Exposure */}
-      <ExposureSection sectors={marketData?.sectors} />
     </div>
   );
 }
