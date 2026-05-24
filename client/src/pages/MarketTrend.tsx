@@ -1,9 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Globe, TrendingUp, TrendingDown, AlertTriangle, BarChart3, Activity } from "lucide-react";
+import { Globe, TrendingUp, TrendingDown, AlertTriangle, BarChart3, Activity, RefreshCw, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   LineChart, Line, Area,
@@ -38,6 +38,46 @@ const STOCK_SECTOR_MAP: Record<string, string> = {
   VST: "URNM", CEG: "URNM",
   ETN: "XLI", BE: "XLI", VRT: "XLI",
 };
+
+// ── Force Re-predict Button ────────────────────────────────────────────────
+function ForceRepredictButton() {
+  const [status, setStatus] = useState<"idle" | "running" | "done">("idle");
+
+  const handleClick = useCallback(async () => {
+    if (status === "running") return;
+    setStatus("running");
+    try {
+      await fetch("/api/predictions/run-all", { method: "POST" });
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
+    } catch {
+      setStatus("idle");
+    }
+  }, [status]);
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={status === "running"}
+      className={cn(
+        "flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors",
+        status === "running"
+          ? "border-[#1cb8be]/50 text-[#1cb8be]/60 cursor-not-allowed"
+          : status === "done"
+          ? "border-[#10b981]/50 text-[#10b981]"
+          : "border-border text-muted-foreground hover:border-[#1cb8be]/50 hover:text-[#1cb8be]"
+      )}
+    >
+      {status === "running" ? (
+        <><Loader2 className="w-3 h-3 animate-spin" />預測中...</>
+      ) : status === "done" ? (
+        <><Check className="w-3 h-3" />已觸發</>
+      ) : (
+        <><RefreshCw className="w-3 h-3" />全部重新預測</>
+      )}
+    </button>
+  );
+}
 
 // ── Index Chart Component ──────────────────────────────────────────────────
 
@@ -867,7 +907,10 @@ export default function MarketTrend() {
 
       {/* Module 1: Index Charts */}
       <div>
-        <h2 className="text-sm font-medium text-muted-foreground mb-3">四大指數 K 線 + ML 預測</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-medium text-muted-foreground">四大指數 K 線 + ML 預測</h2>
+          <ForceRepredictButton />
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {INDEX_LIST.map(idx => (
             <IndexChart key={idx.symbol} {...idx} />
