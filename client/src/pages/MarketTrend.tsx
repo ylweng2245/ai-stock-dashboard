@@ -6,8 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Globe, TrendingUp, TrendingDown, AlertTriangle, BarChart3, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart,
+  Line, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart, ReferenceLine,
 } from "recharts";
 import { OptimizeButton } from "@/components/OptimizeButton";
 
@@ -43,6 +43,7 @@ const STOCK_SECTOR_MAP: Record<string, string> = {
 
 function IndexChart({ symbol, name, shortName }: { symbol: string; name: string; shortName: string }) {
   const encoded = encodeURIComponent(symbol);
+  const [showHistory, setShowHistory] = useState(false);
 
   const { data: histData, isLoading: histLoading } = useQuery({
     queryKey: ["/api/market-trend/index-history", symbol],
@@ -56,42 +57,64 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
     staleTime: 300_000,
   });
 
+  // Main chart: last 60 bars + 20-day prediction with p25/p75 band
   const chartData = useMemo(() => {
     const bars = histData?.bars ?? [];
     const last60 = bars.slice(-60);
-    const historical = last60.map((b: any) => ({
+    const data: any[] = last60.map((b: any) => ({
       date: b.date.slice(5),
       fullDate: b.date,
       close: b.close,
       pred: null as number | null,
+      band: null as [number, number] | null,
     }));
 
     if (predData?.found && predData.horizons) {
       const hKeys = Object.keys(predData.horizons).map(Number).sort((a, b) => a - b);
-      // Add bridge point from last historical
-      if (historical.length > 0 && hKeys.length > 0) {
-        const lastHist = historical[historical.length - 1];
-        historical.push({
-          date: lastHist.date,
-          fullDate: lastHist.fullDate,
-          close: null as any,
-          pred: lastHist.close,
-        });
+      if (data.length > 0 && hKeys.length > 0) {
+        const lastHist = data[data.length - 1];
+        data.push({ date: lastHist.date, fullDate: lastHist.fullDate, close: null, pred: lastHist.close, band: null });
       }
       for (const h of hKeys.slice(0, 20)) {
         const hp = predData.horizons[String(h)];
         if (hp) {
-          historical.push({
+          data.push({
             date: hp.targetDate.slice(5),
             fullDate: hp.targetDate,
-            close: null as any,
+            close: null,
             pred: hp.medianPrice,
+            band: (hp.lowerPrice != null && hp.upperPrice != null)
+              ? [hp.lowerPrice, hp.upperPrice]
+              : null,
           });
         }
       }
     }
-    return historical;
+    return data;
   }, [histData, predData]);
+
+  // History comparison: past predictions vs actual close
+  const histCompareData = useMemo(() => {
+    if (!predData?.pastPredictions || !histData?.bars) return [];
+    const barMap = new Map<string, number>();
+    for (const b of histData.bars) barMap.set(b.date, b.close);
+
+    const rows: any[] = [];
+    for (const pp of [...predData.pastPredictions].reverse()) {
+      const d1 = pp.day1;
+      if (!d1) continue;
+      const actual = barMap.get(d1.targetDate) ?? null;
+      if (actual === null) continue; // only show if we have actual data
+      rows.push({
+        date: pp.baseDate?.slice(5) ?? "",
+        predicted: Math.round(d1.medianPrice),
+        actual: Math.round(actual),
+        error: Math.round(actual - d1.medianPrice),
+        errorPct: (((actual - d1.medianPrice) / d1.medianPrice) * 100).toFixed(2),
+      });
+    }
+    return rows.slice(-15); // last 15 entries
+  }, [predData, histData]);
 
   const bars = histData?.bars ?? [];
   const lastBar = bars[bars.length - 1];
@@ -117,22 +140,36 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
             <span className="text-xs font-mono text-muted-foreground">{shortName}</span>
             <h3 className="text-sm font-medium">{name}</h3>
           </div>
-          {lastBar && (
-            <div className="text-right">
-              <div className="text-sm font-semibold tabular-nums">
-                {lastBar.close.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+          <div className="flex items-center gap-3">
+            {histCompareData.length > 0 && (
+              <button
+                onClick={() => setShowHistory(v => !v)}
+                className={cn("text-xs px-2 py-0.5 rounded border transition-colors",
+                  showHistory
+                    ? "border-[#1cb8be] text-[#1cb8be] bg-[#1cb8be]/10"
+                    : "border-border text-muted-foreground hover:border-[#1cb8be]/50"
+                )}
+              >
+                歷史比對
+              </button>
+            )}
+            {lastBar && (
+              <div className="text-right">
+                <div className="text-sm font-semibold tabular-nums">
+                  {lastBar.close.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+                <div className={cn("text-xs tabular-nums", isUp ? "text-gain" : "text-loss")}>
+                  {change.toFixed(2)}%
+                </div>
               </div>
-              <div className={cn("text-xs tabular-nums", isUp ? "text-gain" : "text-loss")}>
-                {change.toFixed(2)}%
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="px-2 pb-3">
         {chartData.length > 0 ? (
           <>
-            <ResponsiveContainer width="100%" height={160}>
+            <ResponsiveContainer width="100%" height={170}>
               <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
                 <XAxis dataKey="date" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
@@ -145,24 +182,78 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
                 />
                 <Tooltip
                   contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 11 }}
-                  formatter={(value: any, name: string) => [
-                    value ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-",
-                    name === "close" ? "收盤" : "ML預測"
-                  ]}
+                  formatter={(value: any, name: string) => {
+                    if (name === "band") return null;
+                    const label = name === "close" ? "收盤" : name === "pred" ? "ML預測" : name;
+                    return [value != null ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-", label];
+                  }}
+                />
+                {/* p25~p75 confidence band */}
+                <Area
+                  dataKey="band"
+                  stroke="none"
+                  fill="#1cb8be"
+                  fillOpacity={0.12}
+                  connectNulls={false}
+                  activeDot={false}
+                  legendType="none"
                 />
                 <Line dataKey="close" stroke={isUp ? "#ef4444" : "#10b981"} dot={false} strokeWidth={1.5} connectNulls={false} />
                 <Line dataKey="pred" stroke="#1cb8be" dot={false} strokeWidth={1.5} strokeDasharray="4 3" connectNulls={false} />
               </ComposedChart>
             </ResponsiveContainer>
             {predData?.found && (
-              <div className="px-2 mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="inline-block w-6 border-t-2 border-dashed border-[#1cb8be]" />
-                ML預測（基準 {predData.baseDate}）
+              <div className="px-2 mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-5 border-t-2 border-dashed border-[#1cb8be]" />
+                  ML預測
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-5 h-2 rounded-sm bg-[#1cb8be]/20 border border-[#1cb8be]/40" />
+                  25%~75% 範圍
+                </span>
+                <span className="text-muted-foreground/60">基準 {predData.baseDate}</span>
+              </div>
+            )}
+
+            {/* History comparison table */}
+            {showHistory && histCompareData.length > 0 && (
+              <div className="mt-3 border border-border rounded-md overflow-hidden">
+                <div className="px-3 py-1.5 bg-muted/30 text-xs font-medium text-muted-foreground">
+                  歷史預測 vs 實際（Day+1）
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="px-2 py-1 text-left text-muted-foreground font-normal">基準日</th>
+                        <th className="px-2 py-1 text-right text-muted-foreground font-normal">預測</th>
+                        <th className="px-2 py-1 text-right text-muted-foreground font-normal">實際</th>
+                        <th className="px-2 py-1 text-right text-muted-foreground font-normal">誤差%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {histCompareData.map((r, i) => (
+                        <tr key={i} className="border-b border-border/30 last:border-0">
+                          <td className="px-2 py-1 tabular-nums">{r.date}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{r.predicted.toLocaleString()}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{r.actual.toLocaleString()}</td>
+                          <td className={cn("px-2 py-1 text-right tabular-nums",
+                            Math.abs(parseFloat(r.errorPct)) < 0.5 ? "text-muted-foreground" :
+                            r.error > 0 ? "text-gain" : "text-loss"
+                          )}>
+                            {r.error > 0 ? "" : ""}{r.errorPct}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </>
         ) : (
-          <div className="h-[160px] flex items-center justify-center text-xs text-muted-foreground">
+          <div className="h-[170px] flex items-center justify-center text-xs text-muted-foreground">
             資料不足
           </div>
         )}
@@ -528,11 +619,23 @@ function ExposureSection({ sectors }: { sectors: any[] | undefined }) {
     staleTime: 120_000,
   });
 
-  const { data: quotes } = useQuery({
+  const { data: quotesRaw } = useQuery({
     queryKey: ["/api/quotes"],
     queryFn: () => fetch("/api/quotes").then(r => r.json()),
     staleTime: 120_000,
   });
+
+  // quotes can be { quotes: [...], indices: {...} } or a flat list
+  const quoteMap = useMemo(() => {
+    const m = new Map<string, number>();
+    const list: any[] = Array.isArray(quotesRaw)
+      ? quotesRaw
+      : (quotesRaw?.quotes ?? []);
+    for (const q of list) {
+      if (q.symbol && q.price != null) m.set(q.symbol.toUpperCase(), q.price);
+    }
+    return m;
+  }, [quotesRaw]);
 
   const sectorRetMap = useMemo(() => {
     const m = new Map<string, number>();
@@ -544,37 +647,66 @@ function ExposureSection({ sectors }: { sectors: any[] | undefined }) {
     return m;
   }, [sectors]);
 
-  const holdings = portfolio?.holdings ?? [];
+  // portfolio/computed returns array directly
+  const holdings: any[] = useMemo(() => {
+    if (!portfolio) return [];
+    return Array.isArray(portfolio) ? portfolio : (portfolio.holdings ?? []);
+  }, [portfolio]);
+
+  // Filter to currently held US stocks (shares > 0)
+  const activeHoldings = useMemo(() =>
+    holdings.filter(h => h.market === "US" && (h.shares ?? 0) > 0.0001),
+    [holdings]
+  );
+
+  // Calculate unrealizedGainPct from current price vs avgCost
+  const holdingsWithPnl = useMemo(() => {
+    return activeHoldings.map(h => {
+      const sym = (h.symbol ?? "").toUpperCase();
+      const currentPrice = quoteMap.get(sym) ?? null;
+      const avgCost = h.avgCost ?? 0;
+      const unrealizedGainPct = (currentPrice != null && avgCost > 0)
+        ? ((currentPrice - avgCost) / avgCost) * 100
+        : null;
+      return { ...h, currentPrice, unrealizedGainPct };
+    });
+  }, [activeHoldings, quoteMap]);
 
   // Group by sector
   const grouped = useMemo(() => {
     const groups = new Map<string, any[]>();
-    for (const h of holdings) {
+    for (const h of holdingsWithPnl) {
       const sym = h.symbol?.toUpperCase?.() ?? "";
       const sector = STOCK_SECTOR_MAP[sym] ?? "其他";
       if (!groups.has(sector)) groups.set(sector, []);
       groups.get(sector)!.push(h);
     }
     return groups;
-  }, [holdings]);
+  }, [holdingsWithPnl]);
 
-  // Calculate portfolio beta
-  const spyRet = sectorRetMap.get("SPY") ?? null;
-  const [totalBeta, betaCount] = useMemo(() => {
-    if (!spyRet || spyRet === 0) return [null, 0];
-    let betaSum = 0, count = 0;
-    for (const h of holdings) {
+  // Simple portfolio beta: weight each stock by sector ETF beta vs SPY
+  // SPY ret1m as base; use sector ETF 1m return vs SPY 1m return as proxy beta
+  const spyRet1m = sectorRetMap.get("SPY") ?? null;
+  const betaRows = useMemo(() => {
+    if (!spyRet1m || spyRet1m === 0) return [];
+    const rows: Array<{ sym: string; beta: number }> = [];
+    for (const h of holdingsWithPnl) {
       const sym = h.symbol?.toUpperCase?.() ?? "";
-      const q = quotes?.[sym];
-      if (q && q.changePct20d != null) {
-        betaSum += (q.changePct20d / spyRet);
-        count++;
-      }
+      const etf = STOCK_SECTOR_MAP[sym];
+      if (!etf) continue;
+      const etfRet = sectorRetMap.get(etf);
+      if (etfRet == null) continue;
+      rows.push({ sym, beta: etfRet / spyRet1m });
     }
-    return count > 0 ? [betaSum / count, count] : [null, 0];
-  }, [holdings, quotes, spyRet]);
+    return rows;
+  }, [holdingsWithPnl, sectorRetMap, spyRet1m]);
 
-  if (holdings.length === 0) {
+  const totalBeta = betaRows.length > 0
+    ? betaRows.reduce((s, r) => s + r.beta, 0) / betaRows.length
+    : null;
+  const betaCount = betaRows.length;
+
+  if (activeHoldings.length === 0) {
     return (
       <Card className="border-border">
         <CardHeader className="pb-2">

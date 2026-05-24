@@ -2963,7 +2963,43 @@ ${search}${questionPart}
       if (!r) return res.json({ found: false });
 
       const meta = r.meta_json ? JSON.parse(r.meta_json) : {};
-      const horizons = meta.horizonsJson ? JSON.parse(meta.horizonsJson) : null;
+      let horizons = meta.horizonsJson ? JSON.parse(meta.horizonsJson) : null;
+
+      // Enrich horizons with lowerPrice/upperPrice from lower_path/upper_path
+      if (horizons && (r.lower_path || r.lowerPathJson)) {
+        const lower: Array<{date:string;price:number}> = JSON.parse(r.lower_path ?? r.lowerPathJson ?? "[]");
+        const upper: Array<{date:string;price:number}> = JSON.parse(r.upper_path ?? r.upperPathJson ?? "[]");
+        const keys = Object.keys(horizons).map(Number).sort((a, b) => a - b);
+        keys.forEach((k, i) => {
+          if (horizons[String(k)]) {
+            horizons[String(k)].lowerPrice = lower[i]?.price ?? horizons[String(k)].medianPrice;
+            horizons[String(k)].upperPrice = upper[i]?.price ?? horizons[String(k)].medianPrice;
+          }
+        });
+      }
+
+      // Also fetch recent past predictions for history comparison
+      const pastRuns = sqlite.prepare(`
+        SELECT run_at, base_date, base_price, median_path, lower_path, upper_path, meta_json
+        FROM modelpredictions
+        WHERE symbol=? AND market='INDEX'
+        ORDER BY run_at DESC, created_at DESC LIMIT 30
+      `).all(sym) as any[];
+
+      const pastPredictions = pastRuns.map((pr: any) => {
+        const prMeta = pr.meta_json ? JSON.parse(pr.meta_json) : {};
+        const prHorizons = prMeta.horizonsJson ? JSON.parse(prMeta.horizonsJson) : {};
+        const median: Array<{date:string;price:number}> = pr.median_path ? JSON.parse(pr.median_path) : [];
+        return {
+          runAt: pr.run_at,
+          baseDate: pr.base_date,
+          basePrice: pr.base_price,
+          // day-1 prediction (next day price)
+          day1: prHorizons['1'] ?? (median[0] ? { medianPrice: median[0].price, targetDate: median[0].date } : null),
+          day5: prHorizons['5'] ?? (median[4] ? { medianPrice: median[4].price, targetDate: median[4].date } : null),
+          day20: prHorizons['20'] ?? (median[19] ? { medianPrice: median[19].price, targetDate: median[19].date } : null),
+        };
+      }).filter((p: any) => p.day1 || p.day5);
 
       res.json({
         found: true,
@@ -2973,6 +3009,7 @@ ${search}${questionPart}
         basePrice: r.base_price,
         horizons,
         medianPath: r.median_path ? JSON.parse(r.median_path) : [],
+        pastPredictions,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
