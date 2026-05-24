@@ -6,8 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Globe, TrendingUp, TrendingDown, AlertTriangle, BarChart3, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  Line, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart, ReferenceLine,
+  LineChart, Line, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart,
 } from "recharts";
 import { OptimizeButton } from "@/components/OptimizeButton";
 
