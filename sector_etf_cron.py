@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
 Daily sector ETF price sync cron script.
-Reads ngrok URL from GitHub Gist → fetches 1y daily close prices for
-12 sector ETFs via finance_historical_prices → POSTs to
+Reads ngrok URL from GitHub Gist → fetches 1y daily prices for
+sector ETFs via finance_ohlcv_histories → POSTs to
 /api/internal/historical-prices-sync
 """
 
+import csv
+import io
 import json
 import subprocess
 import sys
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GIST_RAW_URL = (
@@ -19,20 +21,12 @@ GIST_RAW_URL = (
     "cecf995babfbfd98b7e3cbd633549e6f/raw/server-config.json"
 )
 SYNC_SECRET = "9852b0916353d94bbe935965e85afe129b8452bfd31157d0313e2c4184648ab2"
-
-# Fixed domain (ngrok free plan with reserved domain — never changes)
 FIXED_SERVER_URL = "https://angling-ashes-punctured.ngrok-free.dev"
 
-# 12 sector ETFs used by features_extra.py SECTOR_MAP
-SECTOR_ETFS = [
-    "SOXX", "CIBR", "XLU", "URNM", "XLI", "ARKX",
-    "ARKQ", "XBI", "SMH", "HACK", "IBB", "SMH",
-]
-# Deduplicate (SMH appears twice in spec)
 SECTOR_ETFS_UNIQUE = [
     "SOXX", "CIBR", "XLU", "URNM", "XLI", "ARKX",
     "ARKQ", "XBI", "SMH", "HACK", "IBB",
-    # New: for trend analysis and macro features
+    # For trend analysis and macro features
     "SPY", "QQQ", "HYG", "LQD", "BIL",
 ]
 
@@ -85,18 +79,28 @@ def safe_float(val) -> float | None:
         return None
 
 
-def parse_md_table(content: str) -> list[dict]:
-    """Parse a markdown table into a list of dicts."""
-    lines = [l.strip() for l in content.strip().splitlines() if l.strip()]
-    table_lines = [l for l in lines if l.startswith("|")]
-    if len(table_lines) < 3:
-        return []
-    headers = [h.strip() for h in table_lines[0].strip("|").split("|")]
+def download_csv(url: str) -> list[dict]:
+    """Download a CSV file from URL and parse it."""
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        content = resp.read().decode("utf-8")
+    reader = csv.DictReader(io.StringIO(content))
     rows = []
-    for line in table_lines[2:]:
-        vals = [v.strip() for v in line.strip("|").split("|")]
-        if len(vals) == len(headers):
-            rows.append(dict(zip(headers, vals)))
+    for row in reader:
+        date_str = (row.get("date") or row.get("Date") or "")[:10]
+        if not date_str or len(date_str) < 10:
+            continue
+        close = safe_float(row.get("close") or row.get("Close"))
+        if close is None:
+            continue
+        rows.append({
+            "date": date_str,
+            "open": safe_float(row.get("open") or row.get("Open")) or close,
+            "high": safe_float(row.get("high") or row.get("High")) or close,
+            "low": safe_float(row.get("low") or row.get("Low")) or close,
+            "close": close,
+            "volume": int(safe_float(row.get("volume") or row.get("Volume")) or 0),
+        })
     return rows
 
 
@@ -114,50 +118,65 @@ def get_ngrok_url() -> str:
     return FIXED_SERVER_URL
 
 
-# ── Step 2: Fetch historical prices for an ETF ──────────────────────────────
+# ── Step 2: Fetch historical prices for an ETF ───────────────────────────────
 
 def fetch_etf_prices(ticker: str) -> list[dict]:
-    from datetime import date as _date, timedelta
-    end_date = _date.today().isoformat()
-    start_date = (_date.today() - timedelta(days=365)).isoformat()
+    end_date = date.today().isoformat()
+    start_date = (date.today() - timedelta(days=730)).isoformat()  # 2 years
 
     result = call_tool("finance", "finance_ohlcv_histories", {
         "ticker_symbols": [ticker],
-        "query": f"{ticker} historical prices 1 year",
+        "query": f"{ticker} historical prices 2 years daily",
         "start_date_yyyy_mm_dd": start_date,
         "end_date_yyyy_mm_dd": end_date,
         "time_interval": "1day",
         "fields": ["open", "high", "low", "close", "volume"],
     })
-    content = result.get("content", "")
-    rows = parse_md_table(content)
 
-    prices = []
-    for row in rows:
-        date_str = (row.get("date") or row.get("Date") or row.get("timestamp") or "")[:10]
+    # Prefer csv_files (full data) over markdown content (sample only)
+    csv_files = result.get("csv_files", [])
+    if csv_files:
+        csv_url = csv_files[0].get("url", "")
+        if csv_url:
+            try:
+                rows = download_csv(csv_url)
+                if rows:
+                    return rows
+                print(f"[sector-etf-cron] {ticker}: CSV empty, falling back to content parse")
+            except Exception as e:
+                print(f"[sector-etf-cron] {ticker}: CSV download failed ({e}), falling back")
+
+    # Fallback: parse markdown table from content (sample rows only)
+    content = result.get("content", "")
+    lines = [l.strip() for l in content.strip().splitlines() if l.strip()]
+    table_lines = [l for l in lines if l.startswith("|")]
+    if len(table_lines) < 3:
+        return []
+    headers = [h.strip() for h in table_lines[0].strip("|").split("|")]
+    rows = []
+    for line in table_lines[2:]:
+        vals = [v.strip() for v in line.strip("|").split("|")]
+        if len(vals) != len(headers):
+            continue
+        row = dict(zip(headers, vals))
+        date_str = (row.get("date") or row.get("Date") or "")[:10]
         if not date_str or len(date_str) < 10:
             continue
         close = safe_float(row.get("close") or row.get("Close"))
-        open_ = safe_float(row.get("open") or row.get("Open"))
-        high = safe_float(row.get("high") or row.get("High"))
-        low = safe_float(row.get("low") or row.get("Low"))
-        volume = safe_float(row.get("volume") or row.get("Volume"))
-
         if close is None:
             continue
-
-        prices.append({
+        rows.append({
             "date": date_str,
-            "open": open_ or close,
-            "high": high or close,
-            "low": low or close,
+            "open": safe_float(row.get("open") or row.get("Open")) or close,
+            "high": safe_float(row.get("high") or row.get("High")) or close,
+            "low": safe_float(row.get("low") or row.get("Low")) or close,
             "close": close,
-            "volume": int(volume) if volume else 0,
+            "volume": int(safe_float(row.get("volume") or row.get("Volume")) or 0),
         })
-    return prices
+    return rows
 
 
-# ── Step 3: POST to server ──────────────────────────────────────────────────
+# ── Step 3: POST to server ────────────────────────────────────────────────────
 
 def push_to_server(base_url: str, symbol: str, prices: list[dict]) -> None:
     resp = http_post_json(
@@ -193,7 +212,8 @@ def main():
             print(f"[sector-etf-cron] {etf}: no price data, skipping")
             continue
 
-        print(f"[sector-etf-cron] {etf}: {len(prices)} bars (latest: {prices[0]['date']})")
+        latest = sorted(prices, key=lambda x: x["date"])[-1]["date"]
+        print(f"[sector-etf-cron] {etf}: {len(prices)} bars (latest: {latest})")
 
         try:
             push_to_server(base_url, etf, prices)
