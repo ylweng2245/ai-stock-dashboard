@@ -574,6 +574,169 @@ export async function registerRoutes(
     return lines.join("\n");
   }
 
+  /**
+   * Build a full-portfolio context for macro-level prompts.
+   * Includes: every active holding with shares / avg cost / current price /
+   * market value / unrealized return / portfolio weight, plus portfolio totals
+   * and macro sentiment data.
+   */
+  function buildPortfolioContext(prices: Record<string, number>): string {
+    const lines: string[] = [];
+
+    // ── Compute all holdings from transactions ──
+    try {
+      const txns = sqlite.prepare(
+        `SELECT symbol, market, name, side, shares, total_cost, currency
+         FROM transactions ORDER BY trade_date ASC`
+      ).all() as { symbol: string; market: string; name: string; side: string; shares: number; total_cost: number; currency: string }[];
+
+      type Pos = {
+        symbol: string; market: string; name: string; currency: string;
+        holdingShares: number; holdingCost: number; realizedGain: number;
+        lots: { shares: number; unitCost: number }[];
+      };
+      const posMap = new Map<string, Pos>();
+
+      for (const tx of txns) {
+        const key = `${tx.symbol}_${tx.market}`;
+        if (!posMap.has(key)) {
+          posMap.set(key, {
+            symbol: tx.symbol, market: tx.market, name: tx.name,
+            currency: tx.currency || (tx.market === "TW" ? "TWD" : "USD"),
+            holdingShares: 0, holdingCost: 0, realizedGain: 0, lots: [],
+          });
+        }
+        const pos = posMap.get(key)!;
+        const isTW = tx.market === "TW";
+        if (tx.side === "buy") {
+          const cost = Math.abs(tx.total_cost);
+          pos.holdingShares += tx.shares;
+          pos.holdingCost += cost;
+          if (isTW) pos.lots.push({ shares: tx.shares, unitCost: cost / tx.shares });
+        } else if (tx.side === "sell") {
+          const proceeds = Math.abs(tx.total_cost);
+          if (isTW) {
+            let rem = tx.shares; let cb = 0;
+            while (rem > 0.0001 && pos.lots.length > 0) {
+              const lot = pos.lots[0];
+              if (lot.shares <= rem + 0.0001) { cb += lot.unitCost * lot.shares; rem -= lot.shares; pos.holdingShares -= lot.shares; pos.holdingCost -= lot.unitCost * lot.shares; pos.lots.shift(); }
+              else { cb += lot.unitCost * rem; pos.holdingShares -= rem; pos.holdingCost -= lot.unitCost * rem; lot.shares -= rem; rem = 0; }
+            }
+            pos.realizedGain += proceeds - cb;
+          } else {
+            const avgNow = pos.holdingShares > 0 ? pos.holdingCost / pos.holdingShares : 0;
+            const cb = avgNow * tx.shares;
+            pos.realizedGain += proceeds - cb;
+            pos.holdingShares -= tx.shares;
+            pos.holdingCost -= cb;
+          }
+          if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; }
+        } else if (tx.side === "dividend") {
+          pos.realizedGain += tx.total_cost;
+        }
+      }
+
+      // Filter active holdings (shares > 0)
+      const active = [...posMap.values()].filter(p => p.holdingShares > 0.0001);
+      if (active.length === 0) {
+        lines.push("【投資組合】");
+        lines.push("目前無持倉");
+      } else {
+        // Compute current values
+        type HRow = {
+          symbol: string; market: string; name: string; cur: string;
+          shares: number; avgCost: number; currentPrice: number;
+          marketValue: number; unrealizedPct: number;
+        };
+        const rows: HRow[] = active.map(p => {
+          const cur = p.market === "TW" ? "NT" : "$";
+          const avgCost = p.holdingCost / p.holdingShares;
+          const currentPrice = prices[`${p.symbol}_${p.market}`] ?? prices[p.symbol] ?? avgCost;
+          const marketValue = currentPrice * p.holdingShares;
+          const unrealizedPct = ((currentPrice - avgCost) / avgCost) * 100;
+          return { symbol: p.symbol, market: p.market, name: p.name, cur, shares: p.holdingShares, avgCost, currentPrice, marketValue, unrealizedPct };
+        });
+
+        // Total portfolio value (USD-only for weight calculation; TW in TWD)
+        const totalUSDValue = rows.filter(r => r.market === "US").reduce((s, r) => s + r.marketValue, 0);
+        const totalTWValue  = rows.filter(r => r.market === "TW").reduce((s, r) => s + r.marketValue, 0);
+        const totalAllValue = rows.reduce((s, r) => s + (r.market === "US" ? r.marketValue : r.marketValue / 32), 0); // rough USD equiv for weight
+
+        lines.push(`【我的投資組合】`);
+        lines.push(`持倉數量：${rows.length} 檔｜美股合計：$${totalUSDValue.toFixed(0)}｜台股合計：NT${totalTWValue.toFixed(0)}`);
+        lines.push(``);
+        lines.push(`持倉明細（依市值排序）：`);
+        const sorted = [...rows].sort((a, b) => {
+          const aUSD = a.market === "US" ? a.marketValue : a.marketValue / 32;
+          const bUSD = b.market === "US" ? b.marketValue : b.marketValue / 32;
+          return bUSD - aUSD;
+        });
+        for (const r of sorted) {
+          const weightBase = r.market === "US" ? totalUSDValue : totalTWValue;
+          const weight = weightBase > 0 ? (r.marketValue / weightBase * 100).toFixed(1) : "N/A";
+          const retStr = `${r.unrealizedPct >= 0 ? "+" : ""}${r.unrealizedPct.toFixed(1)}%`;
+          lines.push(
+            `  ${r.market} ${r.symbol}（${r.name}）` +
+            `｜${r.shares.toFixed(2)}股` +
+            `｜均成本${r.cur}${r.avgCost.toFixed(2)}` +
+            `｜現價${r.cur}${r.currentPrice.toLocaleString()}` +
+            `｜市值${r.cur}${r.marketValue.toFixed(0)}` +
+            `｜報酬${retStr}` +
+            `｜占${r.market}倉${weight}%`
+          );
+        }
+      }
+    } catch (e) {
+      lines.push(`【投資組合】`);
+      lines.push(`（資料讀取失敗）`);
+    }
+
+    // ── 大盤情緒 ──
+    try {
+      const fg = sqlite.prepare(
+        `SELECT value, meta_json FROM market_indicators
+         WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`
+      ).get() as { value: number; meta_json: string } | undefined;
+      if (fg) {
+        const fgMeta = JSON.parse(fg.meta_json || "{}");
+        lines.push(`\n【大盤情緒】`);
+        lines.push(`Fear & Greed Index：${fg.value}（${fgMeta.classification ?? ""}）`);
+      }
+      const macro = sqlite.prepare(
+        `SELECT value, date FROM market_indicators
+         WHERE indicator_key='macro_sentiment' ORDER BY date DESC LIMIT 1`
+      ).get() as { value: number; date: string } | undefined;
+      if (macro) {
+        lines.push(`Macro 情緒分數（SPY+QQQ）：${macro.value.toFixed(2)}（${macro.date}）`);
+      }
+    } catch { /* ignore */ }
+
+    // ── 板塊 ETF 相對強弱（最近 1 個月走勢）──
+    try {
+      const etfSymbols = ["SOXX", "XLI", "XBI", "CIBR", "ARKX", "XLU"];
+      const etfRows: string[] = [];
+      for (const etf of etfSymbols) {
+        const bars = sqlite.prepare(
+          `SELECT date, close FROM historical_prices
+           WHERE symbol=? AND market='US'
+           ORDER BY date DESC LIMIT 21`
+        ).all(etf) as { date: string; close: number }[];
+        if (bars.length >= 2) {
+          const latest = bars[0].close;
+          const oldest = bars[bars.length - 1].close;
+          const ret = ((latest - oldest) / oldest * 100).toFixed(1);
+          etfRows.push(`${etf}：${parseFloat(ret) >= 0 ? "+" : ""}${ret}%`);
+        }
+      }
+      if (etfRows.length > 0) {
+        lines.push(`\n【板塊 ETF 近 1 月漲跌】`);
+        lines.push(etfRows.join("｜"));
+      }
+    } catch { /* ignore */ }
+
+    return lines.join("\n");
+  }
+
   /** Build a ready-to-paste Perplexity prompt from DB context + question intent */
   function buildUserPrompt(ctx: string, questionType: string, customQuestion?: string): string {
     const searchInstructions: Record<string, string> = {
@@ -611,13 +774,16 @@ export async function registerRoutes(
 
       // ── 大盤趨勢類 ──
       macro: `請搜尋目前全球最新的政經新聞、貨幣政策動向、地緣政治風險與板塊輪動趨勢。
-分析：1.大盤環境是順風還是逆風 2.有無崩盤預警 3.板塊輪動對持股的影響，給出明確倉位建議。`,
+分析：1.大盤環境是順風還是逆風 2.有無崩盤預警 3.板塊輪動趨勢。
+結合上述我的投資組合持倉明細，從整體市場與個人持倉兩個角度評估：大盤環境對我各持倉標的有何具體影響？哪些持倉處於順風/逆風位置？給出針對我目前組合的倉位調整建議。`,
 
       macro_crash: `請搜尋目前美股最新市場情緒指標、信用利差、VIX走勢、資金流向與機構風險預警報告。
-結合上述 Fear & Greed 與 Macro 情緒分數，判斷：目前是否出現系統性風險訊號？歷史上類似指標組合後市場表現如何？持股應如何調整倉位對沖？`,
+結合上述 Fear & Greed 與 Macro 情緒分數，判斷：目前是否出現系統性風險訊號？
+結合我的投資組合持倉明細，分析：若市場出現系統性風險或崩盤，哪些持倉風險最高（高槓桿、高估值、低流動性）？哪些持倉相對抗跌？建議如何調整倉位結構對沖下行風險？`,
 
       macro_rotation: `請搜尋目前美股各板塊資金流向、ETF 進出資金、機構持倉變化與板塊輪動分析報告。
-結合上述板塊相對強弱數據，分析：目前資金是否正在流入或流出此股票所在板塊？板塊輪動趨勢對此持股是利多還是利空？`,
+結合上述板塊 ETF 近 1 月漲跌數據，分析目前資金輪動方向。
+結合我的投資組合持倉明細，評估：板塊輪動趨勢對我現有各持股是利多還是利空？我的持倉板塊集中度是否過高？是否有需要汰換或加碼的板塊？給出具體的倉位輪動建議。`,
 
       default: `請搜尋相關最新資訊，結合以上數據給出整合性回答。`,
     };
@@ -643,10 +809,24 @@ ${search}${questionPart}
   }
 
   /** POST /api/ai/build-prompt — returns a ready-to-paste prompt string, no LLM call */
-  app.post("/api/ai/build-prompt", (req, res) => {
+  app.post("/api/ai/build-prompt", async (req, res) => {
     try {
       const { symbol, name, price, change, market, questionType = "default", customQuestion } = req.body;
-      const ctx = buildStockContext(symbol, market, price ?? 0, change ?? 0, name);
+      let ctx: string;
+      if (typeof questionType === "string" && questionType.startsWith("macro")) {
+        // Build a prices map from quoteCache via getAllQuotes (uses cache, no fresh fetch)
+        const priceMap: Record<string, number> = {};
+        try {
+          const { quotes: allQuotes } = await getAllQuotes();
+          for (const q of allQuotes) {
+            priceMap[`${q.symbol}_${q.market}`] = q.price;
+            priceMap[q.symbol] = q.price;
+          }
+        } catch { /* use empty map — buildPortfolioContext falls back to avgCost */ }
+        ctx = buildPortfolioContext(priceMap);
+      } else {
+        ctx = buildStockContext(symbol, market, price ?? 0, change ?? 0, name);
+      }
       const prompt = buildUserPrompt(ctx, questionType, customQuestion);
       res.json({ prompt });
     } catch (error: any) {
