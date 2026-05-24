@@ -415,9 +415,44 @@ function CrashRiskSection({ data }: { data: any }) {
 // ── Sector Heatmap Module ──────────────────────────────────────────────────
 
 function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
+  const { data: portfolio } = useQuery({
+    queryKey: ["/api/portfolio/computed"],
+    queryFn: () => fetch("/api/portfolio/computed").then(r => r.json()),
+    staleTime: 120_000,
+  });
+  const { data: quotesRaw } = useQuery({
+    queryKey: ["/api/quotes"],
+    queryFn: () => fetch("/api/quotes").then(r => r.json()),
+    staleTime: 120_000,
+  });
+
+  const quoteMap = useMemo(() => {
+    const m = new Map<string, number>();
+    const list: any[] = Array.isArray(quotesRaw) ? quotesRaw : (quotesRaw?.quotes ?? []);
+    for (const q of list) {
+      if (q.symbol && q.price != null) m.set(q.symbol.toUpperCase(), q.price);
+    }
+    return m;
+  }, [quotesRaw]);
+
+  // Build holdings map: symbol -> unrealizedGainPct
+  const holdingsPnlMap = useMemo(() => {
+    const holdings: any[] = Array.isArray(portfolio) ? portfolio : (portfolio?.holdings ?? []);
+    const m = new Map<string, number | null>();
+    for (const h of holdings) {
+      if (h.market !== "US" || (h.shares ?? 0) <= 0.0001) continue;
+      const sym = (h.symbol ?? "").toUpperCase();
+      const cur = quoteMap.get(sym) ?? null;
+      const avg = h.avgCost ?? 0;
+      const pct = cur != null && avg > 0 ? ((cur - avg) / avg) * 100 : null;
+      m.set(sym, pct);
+    }
+    return m;
+  }, [portfolio, quoteMap]);
+
   if (!data || data.length === 0) {
     return (
-      <Card className="border-border h-full">
+      <Card className="border-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-[#1cb8be]" />
@@ -431,7 +466,6 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
     );
   }
 
-  // Compute flow rank by 1m return
   const sorted1m = [...data].filter(d => d.ret1m !== null).sort((a, b) => (b.ret1m ?? 0) - (a.ret1m ?? 0));
   const flowMap = new Map<string, { label: string; cls: string }>();
   sorted1m.forEach((d, i) => {
@@ -448,7 +482,7 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
   };
 
   return (
-    <Card className="border-border h-full">
+    <Card className="border-border">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <BarChart3 className="w-4 h-4 text-[#1cb8be]" />
@@ -464,13 +498,22 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">1週</th>
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">1月</th>
                 <th className="text-right py-2 px-2 font-medium text-muted-foreground">3月</th>
-                <th className="text-right py-2 pl-2 font-medium text-muted-foreground">資金流向</th>
+                <th className="text-right py-2 px-2 font-medium text-muted-foreground">資金流向</th>
+                <th className="text-left py-2 pl-3 font-medium text-muted-foreground border-l border-border/50">持倉</th>
               </tr>
             </thead>
             <tbody>
               {data.map((etf: any) => {
                 const flow = flowMap.get(etf.symbol);
-                return (
+                // Find holdings belonging to this ETF
+                const etfHoldings: { sym: string; pct: number | null }[] = [];
+                for (const [sym, pct] of holdingsPnlMap.entries()) {
+                  if (STOCK_SECTOR_MAP[sym] === etf.symbol) {
+                    etfHoldings.push({ sym, pct });
+                  }
+                }
+                const rowSpan = Math.max(1, etfHoldings.length);
+                return etfHoldings.length === 0 ? (
                   <tr key={etf.symbol} className="border-b border-border/50 hover:bg-muted/30">
                     <td className="py-1.5 pr-2">
                       <div className="flex items-center gap-1.5">
@@ -482,10 +525,45 @@ function SectorHeatmapSection({ data }: { data: any[] | undefined }) {
                     <td className="text-right py-1.5 px-2">{retCell(etf.ret1w)}</td>
                     <td className="text-right py-1.5 px-2">{retCell(etf.ret1m)}</td>
                     <td className="text-right py-1.5 px-2">{retCell(etf.ret3m)}</td>
-                    <td className="text-right py-1.5 pl-2">
+                    <td className="text-right py-1.5 px-2">
                       {flow ? <span className={flow.cls}>{flow.label}</span> : "-"}
                     </td>
+                    <td className="pl-3 border-l border-border/50 text-muted-foreground">-</td>
                   </tr>
+                ) : (
+                  etfHoldings.map((h, hi) => (
+                    <tr key={`${etf.symbol}-${h.sym}`} className={cn("hover:bg-muted/30", hi === etfHoldings.length - 1 ? "border-b border-border/50" : "")}>
+                      {hi === 0 && (
+                        <>
+                          <td className="py-1.5 pr-2 align-top" rowSpan={rowSpan}>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium">{etf.symbol}</span>
+                              <span className="text-muted-foreground">{etf.name}</span>
+                              <Badge variant="outline" className="text-[10px] py-0 px-1 h-4">{etf.theme}</Badge>
+                            </div>
+                          </td>
+                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret1w)}</td>
+                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret1m)}</td>
+                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>{retCell(etf.ret3m)}</td>
+                          <td className="text-right py-1.5 px-2 align-top" rowSpan={rowSpan}>
+                            {flow ? <span className={flow.cls}>{flow.label}</span> : "-"}
+                          </td>
+                        </>
+                      )}
+                      <td className="py-1 pl-3 border-l border-border/50">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{h.sym}</span>
+                          {h.pct != null ? (
+                            <span className={cn("tabular-nums font-medium", h.pct >= 0 ? "text-gain" : "text-loss")}>
+                              {h.pct.toFixed(1)}%
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
                 );
               })}
             </tbody>
@@ -520,24 +598,20 @@ function SentimentSection({ data }: { data: any }) {
 
   const fgColor = (() => {
     if (fgValue === null) return "text-muted-foreground";
-    if (fgValue <= 25) return "text-red-600";     // 極度恐懼
-    if (fgValue <= 45) return "text-red-400";      // 恐懼
-    if (fgValue <= 55) return "text-muted-foreground"; // 中性
-    if (fgValue <= 75) return "text-green-400";    // 貪婪
-    return "text-green-600";                       // 極度貪婪
+    if (fgValue <= 25) return "text-red-600";
+    if (fgValue <= 45) return "text-red-400";
+    if (fgValue <= 55) return "text-muted-foreground";
+    if (fgValue <= 75) return "text-green-400";
+    return "text-green-600";
   })();
 
   const macroScore = data.macro?.score != null ? Math.round(data.macro.score * 100) : null;
-
-  // Mini charts
   const vixHistory = data.vix?.history?.slice(-20) ?? [];
   const tenYHistory = data.tenYear?.history?.slice(-20) ?? [];
 
-  // Sentiment composite (4 indicators when 10y available)
   const normalizedFG = fgValue != null ? fgValue : 50;
   const normalizedVix = data.vix?.current != null ? Math.max(0, 100 - data.vix.current * 2) : 50;
   const normalizedMacro = macroScore != null ? macroScore : 50;
-  // 10Y yield: lower yield = less fear of rate hikes = slightly positive; 4% = neutral 50
   const tenYCurrent = data.tenYear?.current ?? null;
   const normalizedTenY = tenYCurrent != null ? Math.max(0, Math.min(100, 50 + (4.5 - tenYCurrent) * 15)) : null;
   const compositeInputs = [normalizedFG, normalizedVix, normalizedMacro, ...(normalizedTenY != null ? [normalizedTenY] : [])];
@@ -553,60 +627,55 @@ function SentimentSection({ data }: { data: any }) {
           市場情緒
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        {/* 情緒總分 — 最上面 */}
-        <div className="rounded-md border border-border p-3 flex items-center justify-between mb-4">
-          <div>
-            <div className="text-xs text-muted-foreground mb-0.5">情緒總分</div>
-            <div className={cn("text-3xl font-bold tabular-nums", compositeColor)}>{composite}</div>
+      <CardContent className="pb-3">
+        {/* 全寬橫向一行：總分 | FG | Macro | VIX | 10Y */}
+        <div className="grid grid-cols-5 gap-2">
+          {/* 情緒總分 */}
+          <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center">
+            <div className="text-[11px] text-muted-foreground mb-0.5">情緒總分</div>
+            <div className={cn("text-2xl font-bold tabular-nums leading-none", compositeColor)}>{composite}</div>
+            <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0 h-4 mt-1 w-fit", compositeColor)}>{compositeLabel}</Badge>
           </div>
-          <Badge variant="outline" className={cn("text-sm px-3 py-1", compositeColor)}>{compositeLabel}</Badge>
-        </div>
 
-        <div className="grid grid-cols-2 gap-3">
           {/* Fear & Greed */}
-          <div className="rounded-md border border-border p-3 text-center">
-            <div className="text-xs text-muted-foreground mb-1">Fear & Greed</div>
-            <div className={cn("text-2xl font-bold tabular-nums", fgColor)}>
-              {fgValue ?? "-"}
-            </div>
-            <div className={cn("text-xs", fgColor)}>{fgLabel || "-"}</div>
+          <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center text-center">
+            <div className="text-[11px] text-muted-foreground mb-0.5">Fear & Greed</div>
+            <div className={cn("text-2xl font-bold tabular-nums leading-none", fgColor)}>{fgValue ?? "-"}</div>
+            <div className={cn("text-[10px] mt-1", fgColor)}>{fgLabel || "-"}</div>
           </div>
 
-          {/* Macro Sentiment */}
-          <div className="rounded-md border border-border p-3 text-center">
-            <div className="text-xs text-muted-foreground mb-1">Macro 情緒</div>
-            <div className="text-2xl font-bold tabular-nums">
-              {macroScore ?? "-"}
-            </div>
-            <div className="text-xs text-muted-foreground">{data.macro?.date ?? ""}</div>
+          {/* Macro */}
+          <div className="rounded-md border border-border px-3 py-2 flex flex-col justify-center text-center">
+            <div className="text-[11px] text-muted-foreground mb-0.5">Macro 情緒</div>
+            <div className="text-2xl font-bold tabular-nums leading-none">{macroScore ?? "-"}</div>
+            <div className="text-[10px] mt-1 text-muted-foreground">{data.macro?.date?.slice(5) ?? ""}</div>
           </div>
 
-          {/* VIX Mini Chart */}
-          <div className="rounded-md border border-border p-3">
-            <div className="text-xs text-muted-foreground mb-1">VIX ({data.vix?.current?.toFixed(1) ?? "-"})</div>
+          {/* VIX */}
+          <div className="rounded-md border border-border px-2 py-2">
+            <div className="text-[11px] text-muted-foreground mb-1">VIX&nbsp;{data.vix?.current?.toFixed(1) ?? "-"}</div>
             {vixHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height={50}>
+              <ResponsiveContainer width="100%" height={40}>
                 <LineChart data={vixHistory}>
                   <Line dataKey="value" stroke="#ef4444" dot={false} strokeWidth={1.5} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">-</div>
+              <div className="h-[40px] flex items-center justify-center text-[10px] text-muted-foreground">-</div>
             )}
           </div>
 
-          {/* 10Y Yield Mini Chart */}
-          <div className="rounded-md border border-border p-3">
-            <div className="text-xs text-muted-foreground mb-1">10Y 公債 ({data.tenYear?.current != null ? `${data.tenYear.current.toFixed(2)}%` : "-"})</div>
+          {/* 10Y */}
+          <div className="rounded-md border border-border px-2 py-2">
+            <div className="text-[11px] text-muted-foreground mb-1">10Y&nbsp;{tenYCurrent != null ? `${tenYCurrent.toFixed(2)}%` : "-"}</div>
             {tenYHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height={50}>
+              <ResponsiveContainer width="100%" height={40}>
                 <LineChart data={tenYHistory}>
                   <Line dataKey="value" stroke="#66c6df" dot={false} strokeWidth={1.5} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[50px] flex items-center justify-center text-xs text-muted-foreground">尚未同步</div>
+              <div className="h-[40px] flex items-center justify-center text-[10px] text-muted-foreground">尚未同步</div>
             )}
           </div>
         </div>
@@ -858,21 +927,15 @@ export default function MarketTrend() {
         </div>
       )}
 
-      {/* Module 4+6: Sector Heatmap (left) + Exposure (right) */}
+      {/* Module 4: Sector Heatmap with embedded holdings */}
       {isLoading ? (
-        <div className="flex gap-4">
-          <div className="w-[55%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[300px] w-full" /></CardContent></Card></div>
-          <div className="w-[45%]"><Card className="border-border"><CardContent className="p-4"><Skeleton className="h-[300px] w-full" /></CardContent></Card></div>
-        </div>
+        <Card className="border-border">
+          <CardContent className="p-4">
+            <Skeleton className="h-[300px] w-full" />
+          </CardContent>
+        </Card>
       ) : (
-        <div className="flex gap-4 items-stretch">
-          <div className="w-[55%]">
-            <SectorHeatmapSection data={marketData?.sectors} />
-          </div>
-          <div className="w-[45%]">
-            <ExposureSection sectors={marketData?.sectors} />
-          </div>
-        </div>
+        <SectorHeatmapSection data={marketData?.sectors} />
       )}
     </div>
   );
