@@ -1377,7 +1377,7 @@ function MarketOverviewSection() {
 
       {/* TW Section — desktop single-row: [taiex 2/5] [foreign+margin 2/5] [usdtwd 1/5] */}
       <div>
-        <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">台灣市場</div>
+        <div className="text-base font-semibold text-foreground mb-2">台灣市場</div>
         {isLoading ? (
           <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 8 }}>
             {[1, 2, 3].map((_, i) => (
@@ -1437,7 +1437,7 @@ function MarketOverviewSection() {
 
       {/* US Section — Row 1: DJIA/SP500/Nasdaq/SOX (intraday), Row 2: VIX/FG/10Y/CPI */}
       <div>
-        <div className="text-[10px] font-semibold text-muted-foreground tracking-widest mb-2 uppercase">美國市場</div>
+        <div className="flex items-center gap-3 mb-2"><span className="text-base font-semibold text-foreground">美國市場</span><UsSentimentBadge /></div>
         <div className="space-y-2">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {isLoading
@@ -1856,7 +1856,7 @@ function UsSentimentBadge() {
 
   return (
     <div className={cn("flex items-center gap-2 px-2.5 py-1 rounded border text-xs", borderCls)}>
-      <span className="text-muted-foreground">美股市場情緒</span>
+      <span className="text-muted-foreground">市場情緒</span>
       <span className={cn("font-bold tabular-nums text-sm", colorCls)}>{composite}</span>
       <span className={cn("text-[11px]", colorCls)}>{label}</span>
     </div>
@@ -1929,8 +1929,6 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground mt-0.5">即時台股與美股行情追蹤</p>
         </div>
         <div className="flex items-center gap-3">
-          {/* 美股市場情緒 badge */}
-          <UsSentimentBadge />
           {lastFetchTime && (
             <span className="text-[11px] text-muted-foreground tabular-nums">
               更新於 {lastFetchTime}
