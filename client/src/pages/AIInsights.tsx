@@ -8,7 +8,7 @@ import {
   Sparkles, Copy, Check, Loader2,
   TrendingUp, TrendingDown, Newspaper, BarChart3,
   ShieldAlert, RefreshCw, DollarSign, AlertTriangle,
-  Globe, Activity, ExternalLink,
+  Globe, Activity, ExternalLink, Search, Star,
 } from "lucide-react";
 import { STOCK_META, type StockQuote } from "@/lib/stockData";
 import { cn } from "@/lib/utils";
@@ -57,6 +57,8 @@ const MACRO_PROMPTS: QuickPrompt[] = [
   { label: "大盤趨勢分析", icon: Globe,       questionType: "macro",          color: "text-purple-400" },
   { label: "崩盤預警",     icon: ShieldAlert, questionType: "macro_crash",    color: "text-purple-400" },
   { label: "板塊輪動分析", icon: RefreshCw,   questionType: "macro_rotation", color: "text-purple-400" },
+  { label: "XX類股趨勢",   icon: Search,      questionType: "macro_sector",   color: "text-purple-400" },
+  { label: "潛力股介紹",   icon: Star,        questionType: "macro_discover", color: "text-purple-400" },
 ];
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -68,6 +70,8 @@ export default function AIInsights() {
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [customQuestion, setCustomQuestion] = useState("");
+  const [sectorName, setSectorName] = useState("");
+  const [showSectorInput, setShowSectorInput] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
   // Reset when symbol changes
@@ -76,6 +80,7 @@ export default function AIInsights() {
     setLastSymbol(activeSymbol);
     setGeneratedPrompt("");
     setCustomQuestion("");
+    setShowSectorInput(false);
   }
 
   const { data: watchlist } = useQuery<WatchlistItem[]>({
@@ -147,9 +152,10 @@ export default function AIInsights() {
   // ─── Prompt Group ──────────────────────────────────────────────────────────
 
   function PromptGroup({
-    title, prompts, badge, badgeClass,
+    title, prompts, badge, badgeClass, onButtonClick,
   }: {
     title: string; prompts: QuickPrompt[]; badge: string; badgeClass: string;
+    onButtonClick?: (questionType: string) => void;
   }) {
     return (
       <div className="space-y-1.5">
@@ -166,7 +172,7 @@ export default function AIInsights() {
               variant="outline"
               size="sm"
               className={cn("gap-1.5 text-xs h-7 px-2.5", qp.color)}
-              onClick={() => handleBuildPrompt(qp.questionType)}
+              onClick={() => onButtonClick ? onButtonClick(qp.questionType) : handleBuildPrompt(qp.questionType)}
               disabled={isLoading}
             >
               <qp.icon className="w-3 h-3" />
@@ -224,7 +230,47 @@ export default function AIInsights() {
           prompts={MACRO_PROMPTS}
           badge="總體分析"
           badgeClass="border-purple-400/40 text-purple-400"
+          onButtonClick={(qt) => {
+            if (qt === "macro_sector") {
+              setShowSectorInput((v) => !v);
+            } else {
+              setShowSectorInput(false);
+              handleBuildPrompt(qt);
+            }
+          }}
         />
+        {showSectorInput && (
+          <div className="flex items-center gap-2 pl-0.5 pt-0.5">
+            <input
+              autoFocus
+              type="text"
+              value={sectorName}
+              onChange={(e) => setSectorName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && sectorName.trim()) {
+                  setShowSectorInput(false);
+                  handleBuildPrompt("macro_sector", sectorName.trim());
+                }
+                if (e.key === "Escape") setShowSectorInput(false);
+              }}
+              placeholder="輸入類股名稱，例如：AI半導體、生技醫療…"
+              className="flex-1 h-7 px-2.5 text-xs rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-purple-400/60"
+            />
+            <Button
+              size="sm"
+              className="h-7 px-3 text-xs"
+              disabled={!sectorName.trim() || isLoading}
+              onClick={() => {
+                if (sectorName.trim()) {
+                  setShowSectorInput(false);
+                  handleBuildPrompt("macro_sector", sectorName.trim());
+                }
+              }}
+            >
+              分析
+            </Button>
+          </div>
+        )}
       </Card>
 
       {/* Custom Question */}

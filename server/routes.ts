@@ -785,6 +785,35 @@ export async function registerRoutes(
 結合上述板塊 ETF 近 1 月漲跌數據，分析目前資金輪動方向。
 結合我的投資組合持倉明細，評估：板塊輪動趨勢對我現有各持股是利多還是利空？我的持倉板塊集中度是否過高？是否有需要汰換或加碼的板塊？給出具體的倉位輪動建議。`,
 
+      macro_sector: `請搜尋目前「XX類股」板塊的最新動態（請將 XX 替換為實際類股名稱，例如：AI半導體、生技醫療、核能電力、網路安全、太空科技等）。
+分析方向：
+1.【板塊整體走勢】近期該板塊的漲跌趨勢、相對大盤強弱、資金流入/流出狀況。
+2.【代表性指標股介紹】列出該板塊 3-5 檔最具代表性的龍頭股或高成長潛力股，針對每一檔說明：公司主要業務與競爭優勢、近期技術面走勢（趨勢、關鍵支撐/壓力位）、基本面重點（營收成長率、毛利率、EPS 趨勢、PE 估值）、近期催化劑（財報、新品、合約、政策）。
+3.【操作建議】目前是否為該板塊布局的好時機？資金輪動方向對該板塊是否有利？短中期風險因子有哪些？
+結合上述我的投資組合持倉明細，若我已有持倉在此板塊，評估現有持股與龍頭股的相對強弱，給出加碼/減碼/換股建議。`,
+
+      macro_discover: `今天日期：{TODAY}。
+我希望你幫我從美股市場中，找出目前不在我自選名單內、但在未來 3–5 年極具投資潛力的個股（3–5 檔）。
+
+【我目前的自選清單（請排除這些）】
+{WATCHLIST}
+
+請依照以下多維度篩選框架進行挑選，並說明篩選邏輯：
+1.【未來技術趨勢】AI Agent / 機器人 / 量子運算 / 下一代半導體 / 新能源 / 生技創新等長期成長主題中，哪些細分賽道目前資金最為集中、護城河最深？
+2.【經濟與市場現況】結合目前 Fed 利率環境、通膨走勢、美元強弱、信用市場，哪類股票在此環境下最具結構性優勢（如高現金流、定價能力、出口受益等）？
+3.【近期新聞焦點與催化劑】搜尋最近 30 天內市場關注度快速上升的題材（例如：AI 資料中心需求、GLP-1 藥物、核電復興、國防預算、重返太空等），哪些個股是直接受益者？
+4.【法人籌碼追蹤】搜尋近期機構大幅加倉、分析師上調目標價、或出現異常大量買入的個股，篩選出籌碼面乾淨、機構持股增加的標的。
+
+【輸出格式】針對每一檔推薦股，請提供：
+- 股票代碼與公司名稱
+- 核心投資論點（2-3 句）
+- 近期技術面走勢（趨勢方向、關鍵位置）
+- 基本面數據（營收成長、毛利率、EPS 預估、PE/PS 估值）
+- 近期催化劑與潛在風險
+- 進場參考區間
+
+最後總結：目前市場環境下，以上哪 1–2 檔的風險報酬比最佳？`,
+
       default: `請搜尋相關最新資訊，結合以上數據給出整合性回答。`,
     };
 
@@ -827,7 +856,30 @@ ${search}${questionPart}
       } else {
         ctx = buildStockContext(symbol, market, price ?? 0, change ?? 0, name);
       }
-      const prompt = buildUserPrompt(ctx, questionType, customQuestion);
+      // For macro_sector / macro_discover, customQuestion is used as a parameter (sector name),
+      // not as a freeform question to append — suppress it from buildUserPrompt
+      const suppressCustomQ = questionType === "macro_sector" || questionType === "macro_discover";
+      let prompt = buildUserPrompt(ctx, questionType, suppressCustomQ ? undefined : customQuestion);
+
+      // For macro_sector: replace XX placeholder with actual sector name from customQuestion
+      if (questionType === "macro_sector" && customQuestion) {
+        prompt = prompt.replace(/XX/g, customQuestion);
+      }
+
+      // For macro_discover: inject watchlist symbols and today's date
+      if (questionType === "macro_discover") {
+        const today = new Date().toISOString().slice(0, 10);
+        try {
+          const wl = await storage.getWatchlist();
+          const watchlistStr = wl.map((w: { symbol: string; name: string; market: string }) =>
+            `${w.market} ${w.symbol}（${w.name}）`
+          ).join("、");
+          prompt = prompt.replace("{TODAY}", today).replace("{WATCHLIST}", watchlistStr || "（無）");
+        } catch {
+          prompt = prompt.replace("{TODAY}", new Date().toISOString().slice(0, 10)).replace("{WATCHLIST}", "（讀取失敗）");
+        }
+      }
+
       res.json({ prompt });
     } catch (error: any) {
       console.error("build-prompt error:", error.message);
