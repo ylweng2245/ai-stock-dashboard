@@ -1704,40 +1704,44 @@ export default function TechnicalAnalysis() {
               <ComposedChart data={extendedChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} interval={extendedXInterval} />
-                <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} width={65} tickFormatter={(v) => v.toLocaleString()} />
+                <YAxis yAxisId="price" domain={["auto", "auto"]} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} width={65} tickFormatter={(v) => v.toLocaleString()} />
+                <YAxis yAxisId="vol" orientation="right" hide domain={[0, (dataMax: number) => dataMax * 5]} />
                 <Tooltip content={<BollingerTooltip />} />
+
+                {/* == Volume bars — lowest layer, scaled to ~20% chart height == */}
+                <Bar yAxisId="vol" dataKey="volume" fill="#1cb8be" opacity={0.25} radius={[1,1,0,0]} isAnimationActive={false} legendType="none" />
 
                 {/* == Prediction channel bands (rendered first = lowest layer) == */}
                 {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
                   <>
-                    <Area type="monotone" dataKey="cmpUpper" stroke="none" fill="#EAB308" fillOpacity={0.08} connectNulls={false} isAnimationActive={false} legendType="none" />
-                    <Area type="monotone" dataKey="cmpLower" stroke="none" fill="hsl(var(--background))" fillOpacity={0.5} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area yAxisId="price" type="monotone" dataKey="cmpUpper" stroke="none" fill="#EAB308" fillOpacity={0.08} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area yAxisId="price" type="monotone" dataKey="cmpLower" stroke="none" fill="hsl(var(--background))" fillOpacity={0.5} connectNulls={false} isAnimationActive={false} legendType="none" />
                   </>
                 )}
                 {showPredOverlay && predPoints.length > 0 && (
                   <>
-                    <Area type="monotone" dataKey="predUpper" stroke="none" fill="#F97316" fillOpacity={0.12} connectNulls={false} isAnimationActive={false} legendType="none" />
-                    <Area type="monotone" dataKey="predLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area yAxisId="price" type="monotone" dataKey="predUpper" stroke="none" fill="#F97316" fillOpacity={0.12} connectNulls={false} isAnimationActive={false} legendType="none" />
+                    <Area yAxisId="price" type="monotone" dataKey="predLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} connectNulls={false} isAnimationActive={false} legendType="none" />
                   </>
                 )}
 
                 {/* == Prediction median lines (above bands, below Bollinger+K-line) == */}
                 {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
-                  <Line type="monotone" dataKey="cmpMedian" stroke="#EAB308" strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} name="對比預測" legendType="none" />
+                  <Line yAxisId="price" type="monotone" dataKey="cmpMedian" stroke="#EAB308" strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} name="對比預測" legendType="none" />
                 )}
                 {showPredOverlay && predPoints.length > 0 && (
-                  <Line type="monotone" dataKey="predMedian" stroke="#F97316" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} name="ML預測中位數" legendType="none" />
+                  <Line yAxisId="price" type="monotone" dataKey="predMedian" stroke="#F97316" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} name="ML預測中位數" legendType="none" />
                 )}
 
                 {/* == Bollinger + K-line rendered on top == */}
-                <Area type="monotone" dataKey="bbUpper" stroke="none" fill="hsl(var(--chart-1))" fillOpacity={0.06} />
-                <Area type="monotone" dataKey="bbLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} />
-                <Line type="monotone" dataKey="bbUpper" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林上軌" />
-                <Line type="monotone" dataKey="bbMiddle" stroke="hsl(var(--muted-foreground))" strokeWidth={1} strokeDasharray="2 2" dot={false} name="中軌" />
-                <Line type="monotone" dataKey="bbLower" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林下軌" />
-                <Line type="monotone" dataKey="close" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} name="收盤價" />
+                <Area yAxisId="price" type="monotone" dataKey="bbUpper" stroke="none" fill="hsl(var(--chart-1))" fillOpacity={0.06} />
+                <Area yAxisId="price" type="monotone" dataKey="bbLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} />
+                <Line yAxisId="price" type="monotone" dataKey="bbUpper" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林上軌" />
+                <Line yAxisId="price" type="monotone" dataKey="bbMiddle" stroke="hsl(var(--muted-foreground))" strokeWidth={1} strokeDasharray="2 2" dot={false} name="中軌" />
+                <Line yAxisId="price" type="monotone" dataKey="bbLower" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林下軌" />
+                <Line yAxisId="price" type="monotone" dataKey="close" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} name="收盤價" />
                 {/* Buy/sell trade dots */}
-                <Line
+                <Line yAxisId="price"
                   type="monotone"
                   dataKey="tradeDot"
                   stroke="none"
@@ -1774,7 +1778,7 @@ export default function TechnicalAnalysis() {
                     ? avg > currentPrice ? "#ef4444" : avg < currentPrice ? "#10b981" : "#ffffff"
                     : "#ffffff";
                   return (
-                    <ReferenceLine
+                    <ReferenceLine yAxisId="price"
                       y={avg}
                       stroke={avgLineColor}
                       strokeWidth={1}
@@ -1786,7 +1790,7 @@ export default function TechnicalAnalysis() {
                 })()}
                 {/* Analyst T-marker: rendered as custom dots on a dedicated Line at close price */}
                 {visibleOverlayEvents.length > 0 && (
-                  <Line
+                  <Line yAxisId="price"
                     type="monotone"
                     dataKey="analystDot"
                     stroke="none"
@@ -1810,14 +1814,14 @@ export default function TechnicalAnalysis() {
 
                 {/* baseDate vertical markers (rendered on top of everything) */}
                 {showPredOverlay && latestPrediction?.baseDate && (
-                  <ReferenceLine x={latestPrediction.baseDate.slice(5)} stroke="#9CA3AF" strokeWidth={1} strokeDasharray="4 3" opacity={0.6} label={false} />
+                  <ReferenceLine yAxisId="price" x={latestPrediction.baseDate.slice(5)} stroke="#9CA3AF" strokeWidth={1} strokeDasharray="4 3" opacity={0.6} label={false} />
                 )}
                 {showPredOverlay && comparePrediction?.baseDate && compareBaseDateVisible && (
-                  <ReferenceLine x={comparePrediction.baseDate.slice(5)} stroke="#EAB308" strokeWidth={1} strokeDasharray="3 3" opacity={0.4} label={false} />
+                  <ReferenceLine yAxisId="price" x={comparePrediction.baseDate.slice(5)} stroke="#EAB308" strokeWidth={1} strokeDasharray="3 3" opacity={0.4} label={false} />
                 )}
                 {/* Alert price lines */}
                 {symbolAlerts.filter(a => a.alertType === 'price' && a.targetPrice).map(a => (
-                  <ReferenceLine
+                  <ReferenceLine yAxisId="price"
                     key={a.id}
                     y={a.targetPrice!}
                     stroke={a.direction === 'above' ? '#ef4444' : '#10b981'}
@@ -1833,33 +1837,6 @@ export default function TechnicalAnalysis() {
         </CardContent>
       </Card>
 
-      {/* 成交量子圖 */}
-      <Card className="border-border">
-        <CardHeader className="pb-1 pt-3 px-4">
-          <CardTitle className="text-xs font-medium text-muted-foreground">成交量</CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          <ResponsiveContainer width="100%" height={80}>
-            <ComposedChart data={extendedChartData} margin={{ top: 2, right: 10, left: 0, bottom: 0 }}>
-              <XAxis dataKey="date" tick={false} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} width={45}
-                tickFormatter={(v: number) => v >= 1e6 ? `${(v/1e6).toFixed(0)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : String(v)} />
-              <Tooltip
-                contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 11 }}
-                formatter={(v: any) => [v >= 1e6 ? `${(v/1e6).toFixed(2)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : v, "成交量"]}
-              />
-              <Bar dataKey="volume"
-                fill="#1cb8be"
-                opacity={0.5}
-                radius={[1,1,0,0]}
-                isAnimationActive={false}
-              />
-              {/* 20日均量線 */}
-              <Line dataKey="vol20ma" stroke="hsl(var(--muted-foreground))" strokeWidth={1} dot={false} strokeDasharray="3 3" connectNulls />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
 
       {/* Stock Alert Card */}
       <StockAlertCard
