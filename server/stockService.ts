@@ -637,6 +637,7 @@ async function fetchTWSEHistory(symbol: string, months = 3): Promise<HistoryResu
 interface FinanceQuoteRow {
   symbol: string;
   name: string;
+  market_status?: string;  // "regular" | "after_hours" | "pre_market" | "closed"
   price: number;
   change: number;
   changesPercentage: number;
@@ -646,6 +647,9 @@ interface FinanceQuoteRow {
   open: number;
   previousClose: number;
   timestamp: string;   // ISO datetime "2026-04-15 14:21:59 UTC"
+  afterHoursPrice?: number | null;
+  afterHoursChange?: number | null;
+  afterHoursPercentChange?: number | null;
 }
 
 /**
@@ -667,10 +671,17 @@ function parseFinanceQuotesContent(content: string): FinanceQuoteRow[] {
     const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
     if (cells.length < 13) continue;
 
+    // Columns: symbol(0) name(1) timestamp(2) fetched_at(3) market_status(4) price(5) change(6) changesPercentage(7)
+    // volume(8) dayHigh(9) dayLow(10) open(11) previousClose(12) [afterHoursPrice(13) afterHoursChange(14) afterHoursPercentChange(15)]
+    const ahPrice = cells.length > 13 ? num(cells[13]) : null;
+    const ahChange = cells.length > 14 ? num(cells[14]) : null;
+    const ahPct = cells.length > 15 ? num(cells[15]) : null;
+
     rows.push({
       symbol: cells[0],
       name: cells[1],
       timestamp: cells[2],
+      market_status: cells[4] ?? undefined,
       price: num(cells[5]),
       change: num(cells[6]),
       changesPercentage: num(cells[7]),
@@ -679,6 +690,9 @@ function parseFinanceQuotesContent(content: string): FinanceQuoteRow[] {
       dayLow: num(cells[10]),
       open: num(cells[11]),
       previousClose: num(cells[12]),
+      afterHoursPrice: ahPrice || null,
+      afterHoursChange: ahChange || null,
+      afterHoursPercentChange: ahPct || null,
     });
   }
   return rows;
@@ -691,7 +705,7 @@ function parseFinanceQuotesContent(content: string): FinanceQuoteRow[] {
  */
 async function fetchFinanceQuotes(
   symbols: string[],
-  fields: string[] = ["price", "change", "changesPercentage", "volume", "dayHigh", "dayLow", "open", "previousClose"]
+  fields: string[] = ["price", "change", "changesPercentage", "volume", "dayHigh", "dayLow", "open", "previousClose", "afterHoursPrice", "afterHoursChange", "afterHoursPercentChange"]
 ): Promise<FinanceQuoteRow[]> {
   if (symbols.length === 0) return [];
 
@@ -769,10 +783,28 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
     sourceUrl: `https://perplexity.ai/finance/${row.symbol.replace("^", "")}`,
     // Stale only if data is from a previous calendar day (TPE UTC+8)
     isStale: finIsStale,
-    // Finance API 不區分狀態，統一補預設値（指數用）
-    marketState: "REGULAR" as StockQuote["marketState"],
-    priceLabel: "即時",
+    // Derive marketState from finance connector market_status field
+    marketState: (() => {
+      const ms = (row.market_status ?? "").toLowerCase();
+      if (ms === "pre_market") return "PRE";
+      if (ms === "after_hours") return "POST";
+      if (ms === "regular") return "REGULAR";
+      return "CLOSED";
+    })() as StockQuote["marketState"],
+    priceLabel: (() => {
+      const ms = (row.market_status ?? "").toLowerCase();
+      if (ms === "pre_market") return "盤前";
+      if (ms === "after_hours") return "盤後";
+      if (ms === "regular") return "即時";
+      return "收盤";
+    })(),
     quoteStatus: finIsStale ? "stale" : "fresh",
+    preMarketPrice: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursPrice ?? null) : null,
+    preMarketChange: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursChange ?? null) : null,
+    preMarketChangePercent: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursPercentChange ?? null) : null,
+    postMarketPrice: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursPrice ?? null) : null,
+    postMarketChange: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursChange ?? null) : null,
+    postMarketChangePercent: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursPercentChange ?? null) : null,
   };
 }
 
