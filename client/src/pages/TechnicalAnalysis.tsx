@@ -1708,9 +1708,6 @@ export default function TechnicalAnalysis() {
                 <YAxis yAxisId="vol" orientation="right" hide domain={[0, (dataMax: number) => dataMax * 5]} />
                 <Tooltip content={<BollingerTooltip />} />
 
-                {/* == Volume bars — lowest layer, scaled to ~20% chart height == */}
-                <Bar yAxisId="vol" dataKey="volume" fill="#1cb8be" opacity={0.25} radius={[1,1,0,0]} isAnimationActive={false} legendType="none" />
-
                 {/* == Prediction channel bands (rendered first = lowest layer) == */}
                 {showPredOverlay && comparePredPoints.length > 0 && compareBaseDateVisible && (
                   <>
@@ -1736,6 +1733,9 @@ export default function TechnicalAnalysis() {
                 {/* == Bollinger + K-line rendered on top == */}
                 <Area yAxisId="price" type="monotone" dataKey="bbUpper" stroke="none" fill="hsl(var(--chart-1))" fillOpacity={0.06} />
                 <Area yAxisId="price" type="monotone" dataKey="bbLower" stroke="none" fill="hsl(var(--background))" fillOpacity={1} />
+
+                {/* == Volume bars — after background mask, below K-line == */}
+                <Bar yAxisId="vol" dataKey="volume" fill="#1cb8be" opacity={0.3} radius={[1,1,0,0]} isAnimationActive={false} legendType="none" />
                 <Line yAxisId="price" type="monotone" dataKey="bbUpper" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林上軌" />
                 <Line yAxisId="price" type="monotone" dataKey="bbMiddle" stroke="hsl(var(--muted-foreground))" strokeWidth={1} strokeDasharray="2 2" dot={false} name="中軌" />
                 <Line yAxisId="price" type="monotone" dataKey="bbLower" stroke="hsl(var(--chart-1))" strokeWidth={1} strokeDasharray="4 4" dot={false} name="布林下軌" />
