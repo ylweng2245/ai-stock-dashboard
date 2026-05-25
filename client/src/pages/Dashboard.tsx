@@ -1563,10 +1563,11 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
 
   return (
     <div
-      className="flex items-center justify-between py-2.5 px-3 rounded-md hover:bg-muted/30 transition-colors group"
+      className="flex items-center py-2.5 px-3 rounded-md hover:bg-muted/30 transition-colors group"
       data-testid={`stock-row-${stock.symbol}`}
     >
-      <div className="flex items-center gap-3 min-w-0">
+      {/* 股票名稱 — flex-1 吸收剩餘空間 */}
+      <div className="flex items-center gap-3 min-w-0 flex-1">
         <div className="w-9 h-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
           <span className="text-[10px] font-semibold text-primary">{stock.market}</span>
         </div>
@@ -1586,30 +1587,28 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
         </div>
       </div>
 
-      {/* 盤前/盤後價格欄 — 美股專屬，固定 88px 右對齊，有無 badge 寬度一致 */}
+      {/* 盤前/盤後 — 美股專屬，固定 80px 右對齊，無資料時隔位空白 */}
       {stock.market === "US" && (
-        <div className="hidden sm:flex items-center justify-end w-[88px] shrink-0 mr-3">
+        <div className="hidden sm:block w-[80px] shrink-0 text-right mr-4">
           {extInfo && (
-            <div className={cn(
-              "flex flex-col items-end px-2 py-1 rounded border w-full",
-              extInfo.bgClass
-            )}>
-              <span className="text-[9px] text-muted-foreground font-medium tracking-wide leading-none mb-0.5">
+            <div className={cn(extInfo.colorClass)}>
+              <div className="text-[9px] text-muted-foreground font-medium tracking-wide leading-none mb-0.5">
                 {extInfo.label}
-              </span>
-              <span className={cn("text-xs font-semibold tabular-nums leading-none", extInfo.colorClass)}>
+              </div>
+              <div className="text-xs font-semibold tabular-nums leading-none">
                 ${extInfo.price.toLocaleString()}
-              </span>
-              <span className={cn("text-[10px] tabular-nums leading-none mt-0.5", extInfo.colorClass)}>
+              </div>
+              <div className="text-[10px] tabular-nums leading-none mt-0.5">
                 {extInfo.changePct.toFixed(2)}%
-              </span>
+              </div>
             </div>
           )}
         </div>
       )}
 
-      <div className="flex items-center gap-2">
-        <div className="text-right shrink-0">
+      {/* 現價 + 漲跌幅 + 刪除 */}
+      <div className="flex items-center gap-2 shrink-0">
+        <div className="text-right">
           <div className="text-sm font-medium tabular-nums">
             {stock.market === "TW" ? "NT" : "$"}{stock.price.toLocaleString()}
           </div>
