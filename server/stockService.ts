@@ -575,8 +575,13 @@ async function fetchUSQuotesYFinance(
   const syms = symbols.map((s) => s.symbol).join(" ");
   const nameMap = new Map(symbols.map((s) => [s.symbol, s.name]));
 
-  const script = `
-import yfinance as yf, json, sys
+  // Write script to a temp file to avoid shell escaping issues on Windows
+  const { writeFileSync } = await import("fs");
+  const { tmpdir } = await import("os");
+  const { join } = await import("path");
+  const tmpFile = join(tmpdir(), `yfinance_quotes_${Date.now()}.py`);
+
+  const script = `import yfinance as yf, json, sys
 tickers = yf.Tickers('${syms}')
 results = []
 for sym, t in tickers.tickers.items():
@@ -609,7 +614,8 @@ print(json.dumps(results))
 `;
 
   try {
-    const raw = execSync(`python3 -c "${script.replace(/"/g, '\\"').replace(/\n/g, '\n')}"`,
+    writeFileSync(tmpFile, script, 'utf8');
+    const raw = execSync(`python3 "${tmpFile}"`,
       { timeout: 45_000, maxBuffer: 1024 * 1024 * 4 }).toString().trim();
     // find JSON array in output
     const jsonStart = raw.lastIndexOf('[');
@@ -670,6 +676,9 @@ print(json.dumps(results))
   } catch (e: any) {
     console.error(`[fetchUSQuotesYFinance] failed: ${e.message}`);
     return []; // caller will fallback to Spark
+  } finally {
+    // Clean up temp file
+    try { (await import("fs")).unlinkSync(tmpFile); } catch {}
   }
 }
 
