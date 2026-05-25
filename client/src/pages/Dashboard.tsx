@@ -1546,8 +1546,8 @@ function getExtendedInfo(stock: StockQuote): {
       colorClass: pct >= 0 ? "text-gain" : "text-loss",
       bgClass: pct >= 0 ? "bg-gain/10 border-gain/20" : "bg-loss/10 border-loss/20" };
   }
-  // Show post-market whenever available (POST, CLOSED, or holiday)
-  if (stock.postMarketPrice != null && (stock.postMarketChangePercent ?? 0) !== 0) {
+  // Show post-market only when NOT in regular trading session
+  if (state !== "REGULAR" && stock.postMarketPrice != null && (stock.postMarketChangePercent ?? 0) !== 0) {
     const pct = stock.postMarketChangePercent ?? 0;
     return { label: "盤後", price: stock.postMarketPrice, changePct: pct,
       colorClass: pct >= 0 ? "text-gain" : "text-loss",
@@ -1586,12 +1586,12 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
         </div>
       </div>
 
-      {/* 盤前/盤後價格欄 — 美股專屬，置中展示 */}
+      {/* 盤前/盤後價格欄 — 美股專屬，固定 88px 右對齊，有無 badge 寬度一致 */}
       {stock.market === "US" && (
-        <div className="hidden sm:flex flex-1 justify-center px-3">
-          {extInfo ? (
+        <div className="hidden sm:flex items-center justify-end w-[88px] shrink-0 mr-3">
+          {extInfo && (
             <div className={cn(
-              "flex flex-col items-center px-2.5 py-1 rounded border shrink-0 min-w-[68px]",
+              "flex flex-col items-end px-2 py-1 rounded border w-full",
               extInfo.bgClass
             )}>
               <span className="text-[9px] text-muted-foreground font-medium tracking-wide leading-none mb-0.5">
@@ -1604,8 +1604,6 @@ function StockRow({ stock, onRemove }: { stock: StockQuote; onRemove?: () => voi
                 {extInfo.changePct.toFixed(2)}%
               </span>
             </div>
-          ) : (
-            <div className="w-[68px]" />
           )}
         </div>
       )}
