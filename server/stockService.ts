@@ -251,18 +251,6 @@ async function fetchWithRetry(url: string, extraHeaders: Record<string, string> 
 }
 
 // ---------------------------------------------------------------------------
-// external-tool CLI helper (Perplexity Finance connector)
-// ---------------------------------------------------------------------------
-
-function callExternalTool(sourceId: string, toolName: string, args: Record<string, any>): any {
-  const params = JSON.stringify({ source_id: sourceId, tool_name: toolName, arguments: args });
-  // Use double-quote shell escaping to avoid issues with single quotes in JSON
-  const escaped = params.replace(/'/g, "'\\''");
-  const raw = execSync(`external-tool call '${escaped}'`, { timeout: 30_000 }).toString();
-  return JSON.parse(raw);
-}
-
-// ---------------------------------------------------------------------------
 // Stock metadata (default watchlist — will be merged with DB watchlist)
 // ---------------------------------------------------------------------------
 
@@ -576,6 +564,115 @@ async function fetchUSQuotesSpark(
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// US: yfinance-based quote fetch (supports pre/post market)
+// ---------------------------------------------------------------------------
+async function fetchUSQuotesYFinance(
+  symbols: Array<{ symbol: string; name: string }>
+): Promise<StockQuote[]> {
+  if (symbols.length === 0) return [];
+
+  const syms = symbols.map((s) => s.symbol).join(" ");
+  const nameMap = new Map(symbols.map((s) => [s.symbol, s.name]));
+
+  const script = `
+import yfinance as yf, json, sys
+tickers = yf.Tickers('${syms}')
+results = []
+for sym, t in tickers.tickers.items():
+    try:
+        info = t.info
+        results.append({
+            'symbol': sym,
+            'marketState': info.get('marketState','CLOSED'),
+            'regularMarketPrice': info.get('regularMarketPrice') or info.get('currentPrice'),
+            'regularMarketChange': info.get('regularMarketChange',0),
+            'regularMarketChangePercent': info.get('regularMarketChangePercent',0),
+            'regularMarketVolume': info.get('regularMarketVolume',0),
+            'regularMarketDayHigh': info.get('regularMarketDayHigh',0),
+            'regularMarketDayLow': info.get('regularMarketDayLow',0),
+            'regularMarketOpen': info.get('regularMarketOpen',0),
+            'previousClose': info.get('regularMarketPreviousClose') or info.get('previousClose',0),
+            'regularMarketTime': info.get('regularMarketTime',0),
+            'postMarketPrice': info.get('postMarketPrice'),
+            'postMarketChange': info.get('postMarketChange'),
+            'postMarketChangePercent': info.get('postMarketChangePercent'),
+            'postMarketTime': info.get('postMarketTime'),
+            'preMarketPrice': info.get('preMarketPrice'),
+            'preMarketChange': info.get('preMarketChange'),
+            'preMarketChangePercent': info.get('preMarketChangePercent'),
+            'preMarketTime': info.get('preMarketTime'),
+        })
+    except Exception as e:
+        results.append({'symbol': sym, 'error': str(e)})
+print(json.dumps(results))
+`;
+
+  try {
+    const raw = execSync(`python3 -c "${script.replace(/"/g, '\\"').replace(/\n/g, '\n')}"`,
+      { timeout: 45_000, maxBuffer: 1024 * 1024 * 4 }).toString().trim();
+    // find JSON array in output
+    const jsonStart = raw.lastIndexOf('[');
+    if (jsonStart === -1) throw new Error('No JSON in yfinance output');
+    const rows: any[] = JSON.parse(raw.slice(jsonStart));
+    const now = Date.now();
+    const quotes: StockQuote[] = [];
+
+    for (const r of rows) {
+      if (r.error || !r.regularMarketPrice) continue;
+      const price = +(r.regularMarketPrice ?? 0).toFixed(2);
+      const prevClose = +(r.previousClose ?? price).toFixed(2);
+      const change = +(r.regularMarketChange ?? price - prevClose).toFixed(2);
+      const changePct = +(r.regularMarketChangePercent ?? 0).toFixed(2);
+      const marketState = normalizeMarketState(r.marketState);
+      const priceLabel = marketStateLabel(marketState);
+      const isStale = isDataFromPreviousDay(r.regularMarketTime ?? 0);
+
+      const preP  = r.preMarketPrice  != null ? +(r.preMarketPrice).toFixed(2)  : null;
+      const postP = r.postMarketPrice != null ? +(r.postMarketPrice).toFixed(2) : null;
+      const preChgPct  = r.preMarketChangePercent  != null ? +(r.preMarketChangePercent).toFixed(2)  : null;
+      const postChgPct = r.postMarketChangePercent != null ? +(r.postMarketChangePercent).toFixed(2) : null;
+      const preChg  = r.preMarketChange  != null ? +(r.preMarketChange).toFixed(2)  : null;
+      const postChg = r.postMarketChange != null ? +(r.postMarketChange).toFixed(2) : null;
+
+      quotes.push({
+        symbol: r.symbol,
+        name: nameMap.get(r.symbol) ?? r.symbol,
+        price,
+        change,
+        changePercent: changePct,
+        volume: r.regularMarketVolume ?? 0,
+        high:  +(r.regularMarketDayHigh ?? price).toFixed(2),
+        low:   +(r.regularMarketDayLow  ?? price).toFixed(2),
+        open:  +(r.regularMarketOpen    ?? price).toFixed(2),
+        prevClose,
+        market: "US",
+        currency: "USD",
+        dataTimestamp: r.regularMarketTime ?? Math.floor(now / 1000),
+        fetchedAt: now,
+        source: "Yahoo Finance (yfinance)",
+        sourceUrl: `https://finance.yahoo.com/quote/${r.symbol}`,
+        isStale,
+        marketState,
+        priceLabel,
+        quoteStatus: isStale ? "stale" : "fresh",
+        preMarketPrice: preP,
+        preMarketChange: preChg,
+        preMarketChangePercent: preChgPct,
+        preMarketTime: r.preMarketTime ?? null,
+        postMarketPrice: postP,
+        postMarketChange: postChg,
+        postMarketChangePercent: postChgPct,
+        postMarketTime: r.postMarketTime ?? null,
+      });
+    }
+    return quotes;
+  } catch (e: any) {
+    console.error(`[fetchUSQuotesYFinance] failed: ${e.message}`);
+    return []; // caller will fallback to Spark
+  }
+}
+
 // TW: TWSE historical (afterTrading STOCK_DAY)
 // ---------------------------------------------------------------------------
 
@@ -631,191 +728,9 @@ async function fetchTWSEHistory(symbol: string, months = 3): Promise<HistoryResu
 }
 
 // ---------------------------------------------------------------------------
-// US: Perplexity Finance API — real-time quotes (batch, instant)
-// ---------------------------------------------------------------------------
+// US: Perplexity Finance API (removed — external-tool CLI not available on Windows server)
 
-interface FinanceQuoteRow {
-  symbol: string;
-  name: string;
-  market_status?: string;  // "regular" | "after_hours" | "pre_market" | "closed"
-  price: number;
-  change: number;
-  changesPercentage: number;
-  volume: number;
-  dayHigh: number;
-  dayLow: number;
-  open: number;
-  previousClose: number;
-  timestamp: string;   // ISO datetime "2026-04-15 14:21:59 UTC"
-  afterHoursPrice?: number | null;
-  afterHoursChange?: number | null;
-  afterHoursPercentChange?: number | null;
-}
 
-/**
- * Parse the markdown table rows from the finance_quotes content into typed rows.
- * The content has multiple ## sections, each with a markdown table.
- */
-function parseFinanceQuotesContent(content: string): FinanceQuoteRow[] {
-  const rows: FinanceQuoteRow[] = [];
-  const num = (s: string | undefined) => parseFloat((s ?? "").replace(/,/g, "")) || 0;
-  const numOrNull = (s: string | undefined) => { const v = parseFloat((s ?? "").replace(/,/g, "")); return isNaN(v) ? null : v; };
-
-  const lines = content.split("\n");
-  let headers: string[] = [];
-
-  for (const line of lines) {
-    if (!line.startsWith("| ")) continue;
-    if (line.includes("---")) continue;
-
-    const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
-    if (cells.length < 3) continue;
-
-    // Detect header row by presence of 'symbol' column
-    if (cells[0] === "symbol" || (cells.includes("symbol") && cells.includes("name"))) {
-      headers = cells;
-      continue;
-    }
-
-    if (headers.length === 0) continue; // no header seen yet
-
-    // Build a map from column name to value
-    const col: Record<string, string> = {};
-    headers.forEach((h, i) => { col[h] = cells[i] ?? ""; });
-
-    rows.push({
-      symbol:               col["symbol"] ?? "",
-      name:                 col["name"] ?? "",
-      timestamp:            col["timestamp"] ?? "",
-      market_status:        col["market_status"] || undefined,
-      price:                num(col["price"]),
-      change:               num(col["change"]),
-      changesPercentage:    num(col["changesPercentage"]),
-      volume:               num(col["volume"]),
-      dayHigh:              num(col["dayHigh"]),
-      dayLow:               num(col["dayLow"]),
-      open:                 num(col["open"]),
-      previousClose:        num(col["previousClose"]),
-      afterHoursPrice:      numOrNull(col["afterHoursPrice"]),
-      afterHoursChange:     numOrNull(col["afterHoursChange"]),
-      afterHoursPercentChange: numOrNull(col["afterHoursPercentChange"]),
-    });
-  }
-  return rows;
-}
-
-/**
- * Fetch US stock quotes via Perplexity Finance connector.
- * Splits into chunks of ≤15 symbols and runs chunks in parallel (max 4 concurrent).
- * Returns combined rows from all successful chunks.
- */
-async function fetchFinanceQuotes(
-  symbols: string[],
-  fields: string[] = ["price", "change", "changesPercentage", "volume", "dayHigh", "dayLow", "open", "previousClose", "afterHoursPrice", "afterHoursChange", "afterHoursPercentChange"]
-): Promise<FinanceQuoteRow[]> {
-  if (symbols.length === 0) return [];
-
-  const CHUNK_SIZE = 15;
-  const MAX_CONCURRENT = 4;
-  const chunks: string[][] = [];
-  for (let i = 0; i < symbols.length; i += CHUNK_SIZE) {
-    chunks.push(symbols.slice(i, i + CHUNK_SIZE));
-  }
-
-  const allRows: FinanceQuoteRow[] = [];
-
-  // Process chunks in parallel batches of MAX_CONCURRENT
-  for (let i = 0; i < chunks.length; i += MAX_CONCURRENT) {
-    const parallelChunks = chunks.slice(i, i + MAX_CONCURRENT);
-    const results = await Promise.allSettled(
-      parallelChunks.map((chunk) =>
-        new Promise<FinanceQuoteRow[]>((resolve, reject) => {
-          try {
-            const result = callExternalTool("finance", "finance_quotes", {
-              ticker_symbols: chunk,
-              fields,
-            });
-            const content = result?.result?.content ?? result?.content ?? "";
-            resolve(parseFinanceQuotesContent(content));
-          } catch (e) {
-            reject(e);
-          }
-        })
-      )
-    );
-
-    for (const r of results) {
-      if (r.status === "fulfilled") {
-        allRows.push(...r.value);
-      } else {
-        console.error(`Finance connector chunk error:`, (r.reason as any)?.message);
-      }
-    }
-  }
-
-  return allRows;
-}
-
-/**
- * Convert a FinanceQuoteRow to our StockQuote format.
- */
-function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideName?: string): StockQuote {
-  const now = Date.now();
-  // Parse timestamp like "2026-04-15 14:21:59 UTC"
-  let dataTimestamp = Math.floor(now / 1000);
-  try {
-    const d = new Date(row.timestamp.replace(" UTC", "Z").replace(" ", "T"));
-    if (!isNaN(d.getTime())) dataTimestamp = Math.floor(d.getTime() / 1000);
-  } catch {}
-
-  const finIsStale = isDataFromPreviousDay(dataTimestamp);
-  return {
-    symbol: row.symbol.replace("^", "").replace("=X", ""),
-    yahooSymbol: row.symbol,
-    name: overrideName ?? row.name,
-    price: +row.price.toFixed(2),
-    change: +row.change.toFixed(2),
-    changePercent: +row.changesPercentage.toFixed(2),
-    volume: Math.round(row.volume),
-    high: +row.dayHigh.toFixed(2),
-    low: +row.dayLow.toFixed(2),
-    open: +row.open.toFixed(2),
-    prevClose: +row.previousClose.toFixed(2),
-    market,
-    currency: market === "TW" ? "TWD" : "USD",
-    dataTimestamp,
-    fetchedAt: now,
-    source: "Perplexity Finance",
-    sourceUrl: `https://perplexity.ai/finance/${row.symbol.replace("^", "")}`,
-    // Stale only if data is from a previous calendar day (TPE UTC+8)
-    isStale: finIsStale,
-    // Derive marketState from finance connector market_status field
-    marketState: (() => {
-      const ms = (row.market_status ?? "").toLowerCase();
-      if (ms === "pre_market") return "PRE";
-      if (ms === "after_hours") return "POST";
-      if (ms === "regular") return "REGULAR";
-      return "CLOSED";
-    })() as StockQuote["marketState"],
-    priceLabel: (() => {
-      const ms = (row.market_status ?? "").toLowerCase();
-      if (ms === "pre_market") return "盤前";
-      if (ms === "after_hours") return "盤後";
-      if (ms === "regular") return "即時";
-      return "收盤";
-    })(),
-    quoteStatus: finIsStale ? "stale" : "fresh",
-    // Always populate pre/post market from afterHoursPrice when available,
-    // regardless of market_status label (handles holidays, closed sessions, etc.)
-    preMarketPrice: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? row.afterHoursPrice! : null,
-    preMarketChange: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? (row.afterHoursChange ?? null) : null,
-    preMarketChangePercent: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? (row.afterHoursPercentChange ?? null) : null,
-    // For POST / CLOSED / after_hours — show afterHoursPrice whenever it differs from regular price
-    postMarketPrice: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? row.afterHoursPrice! : null,
-    postMarketChange: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? (row.afterHoursChange ?? null) : null,
-    postMarketChangePercent: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? (row.afterHoursPercentChange ?? null) : null,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // US: Yahoo Finance history (kept for OHLCV only)
@@ -1544,8 +1459,7 @@ export async function getAllQuotes(
     }
   }
 
-  // --- US stocks: Perplexity Finance connector (supports afterHoursPrice) ---
-  // Falls back to Yahoo Spark if connector fails
+  // --- US stocks: yfinance (supports pre/postMarketPrice) → Spark fallback ---
   const usStocks = stocks.filter((s) => s.market === "US");
   let usQuotes: StockQuote[] = [];
 
@@ -1556,41 +1470,40 @@ export async function getAllQuotes(
   if (allUSCached) {
     usQuotes = cachedUS.map((c) => c!.data);
   } else {
-  try {
-    // Try Finance connector first (has afterHoursPrice)
-    const nameMap = new Map(usStocks.map((s) => [s.symbol, s.name]));
-    const finRows = await fetchFinanceQuotes(usStocks.map((s) => s.symbol));
-    if (finRows.length > 0) {
-      for (const row of finRows) {
-        const q = financeRowToQuote(row, "US", nameMap.get(row.symbol));
-        usQuotes.push(q);
-        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
-      }
-    } else {
-      throw new Error("Finance connector returned 0 rows, falling back to Spark");
-    }
-    // Fill missing symbols via Spark fallback
-    const missing = usStocks.filter((s) => !usQuotes.find((q) => q.symbol === s.symbol));
-    if (missing.length > 0) {
-      const sparkFallback = await fetchUSQuotesSpark(missing);
-      for (const q of sparkFallback) {
-        usQuotes.push(q);
-        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
-      }
-    }
-  } catch (e: any) {
-    // Full fallback to Spark
-    console.warn(`[getAllQuotes] Finance connector failed (${e.message}), falling back to Spark`);
     try {
-      const fetchedUS = await fetchUSQuotesSpark(usStocks);
-      for (const q of fetchedUS) {
-        usQuotes.push(q);
-        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+      // Primary: yfinance (has pre/postMarketPrice, works on Windows server)
+      const yfinanceQuotes = await fetchUSQuotesYFinance(usStocks);
+      if (yfinanceQuotes.length > 0) {
+        for (const q of yfinanceQuotes) {
+          usQuotes.push(q);
+          quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+        }
+      } else {
+        throw new Error("yfinance returned 0 rows, falling back to Spark");
       }
-    } catch (e2: any) {
-      errors.push(`US quotes: ${e2.message}`);
+      // Fill any missing symbols via Spark
+      const missing = usStocks.filter((s) => !usQuotes.find((q) => q.symbol === s.symbol));
+      if (missing.length > 0) {
+        console.warn(`[getAllQuotes] yfinance missing ${missing.map((s) => s.symbol).join(",")}, filling via Spark`);
+        const sparkFallback = await fetchUSQuotesSpark(missing);
+        for (const q of sparkFallback) {
+          usQuotes.push(q);
+          quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+        }
+      }
+    } catch (e: any) {
+      // Full fallback to Spark
+      console.warn(`[getAllQuotes] yfinance failed (${e.message}), falling back to Spark`);
+      try {
+        const fetchedUS = await fetchUSQuotesSpark(usStocks);
+        for (const q of fetchedUS) {
+          usQuotes.push(q);
+          quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+        }
+      } catch (e2: any) {
+        errors.push(`US quotes: ${e2.message}`);
+      }
     }
-  }
   } // end cache-miss block
 
   // Ensure no missing symbols (stale cache fallback)
