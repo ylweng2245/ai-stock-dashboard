@@ -308,15 +308,16 @@ export async function registerRoutes(
     try {
       const { execSync } = await import("child_process");
       const { writeFileSync, unlinkSync } = await import("fs");
-      const { tmpdir } = await import("os");
+      const { tmpdir, platform } = await import("os");
       const { join } = await import("path");
+      const py = platform() === "win32" ? "python" : "python3";
       const tmpFile = join(tmpdir(), `test_python_${Date.now()}.py`);
       writeFileSync(tmpFile, `import sys, json\nprint(json.dumps({'python': sys.version, 'ok': True}))\n`, 'utf8');
-      const out = execSync(`python3 "${tmpFile}"`, { timeout: 10_000 }).toString().trim();
+      const out = execSync(`${py} "${tmpFile}"`, { timeout: 10_000 }).toString().trim();
       try { unlinkSync(tmpFile); } catch {}
-      res.json({ stage: 'python3_basic', result: JSON.parse(out) });
+      res.json({ stage: 'python_basic', py, result: JSON.parse(out) });
     } catch (e: any) {
-      res.json({ stage: 'python3_basic', error: e.message });
+      res.json({ stage: 'python_basic', error: e.message });
     }
   });
 
@@ -324,14 +325,15 @@ export async function registerRoutes(
     try {
       const { execSync } = await import("child_process");
       const { writeFileSync, unlinkSync } = await import("fs");
-      const { tmpdir } = await import("os");
+      const { tmpdir, platform } = await import("os");
       const { join } = await import("path");
+      const py = platform() === "win32" ? "python" : "python3";
       const tmpFile = join(tmpdir(), `test_yf_${Date.now()}.py`);
       writeFileSync(tmpFile, `import yfinance as yf, json\nt = yf.Ticker('AMD')\ninfo = t.info\nprint(json.dumps({'postMarketPrice': info.get('postMarketPrice'), 'marketState': info.get('marketState'), 'regularMarketPrice': info.get('regularMarketPrice')}))\n`, 'utf8');
-      const out = execSync(`python3 "${tmpFile}"`, { timeout: 30_000 }).toString().trim();
+      const out = execSync(`${py} "${tmpFile}"`, { timeout: 30_000 }).toString().trim();
       try { unlinkSync(tmpFile); } catch {}
       const jsonStart = out.lastIndexOf('{');
-      res.json({ stage: 'yfinance_amd', result: JSON.parse(out.slice(jsonStart)) });
+      res.json({ stage: 'yfinance_amd', py, result: JSON.parse(out.slice(jsonStart)) });
     } catch (e: any) {
       res.json({ stage: 'yfinance_amd', error: e.message });
     }

@@ -577,9 +577,11 @@ async function fetchUSQuotesYFinance(
 
   // Write script to a temp file to avoid shell escaping issues on Windows
   const { writeFileSync } = await import("fs");
-  const { tmpdir } = await import("os");
+  const { tmpdir, platform } = await import("os");
   const { join } = await import("path");
   const tmpFile = join(tmpdir(), `yfinance_quotes_${Date.now()}.py`);
+  // Windows uses 'python', Linux/Mac uses 'python3'
+  const pythonCmd = platform() === "win32" ? "python" : "python3";
 
   const script = `import yfinance as yf, json, sys
 tickers = yf.Tickers('${syms}')
@@ -615,7 +617,7 @@ print(json.dumps(results))
 
   try {
     writeFileSync(tmpFile, script, 'utf8');
-    const raw = execSync(`python3 "${tmpFile}"`,
+    const raw = execSync(`${pythonCmd} "${tmpFile}"`,
       { timeout: 45_000, maxBuffer: 1024 * 1024 * 4 }).toString().trim();
     // find JSON array in output
     const jsonStart = raw.lastIndexOf('[');
