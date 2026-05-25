@@ -658,41 +658,47 @@ interface FinanceQuoteRow {
  */
 function parseFinanceQuotesContent(content: string): FinanceQuoteRow[] {
   const rows: FinanceQuoteRow[] = [];
-  // Helper: strip commas before parsing (handles "6,992" and "36,615.37")
-  const num = (s: string) => parseFloat(s?.replace(/,/g, "")) || 0;
+  const num = (s: string | undefined) => parseFloat((s ?? "").replace(/,/g, "")) || 0;
+  const numOrNull = (s: string | undefined) => { const v = parseFloat((s ?? "").replace(/,/g, "")); return isNaN(v) ? null : v; };
 
-  // Match table rows (lines starting with |, not header separators)
   const lines = content.split("\n");
+  let headers: string[] = [];
+
   for (const line of lines) {
     if (!line.startsWith("| ")) continue;
-    if (line.includes("---")) continue; // separator row
-    if (line.includes("symbol") && line.includes("name")) continue; // header row
+    if (line.includes("---")) continue;
 
     const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
-    if (cells.length < 13) continue;
+    if (cells.length < 3) continue;
 
-    // Columns: symbol(0) name(1) timestamp(2) fetched_at(3) market_status(4) price(5) change(6) changesPercentage(7)
-    // volume(8) dayHigh(9) dayLow(10) open(11) previousClose(12) [afterHoursPrice(13) afterHoursChange(14) afterHoursPercentChange(15)]
-    const ahPrice = cells.length > 13 ? num(cells[13]) : null;
-    const ahChange = cells.length > 14 ? num(cells[14]) : null;
-    const ahPct = cells.length > 15 ? num(cells[15]) : null;
+    // Detect header row by presence of 'symbol' column
+    if (cells[0] === "symbol" || (cells.includes("symbol") && cells.includes("name"))) {
+      headers = cells;
+      continue;
+    }
+
+    if (headers.length === 0) continue; // no header seen yet
+
+    // Build a map from column name to value
+    const col: Record<string, string> = {};
+    headers.forEach((h, i) => { col[h] = cells[i] ?? ""; });
 
     rows.push({
-      symbol: cells[0],
-      name: cells[1],
-      timestamp: cells[2],
-      market_status: cells[4] ?? undefined,
-      price: num(cells[5]),
-      change: num(cells[6]),
-      changesPercentage: num(cells[7]),
-      volume: num(cells[8]),
-      dayHigh: num(cells[9]),
-      dayLow: num(cells[10]),
-      open: num(cells[11]),
-      previousClose: num(cells[12]),
-      afterHoursPrice: ahPrice || null,
-      afterHoursChange: ahChange || null,
-      afterHoursPercentChange: ahPct || null,
+      symbol:               col["symbol"] ?? "",
+      name:                 col["name"] ?? "",
+      timestamp:            col["timestamp"] ?? "",
+      market_status:        col["market_status"] || undefined,
+      price:                num(col["price"]),
+      change:               num(col["change"]),
+      changesPercentage:    num(col["changesPercentage"]),
+      volume:               num(col["volume"]),
+      dayHigh:              num(col["dayHigh"]),
+      dayLow:               num(col["dayLow"]),
+      open:                 num(col["open"]),
+      previousClose:        num(col["previousClose"]),
+      afterHoursPrice:      numOrNull(col["afterHoursPrice"]),
+      afterHoursChange:     numOrNull(col["afterHoursChange"]),
+      afterHoursPercentChange: numOrNull(col["afterHoursPercentChange"]),
     });
   }
   return rows;
