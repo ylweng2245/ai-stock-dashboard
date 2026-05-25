@@ -799,12 +799,15 @@ function financeRowToQuote(row: FinanceQuoteRow, market: "TW" | "US", overrideNa
       return "收盤";
     })(),
     quoteStatus: finIsStale ? "stale" : "fresh",
-    preMarketPrice: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursPrice ?? null) : null,
-    preMarketChange: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursChange ?? null) : null,
-    preMarketChangePercent: (row.market_status ?? "").toLowerCase() === "pre_market" ? (row.afterHoursPercentChange ?? null) : null,
-    postMarketPrice: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursPrice ?? null) : null,
-    postMarketChange: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursChange ?? null) : null,
-    postMarketChangePercent: (row.market_status ?? "").toLowerCase() === "after_hours" ? (row.afterHoursPercentChange ?? null) : null,
+    // Always populate pre/post market from afterHoursPrice when available,
+    // regardless of market_status label (handles holidays, closed sessions, etc.)
+    preMarketPrice: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? row.afterHoursPrice! : null,
+    preMarketChange: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? (row.afterHoursChange ?? null) : null,
+    preMarketChangePercent: (row.market_status ?? "").toLowerCase() === "pre_market" && (row.afterHoursPrice ?? 0) !== 0 ? (row.afterHoursPercentChange ?? null) : null,
+    // For POST / CLOSED / after_hours — show afterHoursPrice whenever it differs from regular price
+    postMarketPrice: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? row.afterHoursPrice! : null,
+    postMarketChange: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? (row.afterHoursChange ?? null) : null,
+    postMarketChangePercent: (row.afterHoursPrice ?? 0) !== 0 && (row.market_status ?? "").toLowerCase() !== "pre_market" ? (row.afterHoursPercentChange ?? null) : null,
   };
 }
 

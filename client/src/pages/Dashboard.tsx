@@ -1546,7 +1546,8 @@ function getExtendedInfo(stock: StockQuote): {
       colorClass: pct >= 0 ? "text-gain" : "text-loss",
       bgClass: pct >= 0 ? "bg-gain/10 border-gain/20" : "bg-loss/10 border-loss/20" };
   }
-  if ((state === "POST" || state === "CLOSED") && stock.postMarketPrice != null) {
+  // Show post-market whenever available (POST, CLOSED, or holiday)
+  if (stock.postMarketPrice != null && (stock.postMarketChangePercent ?? 0) !== 0) {
     const pct = stock.postMarketChangePercent ?? 0;
     return { label: "盤後", price: stock.postMarketPrice, changePct: pct,
       colorClass: pct >= 0 ? "text-gain" : "text-loss",
