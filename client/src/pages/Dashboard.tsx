@@ -1547,7 +1547,7 @@ function getExtendedInfo(stock: StockQuote): {
       bgClass: pct >= 0 ? "bg-gain/10 border-gain/20" : "bg-loss/10 border-loss/20" };
   }
   // Show post-market only when NOT in regular trading session
-  if (state !== "REGULAR" && stock.postMarketPrice != null && (stock.postMarketChangePercent ?? 0) !== 0) {
+  if (state !== "REGULAR" && stock.postMarketPrice != null) {
     const pct = stock.postMarketChangePercent ?? 0;
     return { label: "盤後", price: stock.postMarketPrice, changePct: pct,
       colorClass: pct >= 0 ? "text-gain" : "text-loss",
