@@ -303,42 +303,6 @@ export async function registerRoutes(
     }
   });
 
-  // DEBUG: test python3 + yfinance on server (temporary)
-  app.get("/api/internal/test-python", async (_req, res) => {
-    try {
-      const { execSync } = await import("child_process");
-      const { writeFileSync, unlinkSync } = await import("fs");
-      const { tmpdir, platform } = await import("os");
-      const { join } = await import("path");
-      const py = platform() === "win32" ? "python" : "python3";
-      const tmpFile = join(tmpdir(), `test_python_${Date.now()}.py`);
-      writeFileSync(tmpFile, `import sys, json\nprint(json.dumps({'python': sys.version, 'ok': True}))\n`, 'utf8');
-      const out = execSync(`${py} "${tmpFile}"`, { timeout: 10_000 }).toString().trim();
-      try { unlinkSync(tmpFile); } catch {}
-      res.json({ stage: 'python_basic', py, result: JSON.parse(out) });
-    } catch (e: any) {
-      res.json({ stage: 'python_basic', error: e.message });
-    }
-  });
-
-  app.get("/api/internal/test-yfinance", async (_req, res) => {
-    try {
-      const { execSync } = await import("child_process");
-      const { writeFileSync, unlinkSync } = await import("fs");
-      const { tmpdir, platform } = await import("os");
-      const { join } = await import("path");
-      const py = platform() === "win32" ? "python" : "python3";
-      const tmpFile = join(tmpdir(), `test_yf_${Date.now()}.py`);
-      writeFileSync(tmpFile, `import yfinance as yf, json\nt = yf.Ticker('AMD')\ninfo = t.info\nprint(json.dumps({'postMarketPrice': info.get('postMarketPrice'), 'marketState': info.get('marketState'), 'regularMarketPrice': info.get('regularMarketPrice')}))\n`, 'utf8');
-      const out = execSync(`${py} "${tmpFile}"`, { timeout: 30_000 }).toString().trim();
-      try { unlinkSync(tmpFile); } catch {}
-      const jsonStart = out.lastIndexOf('{');
-      res.json({ stage: 'yfinance_amd', py, result: JSON.parse(out.slice(jsonStart)) });
-    } catch (e: any) {
-      res.json({ stage: 'yfinance_amd', error: e.message });
-    }
-  });
-
   // ---- Watchlist ----
   app.get("/api/watchlist", async (_req, res) => {
     const items = await storage.getWatchlist();
