@@ -1544,29 +1544,61 @@ export async function getAllQuotes(
     }
   }
 
-  // --- US stocks: Yahoo Finance Spark API（個股即時，保證盤中更新）---
+  // --- US stocks: Perplexity Finance connector (supports afterHoursPrice) ---
+  // Falls back to Yahoo Spark if connector fails
   const usStocks = stocks.filter((s) => s.market === "US");
   let usQuotes: StockQuote[] = [];
 
+  // Check cache first
+  const cachedUS = usStocks.map((s) => quoteCache.get(`${s.symbol}_US`));
+  const allUSCached = cachedUS.every((c) => c && Date.now() - c.fetchedAt < QUOTE_TTL_MS);
+
+  if (allUSCached) {
+    usQuotes = cachedUS.map((c) => c!.data);
+  } else {
   try {
-    const fetchedUS = await fetchUSQuotesSpark(usStocks);
-    for (const q of fetchedUS) {
-      usQuotes.push(q);
-      quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+    // Try Finance connector first (has afterHoursPrice)
+    const nameMap = new Map(usStocks.map((s) => [s.symbol, s.name]));
+    const finRows = await fetchFinanceQuotes(usStocks.map((s) => s.symbol));
+    if (finRows.length > 0) {
+      for (const row of finRows) {
+        const q = financeRowToQuote(row, "US", nameMap.get(row.symbol));
+        usQuotes.push(q);
+        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+      }
+    } else {
+      throw new Error("Finance connector returned 0 rows, falling back to Spark");
     }
-    // Fallback for symbols not returned by Spark
-    for (const s of usStocks) {
-      if (!usQuotes.find((q) => q.symbol === s.symbol)) {
-        const c = quoteCache.get(`${s.symbol}_US`);
-        if (c) usQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
-        else errors.push(`${s.symbol}: no data`);
+    // Fill missing symbols via Spark fallback
+    const missing = usStocks.filter((s) => !usQuotes.find((q) => q.symbol === s.symbol));
+    if (missing.length > 0) {
+      const sparkFallback = await fetchUSQuotesSpark(missing);
+      for (const q of sparkFallback) {
+        usQuotes.push(q);
+        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
       }
     }
   } catch (e: any) {
-    errors.push(`US quotes (Yahoo Spark): ${e.message}`);
-    for (const s of usStocks) {
+    // Full fallback to Spark
+    console.warn(`[getAllQuotes] Finance connector failed (${e.message}), falling back to Spark`);
+    try {
+      const fetchedUS = await fetchUSQuotesSpark(usStocks);
+      for (const q of fetchedUS) {
+        usQuotes.push(q);
+        quoteCache.set(`${q.symbol}_US`, { data: q, fetchedAt: Date.now() });
+      }
+    } catch (e2: any) {
+      errors.push(`US quotes: ${e2.message}`);
+    }
+  }
+  } // end cache-miss block
+
+  // Ensure no missing symbols (stale cache fallback)
+  for (const s of usStocks) {
+    if (!usQuotes.find((q) => q.symbol === s.symbol)) {
       const c = quoteCache.get(`${s.symbol}_US`);
       if (c) usQuotes.push({ ...c.data, isStale: true, quoteStatus: "error", isFallbackCache: true });
+      else errors.push(`${s.symbol}: no data`);
     }
   }
 
