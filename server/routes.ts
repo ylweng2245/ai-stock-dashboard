@@ -303,6 +303,19 @@ export async function registerRoutes(
     }
   });
 
+  // DEBUG: test Finance connector directly (temporary)
+  app.get("/api/internal/debug-finance", async (_req, res) => {
+    try {
+      const { execSync } = await import("child_process");
+      const raw = execSync(`external-tool call '{"source_id":"finance","tool_name":"finance_quotes","arguments":{"ticker_symbols":["AMD","PANW"],"fields":["price","afterHoursPrice","afterHoursChange","afterHoursPercentChange"]}}'`, { timeout: 30_000 }).toString();
+      const parsed = JSON.parse(raw);
+      const content = parsed?.result?.content ?? parsed?.content ?? "";
+      res.json({ ok: true, contentPreview: content.slice(0, 500), rawLength: content.length });
+    } catch (e: any) {
+      res.json({ ok: false, error: e.message });
+    }
+  });
+
   // ---- Watchlist ----
   app.get("/api/watchlist", async (_req, res) => {
     const items = await storage.getWatchlist();
