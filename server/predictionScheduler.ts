@@ -16,6 +16,10 @@
 
 import { storage, sqlite } from "./storage";
 import { runPrediction } from "./mlPredictionService";
+import { execSync } from "child_process";
+import { writeFileSync, unlinkSync } from "fs";
+import { tmpdir, platform } from "os";
+import { join } from "path";
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -94,14 +98,62 @@ function hasTodayPrediction(symbol: string, market: string): boolean {
 // ─── Core sweep ─────────────────────────────────────────────────────────────
 
 /**
- * Run a single prediction for one symbol.
- * Marks the queue item as running → done/error.
+ * For INDEX/US-ETF symbols used in market trend, auto-refresh historical prices
+ * via yfinance if the latest bar is older than 2 days.
  */
+async function ensureIndexHistory(symbol: string, market: string): Promise<void> {
+  if (market !== "INDEX" && !(market === "US" && symbol === "SMH")) return;
+  try {
+    const latest = sqlite.prepare(
+      `SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?`
+    ).get(symbol, market) as any;
+    const maxDate: string = latest?.maxDate ?? "";
+    const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+    if (maxDate >= twoDaysAgo) return; // already fresh
+
+    const py = platform() === "win32" ? "python" : "python3";
+    const tmpFile = join(tmpdir(), `sched_hist_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.py`);
+    const startDate = maxDate || new Date(Date.now() - 500 * 86400_000).toISOString().slice(0, 10);
+    writeFileSync(tmpFile, [
+      "import yfinance as yf, json",
+      `t = yf.Ticker('${symbol}')`,
+      `hist = t.history(start='${startDate}', auto_adjust=True)`,
+      "rows = []",
+      "for dt, row in hist.iterrows():",
+      "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
+      "print(json.dumps(rows))",
+    ].join("\n"), "utf8");
+    const raw = execSync(`${py} "${tmpFile}"`, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }).toString().trim();
+    try { unlinkSync(tmpFile); } catch {}
+    const jsonStart = raw.lastIndexOf("[");
+    const rows: any[] = jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) : [];
+    if (rows.length === 0) return;
+    const upsert = sqlite.prepare(`
+      INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, market, date) DO UPDATE SET
+        open=excluded.open, high=excluded.high, low=excluded.low,
+        close=excluded.close, volume=excluded.volume, updated_at=excluded.updated_at
+    `);
+    const now = new Date().toISOString();
+    const insertMany = sqlite.transaction((rs: any[]) => {
+      for (const r of rs) upsert.run(symbol, market, r.date, r.open, r.high, r.low, r.close, r.volume, now);
+    });
+    insertMany(rows);
+    console.log(`[predSched] ensureIndexHistory ${symbol}: +${rows.length} bars (was ${maxDate})`);
+  } catch (e: any) {
+    console.warn(`[predSched] ensureIndexHistory ${symbol} failed: ${e.message}`);
+  }
+}
+
 async function runOne(item: QueueItem): Promise<void> {
   item.status    = "running";
   item.startedAt = Date.now();
 
   try {
+    // Ensure index/ETF historical prices are up to date before predicting
+    await ensureIndexHistory(item.symbol, item.market);
+
     // Get latest close price
     const recentBars = await storage.getHistoricalPricesByRange(
       item.symbol,
