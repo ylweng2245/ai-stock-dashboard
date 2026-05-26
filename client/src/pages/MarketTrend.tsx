@@ -17,7 +17,7 @@ const INDEX_LIST = [
   { symbol: "^DJI",  name: "道瓊工業指數", shortName: "DJIA" },
   { symbol: "^GSPC", name: "S&P 500",      shortName: "SPX" },
   { symbol: "^IXIC", name: "Nasdaq 綜合",  shortName: "NDX" },
-  { symbol: "^SOX",  name: "費城半導體",   shortName: "SOX" },
+  { symbol: "SMH",   name: "半導體 ETF (SMH)", shortName: "SMH" },
 ];
 
 const TREND_LABEL_CONFIG: Record<string, { bg: string; text: string }> = {
@@ -105,12 +105,13 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
     refetchInterval: 60_000,
   });
   const liveQuote = useMemo(() => {
-    // indices is an array; symbol prop is yahoo format e.g. "^GSPC"
+    // Check indices array (for ^DJI, ^GSPC, ^IXIC etc.)
     const indices: any[] = Array.isArray(quotesRaw?.indices) ? quotesRaw.indices : [];
-    const match = indices.find((q: any) =>
-      q?.yahooSymbol === symbol || q?.symbol === symbol
-    );
-    return match ?? null;
+    const idxMatch = indices.find((q: any) => q?.yahooSymbol === symbol || q?.symbol === symbol);
+    if (idxMatch) return idxMatch;
+    // Check quotes array (for ETFs like SMH)
+    const quotes: any[] = Array.isArray(quotesRaw?.quotes) ? quotesRaw.quotes : [];
+    return quotes.find((q: any) => q?.symbol === symbol || q?.yahooSymbol === symbol) ?? null;
   }, [quotesRaw, symbol]);
 
   // Main chart: last 60 bars + 20-day prediction with p25/p75 band
