@@ -172,6 +172,7 @@ export async function registerRoutes(
       const txns = sqlite.prepare(
         `SELECT trade_date, symbol, market, side, shares, price, total_cost, currency FROM transactions ORDER BY trade_date ASC`
       ).all() as Array<{trade_date:string;symbol:string;market:string;side:string;shares:number;price:number;total_cost:number;currency:string}>;
+      // Note: SQLite returns snake_case columns; total_cost is negative for buys
 
       if (!txns.length) return res.json({ curve: [] });
 
@@ -185,10 +186,34 @@ export async function registerRoutes(
       const fxMap = new Map<string, number>(fxRows.map((r: any) => [r.date, r.value]));
       let lastFx = 31.0;
 
-      // Collect all unique symbols
-      const symbols = [...new Set(txns.map((t: any) => t.symbol))];
+      // Collect all unique symbols with their market
+      const symMarketMap = new Map<string, string>();
+      for (const t of txns) symMarketMap.set(t.symbol, t.market);
+      const symbols = [...symMarketMap.keys()];
 
-      // Get price history for all symbols
+      // Auto-fetch history for symbols with no/insufficient data in DB
+      // (e.g. portfolio symbols not in watchlist: US stocks, non-watchlist TW ETFs)
+      const fetchPromises: Promise<void>[] = [];
+      for (const sym of symbols) {
+        const market = symMarketMap.get(sym) as "TW" | "US";
+        const count = (sqlite.prepare(
+          `SELECT COUNT(*) as c FROM historical_prices WHERE symbol=? AND market=?`
+        ).get(sym, market) as any)?.c ?? 0;
+        if (count < 50) {
+          console.log(`[performance] ${sym} has only ${count} bars — fetching 2y history via yfinance`);
+          fetchPromises.push(
+            initializeOneYearHistoryPool(sym, market).catch((e: any) =>
+              console.warn(`[performance] yfinance fetch failed for ${sym}: ${e.message}`)
+            )
+          );
+        }
+      }
+      if (fetchPromises.length > 0) {
+        await Promise.all(fetchPromises);
+        console.log(`[performance] Done auto-fetching ${fetchPromises.length} symbols`);
+      }
+
+      // Get price history for all symbols (after auto-fetch)
       const priceHistory = new Map<string, Map<string, number>>();
       for (const sym of symbols) {
         const rows = sqlite.prepare(
@@ -222,11 +247,17 @@ export async function registerRoutes(
           const t = txns[txIdx];
           const key = t.symbol;
           const cur = holdings.get(key) ?? { shares: 0, market: t.market, currency: t.currency };
+          const costTwd = t.currency === 'USD'
+            ? Math.abs(t.total_cost) * (fxMap.get(date) ?? lastFx)
+            : Math.abs(t.total_cost);
           if (t.side === 'buy') {
             cur.shares += t.shares;
-            cashInvested += t.currency === 'USD' ? Math.abs(t.total_cost) * (fxMap.get(date) ?? lastFx) : Math.abs(t.total_cost);
+            cashInvested += costTwd;
           } else {
             cur.shares -= t.shares;
+            // Reduce invested capital proportionally (or by proceeds)
+            cashInvested -= costTwd;
+            if (cashInvested < 0) cashInvested = 0;
           }
           holdings.set(key, cur);
           txIdx++;
