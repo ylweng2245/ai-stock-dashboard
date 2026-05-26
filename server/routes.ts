@@ -3151,10 +3151,59 @@ ${search}${questionPart}
   });
 
   // GET /api/market-trend/index-history/:symbol
+  // Auto-refreshes via yfinance if DB is stale (missing recent trading days)
   app.get("/api/market-trend/index-history/:symbol", async (req, res) => {
     const sym = req.params.symbol;
     const market = "INDEX";
     try {
+      // Check if DB data is stale (latest bar older than 2 days ago)
+      const latest = sqlite.prepare(`
+        SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?
+      `).get(sym, market) as any;
+      const maxDate: string = latest?.maxDate ?? "";
+      const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+
+      if (maxDate < twoDaysAgo) {
+        // Refresh via yfinance
+        try {
+          const { execSync } = await import("child_process");
+          const { writeFileSync, unlinkSync } = await import("fs");
+          const { tmpdir, platform } = await import("os");
+          const { join } = await import("path");
+          const py = platform() === "win32" ? "python" : "python3";
+          const tmpFile = join(tmpdir(), `idx_hist_${Date.now()}.py`);
+          const startDate = maxDate || new Date(Date.now() - 500 * 86400_000).toISOString().slice(0, 10);
+          writeFileSync(tmpFile, [
+            "import yfinance as yf, json",
+            `t = yf.Ticker('${sym}')`,
+            `hist = t.history(start='${startDate}', auto_adjust=True)`,
+            "rows = []",
+            "for dt, row in hist.iterrows():",
+            "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
+            "print(json.dumps(rows))",
+          ].join("\n"), "utf8");
+          const raw = execSync(`${py} "${tmpFile}"`, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }).toString().trim();
+          try { unlinkSync(tmpFile); } catch {}
+          const jsonStart = raw.lastIndexOf("[");
+          const rows: any[] = jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) : [];
+          const upsert = sqlite.prepare(`
+            INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, market, date) DO UPDATE SET
+              open=excluded.open, high=excluded.high, low=excluded.low,
+              close=excluded.close, volume=excluded.volume, updated_at=excluded.updated_at
+          `);
+          const now = new Date().toISOString();
+          const insertMany = sqlite.transaction((rs: any[]) => {
+            for (const r of rs) upsert.run(sym, market, r.date, r.open, r.high, r.low, r.close, r.volume, now);
+          });
+          insertMany(rows);
+          console.log(`[index-history] refreshed ${sym}: ${rows.length} bars (latest was ${maxDate})`);
+        } catch (fetchErr: any) {
+          console.warn(`[index-history] yfinance refresh failed for ${sym}: ${fetchErr.message}`);
+        }
+      }
+
       const bars = sqlite.prepare(`
         SELECT date, open, high, low, close, volume FROM historical_prices
         WHERE symbol=? AND market=? ORDER BY date ASC
