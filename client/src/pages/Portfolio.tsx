@@ -113,6 +113,13 @@ export default function Portfolio() {
     placeholderData: (prev: ComputedHolding[] | undefined) => prev,  // show stale data while refreshing
   });
 
+  // Fetch XIRR
+  const { data: xirrData } = useQuery<{ xirr: number | null; currentNavTwd: number }>({
+    queryKey: ["/api/portfolio/xirr"],
+    queryFn: () => apiRequest("GET", "/api/portfolio/xirr").then(r => r.json()),
+    staleTime: 15 * 60_000,
+  });
+
   // Fetch performance curve
   const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;invested:number}> }>({
     queryKey: ["/api/portfolio/performance"],
@@ -442,12 +449,26 @@ export default function Portfolio() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">組合淨值曲線</CardTitle>
                     {hasCurve && (
-                      <span className={cn(
-                        "text-sm font-semibold tabular-nums",
-                        isPositive ? "text-gain" : "text-loss"
-                      )}>
-                        {isPositive ? "+" : ""}{totalReturn.toFixed(2)}%
-                      </span>
+                      <div className="flex items-center gap-3">
+                        {xirrData?.xirr != null && (
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            年化{" "}
+                            <span className={cn(
+                              "font-semibold",
+                              xirrData.xirr >= 0 ? "text-gain" : "text-loss"
+                            )}>
+                              {xirrData.xirr >= 0 ? "+" : ""}{xirrData.xirr.toFixed(2)}%
+                            </span>
+                            {" "}(XIRR)
+                          </span>
+                        )}
+                        <span className={cn(
+                          "text-sm font-semibold tabular-nums",
+                          isPositive ? "text-gain" : "text-loss"
+                        )}>
+                          {isPositive ? "+" : ""}{totalReturn.toFixed(2)}%
+                        </span>
+                      </div>
                     )}
                   </div>
                 </CardHeader>

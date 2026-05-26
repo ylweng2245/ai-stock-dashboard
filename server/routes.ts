@@ -293,6 +293,118 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/portfolio/xirr — XIRR annualized return from transaction cash flows
+  app.get("/api/portfolio/xirr", async (_req, res) => {
+    try {
+      const txns = sqlite.prepare(
+        `SELECT trade_date, side, total_cost, currency FROM transactions ORDER BY trade_date ASC`
+      ).all() as Array<{trade_date:string;side:string;total_cost:number;currency:string}>;
+
+      if (!txns.length) return res.json({ xirr: null, cashFlows: [] });
+
+      // Get USD/TWD rate history
+      const firstDate = txns[0].trade_date;
+      const fxRows = sqlite.prepare(
+        `SELECT date, value FROM market_indicators WHERE indicator_key='USDTWD' AND date >= ? ORDER BY date ASC`
+      ).all(firstDate) as Array<{date:string;value:number}>;
+      const fxMap = new Map<string, number>(fxRows.map((r: any) => [r.date, r.value]));
+      // Build forward-fill FX map for transaction dates
+      let lastFx = 31.0;
+      const allTxDates = [...new Set(txns.map(t => t.trade_date))].sort();
+      const fxByDate = new Map<string, number>();
+      let fxIdx = 0;
+      const fxEntries = [...fxMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      for (const d of allTxDates) {
+        while (fxIdx < fxEntries.length && fxEntries[fxIdx][0] <= d) {
+          lastFx = fxEntries[fxIdx][1];
+          fxIdx++;
+        }
+        fxByDate.set(d, lastFx);
+      }
+
+      // Build cash flows: buy = negative (cash out), sell = positive (cash in)
+      // Group by date (multiple txns on same day sum together)
+      const cfMap = new Map<string, number>();
+      for (const t of txns) {
+        const fx = fxByDate.get(t.trade_date) ?? 31.0;
+        const amountTwd = t.currency === 'USD'
+          ? Math.abs(t.total_cost) * fx
+          : Math.abs(t.total_cost);
+        const cf = t.side === 'buy' ? -amountTwd : amountTwd;
+        cfMap.set(t.trade_date, (cfMap.get(t.trade_date) ?? 0) + cf);
+      }
+
+      // Add today's market value as final positive cash flow (liquidation value)
+      // Compute from holdings × latest known price in DB
+      const symRows = sqlite.prepare(
+        `SELECT symbol, market, currency, SUM(CASE WHEN side='buy' THEN shares ELSE -shares END) as net_shares FROM transactions GROUP BY symbol`
+      ).all() as Array<{symbol:string;market:string;currency:string;net_shares:number}>;
+      // Get latest FX rate
+      const latestFxRow = sqlite.prepare(
+        `SELECT value FROM market_indicators WHERE indicator_key='USDTWD' ORDER BY date DESC LIMIT 1`
+      ).get() as any;
+      const currentFx = latestFxRow?.value ?? lastFx;
+
+      let currentNavTwd = 0;
+      for (const row of symRows) {
+        if (row.net_shares <= 0) continue;
+        const priceRow = sqlite.prepare(
+          `SELECT close FROM historical_prices WHERE symbol=? ORDER BY date DESC LIMIT 1`
+        ).get(row.symbol) as any;
+        if (!priceRow?.close) continue;
+        const valueNative = priceRow.close * row.net_shares;
+        currentNavTwd += row.currency === 'USD' ? valueNative * currentFx : valueNative;
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      cfMap.set(today, (cfMap.get(today) ?? 0) + currentNavTwd);
+
+      // Sort cash flows by date
+      const cashFlows = [...cfMap.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, amount]) => ({ date, amount }));
+
+      // XIRR via Newton-Raphson
+      // NPV(r) = sum( CF_i / (1+r)^((t_i - t_0)/365) ) = 0
+      function xirr(flows: Array<{date:string;amount:number}>): number | null {
+        if (flows.length < 2) return null;
+        const t0 = new Date(flows[0].date).getTime();
+        const days = flows.map(f => (new Date(f.date).getTime() - t0) / 86400_000);
+        const amounts = flows.map(f => f.amount);
+
+        function npv(r: number): number {
+          return amounts.reduce((sum, cf, i) => sum + cf / Math.pow(1 + r, days[i] / 365), 0);
+        }
+        function dnpv(r: number): number {
+          return amounts.reduce((sum, cf, i) =>
+            sum - (days[i] / 365) * cf / Math.pow(1 + r, days[i] / 365 + 1), 0);
+        }
+
+        let rate = 0.1; // initial guess 10%
+        for (let iter = 0; iter < 200; iter++) {
+          const n = npv(rate);
+          const dn = dnpv(rate);
+          if (Math.abs(dn) < 1e-12) break;
+          const newRate = rate - n / dn;
+          if (Math.abs(newRate - rate) < 1e-8) { rate = newRate; break; }
+          rate = newRate;
+          if (rate <= -1) rate = -0.999; // clamp
+        }
+        if (!isFinite(rate) || Math.abs(npv(rate)) > 1000) return null;
+        return rate;
+      }
+
+      const xirrRate = xirr(cashFlows);
+      res.json({
+        xirr: xirrRate !== null ? +(xirrRate * 100).toFixed(2) : null,
+        currentNavTwd: +currentNavTwd.toFixed(0),
+        cashFlows,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/market-anomaly — detect VIX spike, SPY volume surge, 10Y yield jump
   app.get("/api/market-anomaly", async (_req, res) => {
     try {
