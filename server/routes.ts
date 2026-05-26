@@ -207,6 +207,9 @@ export async function registerRoutes(
         d.setDate(d.getDate() + 1);
       }
 
+      // Build last-known price map per symbol (forward-fill)
+      const lastKnownPrice = new Map<string, number>();
+
       // Compute portfolio NAV per day
       const holdings = new Map<string, {shares:number;market:string;currency:string}>();
       let cashInvested = 0; // cumulative capital invested (TWD)
@@ -230,19 +233,25 @@ export async function registerRoutes(
         }
         if (fxMap.has(date)) lastFx = fxMap.get(date)!;
 
+        // Update last-known prices for today (forward-fill)
+        for (const [sym, symPrices] of priceHistory) {
+          const p = symPrices.get(date);
+          if (p != null) lastKnownPrice.set(sym, p);
+        }
+
         // Compute NAV: sum of market values in TWD
+        // Use last-known price (forward-fill) for symbols missing today's data
         let nav = 0;
-        let hasAnyPrice = false;
+        let hasAnyHolding = false;
         for (const [sym, h] of holdings) {
           if (h.shares <= 0) continue;
-          const symPrices = priceHistory.get(sym);
-          const price = symPrices?.get(date) ?? null;
-          if (price === null) continue; // skip weekends/holidays
-          hasAnyPrice = true;
+          const price = lastKnownPrice.get(sym) ?? null;
+          if (price === null) continue; // no price yet at all (before first bar)
+          hasAnyHolding = true;
           const valueInNative = price * h.shares;
           nav += h.currency === 'USD' ? valueInNative * lastFx : valueInNative;
         }
-        if (!hasAnyPrice && curve.length > 0) continue; // skip non-trading days
+        if (!hasAnyHolding) continue; // skip days before any position exists
         if (nav === 0 && cashInvested === 0) continue;
         curve.push({ date, nav, invested: cashInvested });
       }
