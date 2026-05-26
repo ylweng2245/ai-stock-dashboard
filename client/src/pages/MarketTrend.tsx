@@ -97,6 +97,22 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
     staleTime: 300_000,
   });
 
+  // Live quote for patching today's bar during market hours
+  const { data: quotesRaw } = useQuery({
+    queryKey: ["/api/quotes"],
+    queryFn: () => fetch("/api/quotes").then(r => r.json()),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const liveQuote = useMemo(() => {
+    // indices is an array; symbol prop is yahoo format e.g. "^GSPC"
+    const indices: any[] = Array.isArray(quotesRaw?.indices) ? quotesRaw.indices : [];
+    const match = indices.find((q: any) =>
+      q?.yahooSymbol === symbol || q?.symbol === symbol
+    );
+    return match ?? null;
+  }, [quotesRaw, symbol]);
+
   // Main chart: last 60 bars + 20-day prediction with p25/p75 band
   const chartData = useMemo(() => {
     const bars = histData?.bars ?? [];
@@ -108,6 +124,29 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
       pred: null as number | null,
       band: null as [number, number] | null,
     }));
+
+    // Patch last bar (or append today) with live price during REGULAR market hours
+    if (liveQuote?.marketState === "REGULAR" && liveQuote?.price != null && data.length > 0) {
+      const lp: number = liveQuote.price;
+      const today = new Date().toISOString().slice(0, 10);
+      const last = data[data.length - 1];
+      if (last.fullDate === today) {
+        // Update existing today bar
+        data[data.length - 1] = {
+          ...last,
+          close: lp,
+        };
+      } else {
+        // Append today as new bar
+        data.push({
+          date: today.slice(5),
+          fullDate: today,
+          close: lp,
+          pred: null,
+          band: null,
+        });
+      }
+    }
 
     if (predData?.found && predData.horizons) {
       const hKeys = Object.keys(predData.horizons).map(Number).sort((a, b) => a - b);
@@ -131,7 +170,7 @@ function IndexChart({ symbol, name, shortName }: { symbol: string; name: string;
       }
     }
     return data;
-  }, [histData, predData]);
+  }, [histData, predData, liveQuote]);
 
   // History comparison: past predictions vs actual close
   const histCompareData = useMemo(() => {
