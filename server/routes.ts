@@ -3225,12 +3225,14 @@ ${search}${questionPart}
   // GET /api/market-trend/index-prediction/:symbol
   app.get("/api/market-trend/index-prediction/:symbol", async (req, res) => {
     const sym = decodeURIComponent(req.params.symbol);
+    // SMH is stored as market='US', others as market='INDEX'
+    const predMarket = (sym === "SMH") ? "US" : "INDEX";
     try {
       const r = sqlite.prepare(`
         SELECT * FROM modelpredictions
-        WHERE symbol=? AND market='INDEX'
+        WHERE symbol=? AND market=?
         ORDER BY run_at DESC, created_at DESC LIMIT 1
-      `).get(sym) as any;
+      `).get(sym, predMarket) as any;
 
       if (!r) return res.json({ found: false });
 
@@ -3254,9 +3256,9 @@ ${search}${questionPart}
       const pastRuns = sqlite.prepare(`
         SELECT run_at, base_date, base_price, median_path, lower_path, upper_path, meta_json
         FROM modelpredictions
-        WHERE symbol=? AND market='INDEX'
+        WHERE symbol=? AND market=?
         ORDER BY run_at DESC, created_at DESC LIMIT 30
-      `).all(sym) as any[];
+      `).all(sym, predMarket) as any[];
 
       const pastPredictions = pastRuns.map((pr: any) => {
         const prMeta = pr.meta_json ? JSON.parse(pr.meta_json) : {};

@@ -161,7 +161,7 @@ async function runSweep(label = "sweep", force = false): Promise<void> {
       { symbol: "^DJI",  market: "INDEX", name: "道瓊工業指數" },
       { symbol: "^GSPC", market: "INDEX", name: "S&P 500" },
       { symbol: "^IXIC", market: "INDEX", name: "Nasdaq 綜合指數" },
-      { symbol: "^SOX",  market: "INDEX", name: "費城半導體指數" },
+      { symbol: "SMH",   market: "US",    name: "半導體 ETF (SMH)" },
     ];
     const allSymbols = [
       ...watchlist,
