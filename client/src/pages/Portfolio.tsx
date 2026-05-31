@@ -114,7 +114,7 @@ export default function Portfolio() {
   });
 
   // Fetch performance curve
-  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number}> }>({
+  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number;realizedCostBasis:number}> }>({
     queryKey: ["/api/portfolio/performance"],
     queryFn: () => apiRequest("GET", "/api/portfolio/performance").then(r => r.json()),
     staleTime: 10 * 60_000,
@@ -426,12 +426,12 @@ export default function Portfolio() {
             const latestNav = last?.nav ?? 0;
             const latestHoldingCost = last?.holdingCost ?? 0;
             const latestRealizedPnl = last?.realizedPnl ?? 0;
-            // 未實現損益 = 市值 - 持倉成本
+            const latestRealizedCostBasis = last?.realizedCostBasis ?? 0;
+            // 未實現報酬率 = 未實現損益 / 現有持倉成本
             const unrealizedPnl = latestNav - latestHoldingCost;
-            // 報酬率基準：持倉成本（若為0則用1避免除以0）
-            const costBase = latestHoldingCost > 0 ? latestHoldingCost : 1;
-            const realizedReturn = latestRealizedPnl / costBase * 100;
-            const unrealizedReturn = unrealizedPnl / costBase * 100;
+            const unrealizedReturn = latestHoldingCost > 0 ? (unrealizedPnl / latestHoldingCost * 100) : 0;
+            // 已實現報酬率 = 已實現損益 / 已賣出部位的成本基礎
+            const realizedReturn = latestRealizedCostBasis > 0 ? (latestRealizedPnl / latestRealizedCostBasis * 100) : 0;
 
             const fmtNTK = (v: number) => {
               if (v >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
@@ -511,10 +511,10 @@ export default function Portfolio() {
                             const nav = p?.nav ?? 0;
                             const hc = p?.holdingCost ?? 0;
                             const realized = p?.realizedPnl ?? 0;
+                            const rcb = p?.realizedCostBasis ?? 0;
                             const unrealized = nav - hc;
-                            const base = hc > 0 ? hc : 1;
-                            const uRet = unrealized / base * 100;
-                            const rRet = realized / base * 100;
+                            const uRet = hc > 0 ? (unrealized / hc * 100) : 0;
+                            const rRet = rcb > 0 ? (realized / rcb * 100) : 0;
                             return `${label}  未實現 ${uRet >= 0 ? "+" : ""}${uRet.toFixed(2)}%  已實現 ${rRet >= 0 ? "+" : ""}${rRet.toFixed(2)}%`;
                           }}
                         />

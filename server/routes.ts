@@ -254,7 +254,8 @@ export async function registerRoutes(
       const holdings = new Map<string, PosState>();
       let realizedPnlTwd = 0;  // cumulative realized PnL in TWD (incl dividends)
       let txIdx = 0;
-      const curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number}> = [];
+      let realizedCostBasisTwd = 0; // cumulative cost basis of all sold shares (TWD)
+      const curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number;realizedCostBasis:number}> = [];
 
       for (const date of allDates) {
         const fx = fxMap.get(date) ?? lastFx;
@@ -299,12 +300,14 @@ export async function registerRoutes(
                   lot.shares -= rem; rem = 0;
                 }
               }
-              realizedPnlTwd += proceeds - cb; // TW native = TWD
+              realizedPnlTwd += proceeds - cb;
+              realizedCostBasisTwd += cb; // TWD
             } else {
               const avgNow = pos.shares > 0 ? pos.holdingCost / pos.shares : 0;
               const cb = avgNow * t.shares;
               const pnlNative = proceeds - cb;
-              realizedPnlTwd += pnlNative * fx; // USD → TWD
+              realizedPnlTwd += pnlNative * fx;
+              realizedCostBasisTwd += cb * fx; // USD → TWD
               pos.holdingCost -= cb;
               pos.shares -= t.shares;
             }
@@ -336,7 +339,7 @@ export async function registerRoutes(
           holdingCostTwd += costNative * fxRate;
         }
         if (!hasAnyHolding) continue;
-        curve.push({ date, nav, holdingCost: holdingCostTwd, realizedPnl: realizedPnlTwd });
+        curve.push({ date, nav, holdingCost: holdingCostTwd, realizedPnl: realizedPnlTwd, realizedCostBasis: realizedCostBasisTwd });
       }
 
       res.json({ curve });
