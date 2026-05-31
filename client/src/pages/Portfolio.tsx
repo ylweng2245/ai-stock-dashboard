@@ -113,15 +113,8 @@ export default function Portfolio() {
     placeholderData: (prev: ComputedHolding[] | undefined) => prev,  // show stale data while refreshing
   });
 
-  // Fetch XIRR
-  const { data: xirrData } = useQuery<{ xirr: number | null; currentNavTwd: number }>({
-    queryKey: ["/api/portfolio/xirr"],
-    queryFn: () => apiRequest("GET", "/api/portfolio/xirr").then(r => r.json()),
-    staleTime: 15 * 60_000,
-  });
-
   // Fetch performance curve
-  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;invested:number}> }>({
+  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;totalBuyCost:number;realizedPnl:number}> }>({
     queryKey: ["/api/portfolio/performance"],
     queryFn: () => apiRequest("GET", "/api/portfolio/performance").then(r => r.json()),
     staleTime: 10 * 60_000,
@@ -429,12 +422,13 @@ export default function Portfolio() {
           {(() => {
             const curve = perfData?.curve ?? [];
             const hasCurve = curve.length >= 5;
-            const latestNav = curve[curve.length - 1]?.nav ?? 0;
-            const latestInvested = curve[curve.length - 1]?.invested ?? 0;
-            const totalReturn = latestInvested > 0
-              ? ((latestNav - latestInvested) / latestInvested * 100)
-              : 0;
-            const isPositive = totalReturn >= 0;
+            const last = curve[curve.length - 1];
+            const latestNav = last?.nav ?? 0;
+            const latestBuyCost = last?.totalBuyCost ?? 0;
+            const latestRealizedPnl = last?.realizedPnl ?? 0;
+            const unrealizedPnl = latestNav - latestBuyCost + latestRealizedPnl;
+            const realizedReturn = latestBuyCost > 0 ? (latestRealizedPnl / latestBuyCost * 100) : 0;
+            const unrealizedReturn = latestBuyCost > 0 ? (unrealizedPnl / latestBuyCost * 100) : 0;
 
             const fmtNTK = (v: number) => {
               if (v >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
@@ -449,24 +443,18 @@ export default function Portfolio() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">組合淨值曲線</CardTitle>
                     {hasCurve && (
-                      <div className="flex items-center gap-3">
-                        {xirrData?.xirr != null && (
-                          <span className="text-xs text-muted-foreground tabular-nums">
-                            年化{" "}
-                            <span className={cn(
-                              "font-semibold",
-                              xirrData.xirr >= 0 ? "text-gain" : "text-loss"
-                            )}>
-                              {xirrData.xirr >= 0 ? "+" : ""}{xirrData.xirr.toFixed(2)}%
-                            </span>
-                            {" "}(XIRR)
+                      <div className="flex items-center gap-4">
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          已實現{" "}
+                          <span className={cn("font-semibold", realizedReturn >= 0 ? "text-gain" : "text-loss")}>
+                            {realizedReturn >= 0 ? "+" : ""}{realizedReturn.toFixed(2)}%
                           </span>
-                        )}
-                        <span className={cn(
-                          "text-sm font-semibold tabular-nums",
-                          isPositive ? "text-gain" : "text-loss"
-                        )}>
-                          {isPositive ? "+" : ""}{totalReturn.toFixed(2)}%
+                        </span>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          未實現{" "}
+                          <span className={cn("font-semibold", unrealizedReturn >= 0 ? "text-gain" : "text-loss")}>
+                            {unrealizedReturn >= 0 ? "+" : ""}{unrealizedReturn.toFixed(2)}%
+                          </span>
                         </span>
                       </div>
                     )}
@@ -511,18 +499,21 @@ export default function Portfolio() {
                           formatter={(value: any, name: string) => {
                             const v = typeof value === "number" ? value : 0;
                             if (name === "nav") return [fmtNTK(v), "市值"];
-                            if (name === "invested") return [fmtNTK(v), "投入"];
+                            if (name === "realizedPnl") return [fmtNTK(v), "已實現損益"];
                             return [value, name];
                           }}
                           labelFormatter={(label: string, payload: any[]) => {
                             const p = payload?.[0]?.payload;
                             const nav = p?.nav ?? 0;
-                            const inv = p?.invested ?? 0;
-                            const ret = inv > 0 ? ((nav - inv) / inv * 100) : 0;
-                            return `${label}  報酬 ${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%`;
+                            const buyCost = p?.totalBuyCost ?? 0;
+                            const realized = p?.realizedPnl ?? 0;
+                            const unrealized = nav - buyCost + realized;
+                            const uRet = buyCost > 0 ? ((unrealized / buyCost) * 100) : 0;
+                            const rRet = buyCost > 0 ? ((realized / buyCost) * 100) : 0;
+                            return `${label}  未實現 ${uRet >= 0 ? "+" : ""}${uRet.toFixed(2)}%  已實現 ${rRet >= 0 ? "+" : ""}${rRet.toFixed(2)}%`;
                           }}
                         />
-                        {/* Fill area between nav and invested */}
+                        {/* NAV 市值曲線 */}
                         <Area
                           type="monotone"
                           dataKey="nav"
@@ -533,16 +524,16 @@ export default function Portfolio() {
                           isAnimationActive={false}
                           name="nav"
                         />
+                        {/* 已實現損益紅線 */}
                         <Line
                           type="monotone"
-                          dataKey="invested"
-                          stroke="hsl(var(--muted-foreground))"
+                          dataKey="realizedPnl"
+                          stroke="#ef4444"
                           strokeWidth={1.5}
-                          strokeDasharray="5 4"
                           dot={false}
                           activeDot={false}
                           isAnimationActive={false}
-                          name="invested"
+                          name="realizedPnl"
                         />
                       </ComposedChart>
                     </ResponsiveContainer>
