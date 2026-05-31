@@ -434,9 +434,10 @@ export default function Portfolio() {
             const realizedReturn = latestRealizedCostBasis > 0 ? (latestRealizedPnl / latestRealizedCostBasis * 100) : 0;
 
             const fmtNTK = (v: number) => {
-              if (v >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
-              if (v >= 1_000_000)  return `NT ${(v / 10_000).toFixed(1)}萬`;
-              if (v >= 1_000)      return `NT ${(v / 1_000).toFixed(0)}k`;
+              if (Math.abs(v) >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
+              if (Math.abs(v) >= 1_000_000)  return `NT ${(v / 10_000).toFixed(1)}萬`;
+              if (Math.abs(v) >= 10_000)     return `NT ${(v / 10_000).toFixed(2)}萬`;
+              if (Math.abs(v) >= 1_000)      return `NT ${(v / 10_000).toFixed(3)}萬`;
               return `NT ${v.toFixed(0)}`;
             };
 

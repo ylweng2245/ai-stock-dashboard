@@ -338,7 +338,9 @@ export async function registerRoutes(
           nav += valueNative * fxRate;
           holdingCostTwd += costNative * fxRate;
         }
-        if (!hasAnyHolding) continue;
+        // Include day even if fully sold out (hasAnyHolding=false) as long as
+        // there has been at least one transaction (realizedCostBasis > 0)
+        if (!hasAnyHolding && realizedCostBasisTwd === 0) continue;
         curve.push({ date, nav, holdingCost: holdingCostTwd, realizedPnl: realizedPnlTwd, realizedCostBasis: realizedCostBasisTwd });
       }
 
