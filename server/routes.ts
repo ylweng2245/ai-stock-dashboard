@@ -240,62 +240,103 @@ export async function registerRoutes(
       const lastKnownPrice = new Map<string, number>();
 
       // Compute portfolio NAV per day
-      // holdings: symbol -> { shares, market, currency, avgCostTwd (per share in TWD) }
-      const holdings = new Map<string, {shares:number;market:string;currency:string;avgCostTwd:number}>();
-      let totalBuyCostTwd = 0;    // cumulative TWD cost of ALL buys (never decreases)
-      let realizedPnlTwd = 0;     // cumulative realized PnL in TWD
+      // Mirrors portfolio/computed logic exactly:
+      //   TW stocks: FIFO lots
+      //   US stocks: Weighted Average Cost
+      //   Dividends: directly added to realizedPnl (native currency → TWD)
+      type PosState = {
+        shares: number;       // current holding shares
+        holdingCost: number;  // current holding cost (native currency)
+        currency: string;
+        market: string;
+        lots: Array<{ shares: number; unitCost: number }>; // FIFO lots (TW)
+      };
+      const holdings = new Map<string, PosState>();
+      let realizedPnlTwd = 0;  // cumulative realized PnL in TWD (incl dividends)
       let txIdx = 0;
-      const curve: Array<{date:string;nav:number;totalBuyCost:number;realizedPnl:number}> = [];
+      const curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number}> = [];
 
       for (const date of allDates) {
+        const fx = fxMap.get(date) ?? lastFx;
+
         // Apply transactions on this date
         while (txIdx < txns.length && txns[txIdx].trade_date === date) {
           const t = txns[txIdx];
           const key = t.symbol;
-          const fx = fxMap.get(date) ?? lastFx;
-          const cur = holdings.get(key) ?? { shares: 0, market: t.market, currency: t.currency, avgCostTwd: 0 };
-          const costTwd = t.currency === 'USD'
-            ? Math.abs(t.total_cost) * fx
-            : Math.abs(t.total_cost);
-          if (t.side === 'buy') {
-            // Update avg cost (weighted average)
-            const prevTotal = cur.avgCostTwd * cur.shares;
-            cur.shares += t.shares;
-            cur.avgCostTwd = cur.shares > 0 ? (prevTotal + costTwd) / cur.shares : 0;
-            totalBuyCostTwd += costTwd;
-          } else {
-            // Realized PnL = (sell price - avg cost) * shares sold (in TWD)
-            const sellPriceTwd = t.currency === 'USD' ? t.price * fx : t.price;
-            const pnl = (sellPriceTwd - cur.avgCostTwd) * t.shares;
-            realizedPnlTwd += pnl;
-            cur.shares -= t.shares;
-            if (cur.shares <= 0) { cur.shares = 0; cur.avgCostTwd = 0; }
+          if (!holdings.has(key)) {
+            holdings.set(key, { shares: 0, holdingCost: 0, currency: t.currency, market: t.market, lots: [] });
           }
-          holdings.set(key, cur);
+          const pos = holdings.get(key)!;
+          const isTW = t.market === 'TW';
+          const absCost = Math.abs(t.total_cost); // native currency
+
+          if (t.side === 'buy') {
+            if (isTW) {
+              pos.lots.push({ shares: t.shares, unitCost: absCost / t.shares });
+              pos.holdingCost += absCost;
+            } else {
+              pos.holdingCost += absCost;
+            }
+            pos.shares += t.shares;
+          } else if (t.side === 'dividend') {
+            // Dividend: add to realized (total_cost is positive for dividends)
+            const divTwd = t.currency === 'USD' ? t.total_cost * fx : t.total_cost;
+            realizedPnlTwd += divTwd;
+          } else {
+            // Sell
+            const proceeds = absCost; // native
+            if (isTW) {
+              let rem = t.shares; let cb = 0;
+              while (rem > 0.0001 && pos.lots.length > 0) {
+                const lot = pos.lots[0];
+                if (lot.shares <= rem + 0.0001) {
+                  cb += lot.unitCost * lot.shares; rem -= lot.shares;
+                  pos.shares -= lot.shares; pos.holdingCost -= lot.unitCost * lot.shares;
+                  pos.lots.shift();
+                } else {
+                  cb += lot.unitCost * rem;
+                  pos.shares -= rem; pos.holdingCost -= lot.unitCost * rem;
+                  lot.shares -= rem; rem = 0;
+                }
+              }
+              realizedPnlTwd += proceeds - cb; // TW native = TWD
+            } else {
+              const avgNow = pos.shares > 0 ? pos.holdingCost / pos.shares : 0;
+              const cb = avgNow * t.shares;
+              const pnlNative = proceeds - cb;
+              realizedPnlTwd += pnlNative * fx; // USD → TWD
+              pos.holdingCost -= cb;
+              pos.shares -= t.shares;
+            }
+            if (pos.shares < 0.0001) { pos.shares = 0; pos.holdingCost = 0; pos.lots = []; }
+          }
           txIdx++;
         }
         if (fxMap.has(date)) lastFx = fxMap.get(date)!;
 
-        // Update last-known prices for today (forward-fill)
+        // Update last-known prices (forward-fill)
         for (const [sym, symPrices] of priceHistory) {
           const p = symPrices.get(date);
           if (p != null) lastKnownPrice.set(sym, p);
         }
 
-        // Compute NAV: sum of market values in TWD
+        // Compute NAV (market value) and holdingCost in TWD
         let nav = 0;
+        let holdingCostTwd = 0;
         let hasAnyHolding = false;
-        for (const [sym, h] of holdings) {
-          if (h.shares <= 0) continue;
+        for (const [sym, pos] of holdings) {
+          if (pos.shares <= 0.0001) continue;
           const price = lastKnownPrice.get(sym) ?? null;
           if (price === null) continue;
           hasAnyHolding = true;
-          const valueInNative = price * h.shares;
-          nav += h.currency === 'USD' ? valueInNative * lastFx : valueInNative;
+          const valueNative = price * pos.shares;
+          const costNative = pos.holdingCost;
+          const fxRate = pos.currency === 'USD' ? (fxMap.get(date) ?? lastFx) : 1;
+          nav += valueNative * fxRate;
+          holdingCostTwd += costNative * fxRate;
         }
         if (!hasAnyHolding) continue;
-        if (nav === 0 && totalBuyCostTwd === 0) continue;
-        curve.push({ date, nav, totalBuyCost: totalBuyCostTwd, realizedPnl: realizedPnlTwd });
+        curve.push({ date, nav, holdingCost: holdingCostTwd, realizedPnl: realizedPnlTwd });
       }
 
       res.json({ curve });

@@ -114,7 +114,7 @@ export default function Portfolio() {
   });
 
   // Fetch performance curve
-  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;totalBuyCost:number;realizedPnl:number}> }>({
+  const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number}> }>({
     queryKey: ["/api/portfolio/performance"],
     queryFn: () => apiRequest("GET", "/api/portfolio/performance").then(r => r.json()),
     staleTime: 10 * 60_000,
@@ -424,11 +424,14 @@ export default function Portfolio() {
             const hasCurve = curve.length >= 5;
             const last = curve[curve.length - 1];
             const latestNav = last?.nav ?? 0;
-            const latestBuyCost = last?.totalBuyCost ?? 0;
+            const latestHoldingCost = last?.holdingCost ?? 0;
             const latestRealizedPnl = last?.realizedPnl ?? 0;
-            const unrealizedPnl = latestNav - latestBuyCost + latestRealizedPnl;
-            const realizedReturn = latestBuyCost > 0 ? (latestRealizedPnl / latestBuyCost * 100) : 0;
-            const unrealizedReturn = latestBuyCost > 0 ? (unrealizedPnl / latestBuyCost * 100) : 0;
+            // 未實現損益 = 市值 - 持倉成本
+            const unrealizedPnl = latestNav - latestHoldingCost;
+            // 報酬率基準：持倉成本（若為0則用1避免除以0）
+            const costBase = latestHoldingCost > 0 ? latestHoldingCost : 1;
+            const realizedReturn = latestRealizedPnl / costBase * 100;
+            const unrealizedReturn = unrealizedPnl / costBase * 100;
 
             const fmtNTK = (v: number) => {
               if (v >= 10_000_000) return `NT ${(v / 10_000).toFixed(0)}萬`;
@@ -499,17 +502,19 @@ export default function Portfolio() {
                           formatter={(value: any, name: string) => {
                             const v = typeof value === "number" ? value : 0;
                             if (name === "nav") return [fmtNTK(v), "市值"];
+                            if (name === "holdingCost") return [fmtNTK(v), "持倉成本"];
                             if (name === "realizedPnl") return [fmtNTK(v), "已實現損益"];
                             return [value, name];
                           }}
                           labelFormatter={(label: string, payload: any[]) => {
                             const p = payload?.[0]?.payload;
                             const nav = p?.nav ?? 0;
-                            const buyCost = p?.totalBuyCost ?? 0;
+                            const hc = p?.holdingCost ?? 0;
                             const realized = p?.realizedPnl ?? 0;
-                            const unrealized = nav - buyCost + realized;
-                            const uRet = buyCost > 0 ? ((unrealized / buyCost) * 100) : 0;
-                            const rRet = buyCost > 0 ? ((realized / buyCost) * 100) : 0;
+                            const unrealized = nav - hc;
+                            const base = hc > 0 ? hc : 1;
+                            const uRet = unrealized / base * 100;
+                            const rRet = realized / base * 100;
                             return `${label}  未實現 ${uRet >= 0 ? "+" : ""}${uRet.toFixed(2)}%  已實現 ${rRet >= 0 ? "+" : ""}${rRet.toFixed(2)}%`;
                           }}
                         />
@@ -523,6 +528,18 @@ export default function Portfolio() {
                           activeDot={false}
                           isAnimationActive={false}
                           name="nav"
+                        />
+                        {/* 持倉成本灰線 */}
+                        <Line
+                          type="monotone"
+                          dataKey="holdingCost"
+                          stroke="hsl(var(--muted-foreground))"
+                          strokeWidth={1.5}
+                          strokeDasharray="5 4"
+                          dot={false}
+                          activeDot={false}
+                          isAnimationActive={false}
+                          name="holdingCost"
                         />
                         {/* 已實現損益紅線 */}
                         <Line
