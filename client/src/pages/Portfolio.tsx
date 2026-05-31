@@ -477,10 +477,10 @@ export default function Portfolio() {
                         <XAxis
                           dataKey="date"
                           tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                          interval={Math.max(1, Math.floor(curve.length / 4))}
+                          interval={Math.max(1, Math.floor(curve.length / 6))}
                           tickFormatter={(v: string) => {
-                            const d = new Date(v);
-                            return `${d.getFullYear()}Q${Math.ceil((d.getMonth() + 1) / 3)}`;
+                            const d = new Date(v + 'T00:00:00');
+                            return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`;
                           }}
                         />
                         <YAxis
