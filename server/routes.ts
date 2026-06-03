@@ -3250,14 +3250,16 @@ ${search}${questionPart}
   // GET /api/market-trend/index-history/:symbol
   // Auto-refreshes via yfinance if DB is stale (missing recent trading days)
   app.get("/api/market-trend/index-history/:symbol", async (req, res) => {
-    const sym = req.params.symbol;
+    // sym is the DB/yfinance symbol (always with ^ prefix, e.g. "^GSPC")
+    // req.params.symbol may arrive as "^GSPC" or "GSPC" — normalise here
+    const rawSym = req.params.symbol;
+    const sym = rawSym.startsWith("^") ? rawSym : `^${rawSym}`;
+    const yfSym = sym; // already has ^ prefix
     const market = "INDEX";
     try {
       // Gap-fill logic (mirrors getOrSyncHistoricalData for individual stocks):
       // - No data → fetch 2y base history (initial load)
       // - Has data but gap >= 1 US trading day → fetch only the missing range
-      // INDEX symbols use ^ prefix for yfinance (GSPC→^GSPC, DJI→^DJI, IXIC→^IXIC)
-      const yfSym = `^${sym}`;
       const latest = sqlite.prepare(`
         SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?
       `).get(sym, market) as any;
