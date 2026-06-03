@@ -108,16 +108,38 @@ async function ensureIndexHistory(symbol: string, market: string): Promise<void>
       `SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?`
     ).get(symbol, market) as any;
     const maxDate: string = latest?.maxDate ?? "";
-    const oneDayAgo = new Date(Date.now() - 1 * 86400_000).toISOString().slice(0, 10);
-    if (maxDate >= oneDayAgo) return; // already fresh
+
+    // Smart gap-fill: mirrors getOrSyncHistoricalData logic
+    // Count trading days since maxDate (skip weekends)
+    let tradingGap = 0;
+    if (maxDate) {
+      const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+      const from = new Date(maxDate + "T00:00:00Z");
+      const to = new Date(yesterday + "T00:00:00Z");
+      for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+        const dow = d.getUTCDay();
+        if (dow !== 0 && dow !== 6) tradingGap++;
+      }
+      if (tradingGap < 1) return; // already up to date
+    }
 
     const py = platform() === "win32" ? "python" : "python3";
     const tmpFile = join(tmpdir(), `sched_hist_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.py`);
-    // Always fetch 2y to avoid gaps from weekends/holidays; upsert is idempotent
+    const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+
+    let histLine: string;
+    if (!maxDate) {
+      // No data at all — initial load
+      histLine = `hist = t.history(period='2y', auto_adjust=True)`;
+    } else {
+      // Gap-fill: only fetch from maxDate to yesterday
+      histLine = `hist = t.history(start='${maxDate}', end='${yesterday}', auto_adjust=True)`;
+    }
+
     writeFileSync(tmpFile, [
       "import yfinance as yf, json",
       `t = yf.Ticker('${symbol}')`,
-      `hist = t.history(period='2y', auto_adjust=True)`,
+      histLine,
       "rows = []",
       "for dt, row in hist.iterrows():",
       "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
@@ -126,7 +148,9 @@ async function ensureIndexHistory(symbol: string, market: string): Promise<void>
     const raw = execSync(`${py} "${tmpFile}"`, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }).toString().trim();
     try { unlinkSync(tmpFile); } catch {}
     const jsonStart = raw.lastIndexOf("[");
-    const rows: any[] = jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) : [];
+    const allRows: any[] = jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) : [];
+    // Only upsert from maxDate onwards to avoid overwriting good older data
+    const rows = maxDate ? allRows.filter((r: any) => r.date >= maxDate) : allRows;
     if (rows.length === 0) return;
     const upsert = sqlite.prepare(`
       INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
@@ -140,7 +164,7 @@ async function ensureIndexHistory(symbol: string, market: string): Promise<void>
       for (const r of rs) upsert.run(symbol, market, r.date, r.open, r.high, r.low, r.close, r.volume, now);
     });
     insertMany(rows);
-    console.log(`[predSched] ensureIndexHistory ${symbol}: +${rows.length} bars (was ${maxDate})`);
+    console.log(`[predSched] ensureIndexHistory ${symbol}: +${rows.length} bars (gap=${tradingGap}, from ${maxDate})`);
   } catch (e: any) {
     console.warn(`[predSched] ensureIndexHistory ${symbol} failed: ${e.message}`);
   }
