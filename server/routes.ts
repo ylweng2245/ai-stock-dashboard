@@ -3253,54 +3253,91 @@ ${search}${questionPart}
     const sym = req.params.symbol;
     const market = "INDEX";
     try {
-      // Check if DB data is stale (latest bar older than 2 days ago)
+      // Gap-fill logic (mirrors getOrSyncHistoricalData for individual stocks):
+      // - No data → fetch 2y base history (initial load)
+      // - Has data but gap >= 1 US trading day → fetch only the missing range
+      // INDEX symbols use ^ prefix for yfinance (GSPC→^GSPC, DJI→^DJI, IXIC→^IXIC)
+      const yfSym = `^${sym}`;
       const latest = sqlite.prepare(`
         SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?
       `).get(sym, market) as any;
       const maxDate: string = latest?.maxDate ?? "";
-      const oneDayAgo = new Date(Date.now() - 1 * 86400_000).toISOString().slice(0, 10);
 
-      if (maxDate < oneDayAgo) {
-        // Refresh via yfinance
-        try {
-          const { execSync } = await import("child_process");
-          const { writeFileSync, unlinkSync } = await import("fs");
-          const { tmpdir, platform } = await import("os");
-          const { join } = await import("path");
-          const py = platform() === "win32" ? "python" : "python3";
-          const tmpFile = join(tmpdir(), `idx_hist_${Date.now()}.py`);
-          // INDEX symbols need ^ prefix for yfinance (GSPC -> ^GSPC, DJI -> ^DJI, IXIC -> ^IXIC)
-          const yfSym = market === "INDEX" ? `^${sym}` : sym;
-          // Always fetch 2y to avoid gaps from weekends/holidays; upsert is idempotent
-          writeFileSync(tmpFile, [
+      const runYfinance = async (script: string) => {
+        const { execSync } = await import("child_process");
+        const { writeFileSync, unlinkSync } = await import("fs");
+        const { tmpdir, platform } = await import("os");
+        const { join } = await import("path");
+        const py = platform() === "win32" ? "python" : "python3";
+        const tmpFile = join(tmpdir(), `idx_hist_${Date.now()}.py`);
+        writeFileSync(tmpFile, script, "utf8");
+        const raw = execSync(`${py} "${tmpFile}"`, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }).toString().trim();
+        try { unlinkSync(tmpFile); } catch {}
+        const jsonStart = raw.lastIndexOf("[");
+        return jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) as any[] : [];
+      };
+
+      const upsertBars = (rows: any[]) => {
+        if (rows.length === 0) return;
+        const upsert = sqlite.prepare(`
+          INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(symbol, market, date) DO UPDATE SET
+            open=excluded.open, high=excluded.high, low=excluded.low,
+            close=excluded.close, volume=excluded.volume, updated_at=excluded.updated_at
+        `);
+        const now = new Date().toISOString();
+        sqlite.transaction((rs: any[]) => {
+          for (const r of rs) upsert.run(sym, market, r.date, r.open, r.high, r.low, r.close, r.volume, now);
+        })(rows);
+      };
+
+      try {
+        if (!maxDate) {
+          // No data — initial 2y load
+          const rows = await runYfinance([
             "import yfinance as yf, json",
             `t = yf.Ticker('${yfSym}')`,
-            `hist = t.history(period='2y', auto_adjust=True)`,
+            "hist = t.history(period='2y', auto_adjust=True)",
             "rows = []",
             "for dt, row in hist.iterrows():",
             "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
             "print(json.dumps(rows))",
-          ].join("\n"), "utf8");
-          const raw = execSync(`${py} "${tmpFile}"`, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }).toString().trim();
-          try { unlinkSync(tmpFile); } catch {}
-          const jsonStart = raw.lastIndexOf("[");
-          const rows: any[] = jsonStart >= 0 ? JSON.parse(raw.slice(jsonStart)) : [];
-          const upsert = sqlite.prepare(`
-            INSERT INTO historical_prices (symbol, market, date, open, high, low, close, volume, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol, market, date) DO UPDATE SET
-              open=excluded.open, high=excluded.high, low=excluded.low,
-              close=excluded.close, volume=excluded.volume, updated_at=excluded.updated_at
-          `);
-          const now = new Date().toISOString();
-          const insertMany = sqlite.transaction((rs: any[]) => {
-            for (const r of rs) upsert.run(sym, market, r.date, r.open, r.high, r.low, r.close, r.volume, now);
-          });
-          insertMany(rows);
-          console.log(`[index-history] refreshed ${sym}: ${rows.length} bars (latest was ${maxDate})`);
-        } catch (fetchErr: any) {
-          console.warn(`[index-history] yfinance refresh failed for ${sym}: ${fetchErr.message}`);
+          ].join("\n"));
+          upsertBars(rows);
+          console.log(`[index-history] initial load ${sym}: ${rows.length} bars`);
+        } else {
+          // Count trading day gap (US market)
+          const usToday = new Date(Date.now() - 4 * 3600_000).toISOString().slice(0, 10); // EDT approx
+          const from = new Date(maxDate + "T00:00:00Z");
+          let tradingGap = 0;
+          const cur = new Date(from.getTime() + 86400_000);
+          while (cur <= new Date(usToday + "T00:00:00Z")) {
+            const dow = cur.getUTCDay();
+            if (dow !== 0 && dow !== 6) tradingGap++;
+            cur.setUTCDate(cur.getUTCDate() + 1);
+          }
+          if (tradingGap >= 1) {
+            // end is exclusive in yfinance, so use tomorrow (usToday+1) to include today's bar
+            const usTodayDate = new Date(new Date(usToday + "T00:00:00Z").getTime() + 86400_000)
+              .toISOString().slice(0, 10);
+            const rows = await runYfinance([
+              "import yfinance as yf, json",
+              `t = yf.Ticker('${yfSym}')`,
+              `hist = t.history(start='${maxDate}', end='${usTodayDate}', auto_adjust=True)`,
+              "rows = []",
+              "for dt, row in hist.iterrows():",
+              "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
+              "print(json.dumps(rows))",
+            ].join("\n"));
+            // Only upsert from maxDate onwards (don't overwrite older bars)
+            const filtered = rows.filter((r: any) => r.date >= maxDate);
+            upsertBars(filtered);
+            console.log(`[index-history] gap-fill ${sym}: ${filtered.length} bars (gap=${tradingGap} days, from ${maxDate})`);
+          }
         }
+      } catch (fetchErr: any) {
+        console.warn(`[index-history] yfinance refresh failed for ${sym}: ${fetchErr.message}`);
       }
 
       const bars = sqlite.prepare(`

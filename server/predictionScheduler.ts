@@ -125,15 +125,18 @@ async function ensureIndexHistory(symbol: string, market: string): Promise<void>
 
     const py = platform() === "win32" ? "python" : "python3";
     const tmpFile = join(tmpdir(), `sched_hist_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.py`);
-    const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+    // end is exclusive in yfinance; use US EDT today+1 to include latest bar
+    const usToday = new Date(Date.now() - 4 * 3600_000).toISOString().slice(0, 10);
+    const endDate = new Date(new Date(usToday + "T00:00:00Z").getTime() + 86400_000)
+      .toISOString().slice(0, 10);
 
     let histLine: string;
     if (!maxDate) {
       // No data at all — initial load
       histLine = `hist = t.history(period='2y', auto_adjust=True)`;
     } else {
-      // Gap-fill: only fetch from maxDate to yesterday
-      histLine = `hist = t.history(start='${maxDate}', end='${yesterday}', auto_adjust=True)`;
+      // Gap-fill: only fetch from maxDate to today (end exclusive = tomorrow)
+      histLine = `hist = t.history(start='${maxDate}', end='${endDate}', auto_adjust=True)`;
     }
 
     writeFileSync(tmpFile, [
