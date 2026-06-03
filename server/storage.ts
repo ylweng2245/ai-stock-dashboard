@@ -355,14 +355,23 @@ export class DatabaseStorage implements IStorage {
   // ---------------------------------------------------------------------------
 
   async getIndicatorHistory(indicatorKey: string, fromDate?: string): Promise<MarketIndicator[]> {
+    // Always cap at today to filter out corrupted future-dated rows
+    const today = new Date().toISOString().slice(0, 10);
     if (fromDate) {
       return db.select().from(marketIndicators)
-        .where(and(eq(marketIndicators.indicatorKey, indicatorKey), gte(marketIndicators.date, fromDate)))
+        .where(and(
+          eq(marketIndicators.indicatorKey, indicatorKey),
+          gte(marketIndicators.date, fromDate),
+          lte(marketIndicators.date, today),
+        ))
         .orderBy(asc(marketIndicators.date))
         .all();
     }
     return db.select().from(marketIndicators)
-      .where(eq(marketIndicators.indicatorKey, indicatorKey))
+      .where(and(
+        eq(marketIndicators.indicatorKey, indicatorKey),
+        lte(marketIndicators.date, today),
+      ))
       .orderBy(asc(marketIndicators.date))
       .all();
   }
