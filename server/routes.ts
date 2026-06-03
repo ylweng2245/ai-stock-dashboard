@@ -3260,6 +3260,12 @@ ${search}${questionPart}
       // Gap-fill logic (mirrors getOrSyncHistoricalData for individual stocks):
       // - No data → fetch 2y base history (initial load)
       // - Has data but gap >= 1 US trading day → fetch only the missing range
+      // ?reset=1 → wipe all existing bars and force a fresh 2y reload
+      if (req.query.reset === "1") {
+        sqlite.prepare(`DELETE FROM historical_prices WHERE symbol=? AND market=?`).run(sym, market);
+        console.log(`[index-history] reset: cleared all bars for ${sym}`);
+      }
+
       const latest = sqlite.prepare(`
         SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?
       `).get(sym, market) as any;
