@@ -3363,8 +3363,7 @@ ${search}${questionPart}
   // GET /api/market-trend/index-prediction/:symbol
   app.get("/api/market-trend/index-prediction/:symbol", async (req, res) => {
     const sym = decodeURIComponent(req.params.symbol);
-    // SMH is stored as market='US', others as market='INDEX'
-    const predMarket = (sym === "SMH") ? "US" : "INDEX";
+    const predMarket = "INDEX";
     try {
       const r = sqlite.prepare(`
         SELECT * FROM modelpredictions

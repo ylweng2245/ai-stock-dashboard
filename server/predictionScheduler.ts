@@ -102,7 +102,7 @@ function hasTodayPrediction(symbol: string, market: string): boolean {
  * via yfinance if the latest bar is older than 2 days.
  */
 async function ensureIndexHistory(symbol: string, market: string): Promise<void> {
-  if (market !== "INDEX" && !(market === "US" && symbol === "SMH")) return;
+  if (market !== "INDEX") return;
   try {
     const latest = sqlite.prepare(
       `SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?`
@@ -240,7 +240,7 @@ async function runSweep(label = "sweep", force = false): Promise<void> {
       { symbol: "^DJI",  market: "INDEX", name: "道瓊工業指數" },
       { symbol: "^GSPC", market: "INDEX", name: "S&P 500" },
       { symbol: "^IXIC", market: "INDEX", name: "Nasdaq 綜合指數" },
-      { symbol: "SMH",   market: "US",    name: "半導體 ETF (SMH)" },
+      { symbol: "^SOX",  market: "INDEX", name: "費城半導體指數" },
     ];
     const allSymbols = [
       ...watchlist,

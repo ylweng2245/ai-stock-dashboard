@@ -17,7 +17,7 @@ const INDEX_LIST = [
   { symbol: "^DJI",  name: "道瓊工業指數", shortName: "DJIA" },
   { symbol: "^GSPC", name: "S&P 500",      shortName: "SPX" },
   { symbol: "^IXIC", name: "Nasdaq 綜合",  shortName: "NDX" },
-  { symbol: "SMH",   name: "半導體 ETF (SMH)", shortName: "SMH" },
+  { symbol: "^SOX",  name: "費城半導體指數",    shortName: "SOX" },
 ];
 
 const TREND_LABEL_CONFIG: Record<string, { bg: string; text: string }> = {
