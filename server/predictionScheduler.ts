@@ -108,16 +108,16 @@ async function ensureIndexHistory(symbol: string, market: string): Promise<void>
       `SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?`
     ).get(symbol, market) as any;
     const maxDate: string = latest?.maxDate ?? "";
-    const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
-    if (maxDate >= twoDaysAgo) return; // already fresh
+    const oneDayAgo = new Date(Date.now() - 1 * 86400_000).toISOString().slice(0, 10);
+    if (maxDate >= oneDayAgo) return; // already fresh
 
     const py = platform() === "win32" ? "python" : "python3";
     const tmpFile = join(tmpdir(), `sched_hist_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.py`);
-    const startDate = maxDate || new Date(Date.now() - 500 * 86400_000).toISOString().slice(0, 10);
+    // Always fetch 2y to avoid gaps from weekends/holidays; upsert is idempotent
     writeFileSync(tmpFile, [
       "import yfinance as yf, json",
       `t = yf.Ticker('${symbol}')`,
-      `hist = t.history(start='${startDate}', auto_adjust=True)`,
+      `hist = t.history(period='2y', auto_adjust=True)`,
       "rows = []",
       "for dt, row in hist.iterrows():",
       "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",

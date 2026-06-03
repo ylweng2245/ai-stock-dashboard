@@ -3269,13 +3269,13 @@ ${search}${questionPart}
           const { join } = await import("path");
           const py = platform() === "win32" ? "python" : "python3";
           const tmpFile = join(tmpdir(), `idx_hist_${Date.now()}.py`);
-          const startDate = maxDate || new Date(Date.now() - 500 * 86400_000).toISOString().slice(0, 10);
           // INDEX symbols need ^ prefix for yfinance (GSPC -> ^GSPC, DJI -> ^DJI, IXIC -> ^IXIC)
           const yfSym = market === "INDEX" ? `^${sym}` : sym;
+          // Always fetch 2y to avoid gaps from weekends/holidays; upsert is idempotent
           writeFileSync(tmpFile, [
             "import yfinance as yf, json",
             `t = yf.Ticker('${yfSym}')`,
-            `hist = t.history(start='${startDate}', auto_adjust=True)`,
+            `hist = t.history(period='2y', auto_adjust=True)`,
             "rows = []",
             "for dt, row in hist.iterrows():",
             "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
