@@ -3258,9 +3258,9 @@ ${search}${questionPart}
         SELECT MAX(date) as maxDate FROM historical_prices WHERE symbol=? AND market=?
       `).get(sym, market) as any;
       const maxDate: string = latest?.maxDate ?? "";
-      const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+      const oneDayAgo = new Date(Date.now() - 1 * 86400_000).toISOString().slice(0, 10);
 
-      if (maxDate < twoDaysAgo) {
+      if (maxDate < oneDayAgo) {
         // Refresh via yfinance
         try {
           const { execSync } = await import("child_process");
@@ -3270,9 +3270,11 @@ ${search}${questionPart}
           const py = platform() === "win32" ? "python" : "python3";
           const tmpFile = join(tmpdir(), `idx_hist_${Date.now()}.py`);
           const startDate = maxDate || new Date(Date.now() - 500 * 86400_000).toISOString().slice(0, 10);
+          // INDEX symbols need ^ prefix for yfinance (GSPC -> ^GSPC, DJI -> ^DJI, IXIC -> ^IXIC)
+          const yfSym = market === "INDEX" ? `^${sym}` : sym;
           writeFileSync(tmpFile, [
             "import yfinance as yf, json",
-            `t = yf.Ticker('${sym}')`,
+            `t = yf.Ticker('${yfSym}')`,
             `hist = t.history(start='${startDate}', auto_adjust=True)`,
             "rows = []",
             "for dt, row in hist.iterrows():",
