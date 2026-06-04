@@ -128,7 +128,10 @@ def fetch_quarterly_income(symbol: str) -> list[dict]:
         basic_eps    = safe_float(row.get("income_statement_basic_eps"))
         diluted_eps  = safe_float(row.get("income_statement_diluted_eps"))
 
+        date_raw = (row.get("date") or "")[:10]  # period end date e.g. "2026-04-30"
+
         quarterly_income.append({
+            "date":          date_raw,
             "fiscalYear":    fy,
             "fiscalQuarter": fq,
             "revenue":       revenue,
