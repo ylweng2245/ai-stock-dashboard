@@ -3005,7 +3005,7 @@ ${search}${questionPart}
       const slopeTxt = maSlope > 0.3 ? "向上加速" : maSlope > 0 ? "平穩向上" : maSlope > -0.3 ? "趨於平緩" : "向下走軟";
       const rsiTxt = rsiVal > 70 ? `RSI ${rsiVal.toFixed(0)}（超買區）` : rsiVal < 30 ? `RSI ${rsiVal.toFixed(0)}（超賣區）` : `RSI ${rsiVal.toFixed(0)}（中性）`;
       const volTxt = volR > 1.2 ? "成交量明顯放大（動能增強）" : volR < 0.8 ? "成交量萎縮（動能偏弱）" : "成交量正常";
-      return `SPY 現價 ${priceVal.toFixed(2)}，${period}MA ${maVal.toFixed(2)}（乖離 ${distPct}%），均線斜率${slopeTxt}。${rsiTxt}，${volTxt}。關鍵支撐 ${support.toFixed(2)}，壓力 ${resistance.toFixed(2)}。`;
+      return `SOX 現價 ${priceVal.toFixed(2)}，${period}MA ${maVal.toFixed(2)}（乖離 ${distPct}%），均線斜率${slopeTxt}。${rsiTxt}，${volTxt}。關鍵支撐 ${support.toFixed(2)}，壓力 ${resistance.toFixed(2)}。`;
     }
 
     return {
