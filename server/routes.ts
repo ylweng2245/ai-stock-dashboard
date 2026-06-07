@@ -3224,7 +3224,13 @@ ${search}${questionPart}
       }
       result.sectors = sectorData;
 
-      // 2. Trend analysis for SPY
+      // Fetch SOX bars once — used for both trend analysis and crash risk
+      const soxBars = sqlite.prepare(`
+        SELECT date, close, high, low, volume FROM historical_prices
+        WHERE symbol='^SOX' AND market='INDEX' ORDER BY date DESC LIMIT 120
+      `).all() as Array<{date: string; close: number; high: number; low: number; volume: number}>;
+
+      // 2. Trend analysis — use SOX as primary, QQQ as secondary confirmation
       const spyBars = sqlite.prepare(`
         SELECT date, close, high, low, volume FROM historical_prices
         WHERE symbol='SPY' AND market='US' ORDER BY date DESC LIMIT 120
@@ -3235,13 +3241,12 @@ ${search}${questionPart}
         WHERE symbol='QQQ' AND market='US' ORDER BY date DESC LIMIT 120
       `).all() as Array<{date: string; close: number}>;
 
-      result.trendAnalysis = computeTrendAnalysis(spyBars, qqqBars);
+      result.trendAnalysis = computeTrendAnalysis(
+        soxBars.length >= 65 ? soxBars : spyBars,
+        qqqBars
+      );
 
       // 3. Crash risk index — use ^SOX (Philadelphia Semiconductor Index) as the primary signal
-      const soxBars = sqlite.prepare(`
-        SELECT date, close, high, low, volume FROM historical_prices
-        WHERE symbol='^SOX' AND market='INDEX' ORDER BY date DESC LIMIT 120
-      `).all() as Array<{date: string; close: number; high: number; low: number; volume: number}>;
       result.crashRisk = computeCrashRisk(soxBars.length >= 30 ? soxBars : spyBars);
 
       // 4. Market sentiment

@@ -355,7 +355,7 @@ function TrendAnalysisSection({ data }: { data: any }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">SPY 資料不足（需 65 日以上歷史）</p>
+          <p className="text-sm text-muted-foreground">SOX 資料不足（需 65 日以上歷史）</p>
         </CardContent>
       </Card>
     );
@@ -372,7 +372,7 @@ function TrendAnalysisSection({ data }: { data: any }) {
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-[#1cb8be]" />
-          趨勢多空判斷（SPY）
+          趨勢多空判斷（SOX）
         </CardTitle>
       </CardHeader>
       <CardContent>
