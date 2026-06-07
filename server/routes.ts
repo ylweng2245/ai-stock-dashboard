@@ -3209,8 +3209,12 @@ ${search}${questionPart}
 
       result.trendAnalysis = computeTrendAnalysis(spyBars, qqqBars);
 
-      // 3. Crash risk index
-      result.crashRisk = computeCrashRisk(spyBars);
+      // 3. Crash risk index — use ^SOX (Philadelphia Semiconductor Index) as the primary signal
+      const soxBars = sqlite.prepare(`
+        SELECT date, close, high, low, volume FROM historical_prices
+        WHERE symbol='^SOX' AND market='INDEX' ORDER BY date DESC LIMIT 120
+      `).all() as Array<{date: string; close: number; high: number; low: number; volume: number}>;
+      result.crashRisk = computeCrashRisk(soxBars.length >= 30 ? soxBars : spyBars);
 
       // 4. Market sentiment
       const fg = sqlite.prepare(`SELECT value, meta_json, date FROM market_indicators

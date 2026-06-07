@@ -438,7 +438,10 @@ function CrashRiskSection({ data }: { data: any }) {
           <div className="flex flex-col items-center justify-center shrink-0 w-52 gap-0.5">
             <div className="flex items-center gap-1.5 self-stretch mb-2">
               <AlertTriangle className="w-4 h-4 text-[#1cb8be]" />
-              <span className="text-base font-semibold">崩盤風險指數</span>
+              <div>
+                <span className="text-base font-semibold">崩盤風險指數</span>
+                <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">基於費城半導體指數 (SOX)</p>
+              </div>
             </div>
             <div className={cn("text-6xl font-bold tabular-nums leading-none", scoreColor)}>
               {data.score}
