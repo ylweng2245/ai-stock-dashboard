@@ -383,6 +383,34 @@ export async function registerRoutes(
         }
       }
 
+      // QQQ single-day drop
+      const qqqAnomalyRows = sqlite.prepare(
+        `SELECT date, close, volume FROM historical_prices WHERE symbol='QQQ' AND market='US' ORDER BY date DESC LIMIT 25`
+      ).all() as Array<{date:string;close:number;volume:number}>;
+      if (qqqAnomalyRows.length >= 2) {
+        const latest = qqqAnomalyRows[0];
+        const prev = qqqAnomalyRows[1];
+        const dropPct = ((latest.close - prev.close) / prev.close) * 100;
+        if (dropPct < -2.5) anomalies.push({ type:'qqq_drop', label:'QQQ 單日大跌', value: dropPct, threshold: -2.5, severity: dropPct < -4 ? 'critical' : 'warning', date: latest.date });
+      }
+
+      // SOX (Philadelphia Semiconductor) single-day drop + volume surge
+      const soxAnomalyRows = sqlite.prepare(
+        `SELECT date, close, high, low, volume FROM historical_prices WHERE symbol='^SOX' AND market='INDEX' ORDER BY date DESC LIMIT 25`
+      ).all() as Array<{date:string;close:number;volume:number}>;
+      if (soxAnomalyRows.length >= 2) {
+        const latest = soxAnomalyRows[0];
+        const prev = soxAnomalyRows[1];
+        const dropPct = ((latest.close - prev.close) / prev.close) * 100;
+        if (dropPct < -3.0) anomalies.push({ type:'sox_drop', label:'SOX 半導體大跌', value: dropPct, threshold: -3.0, severity: dropPct < -5 ? 'critical' : 'warning', date: latest.date });
+        // SOX volume surge
+        if (soxAnomalyRows.length >= 5) {
+          const avg20vol = soxAnomalyRows.slice(1, 21).reduce((s: number, r: any) => s + r.volume, 0) / Math.min(soxAnomalyRows.length - 1, 20);
+          const volRatio = latest.volume / (avg20vol || 1);
+          if (volRatio > 1.8) anomalies.push({ type:'sox_volume', label:'SOX 成交量異常', value: latest.volume, threshold: avg20vol, severity: volRatio > 2.5 ? 'critical' : 'warning', date: latest.date });
+        }
+      }
+
       // 10Y yield jump: latest vs 5-day avg
       const yieldRows = sqlite.prepare(
         `SELECT date, value FROM market_indicators WHERE indicator_key='10y_yield' ORDER BY date DESC LIMIT 10`
