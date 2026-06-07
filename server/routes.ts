@@ -366,32 +366,31 @@ export async function registerRoutes(
         if (spikePct > 15) anomalies.push({ type:'vix_spike', label:'VIX 急升', value: latest.value, threshold: avg10, severity: spikePct > 30 ? 'critical' : 'warning', date: latest.date });
       }
 
-      // SPY volume surge: latest vs 20-day avg
-      const spyRows = sqlite.prepare(
-        `SELECT date, close, volume FROM historical_prices WHERE symbol='SPY' AND market='US' ORDER BY date DESC LIMIT 25`
-      ).all() as Array<{date:string;close:number;volume:number}>;
-      if (spyRows.length >= 5) {
-        const latest = spyRows[0];
-        const avg20vol = spyRows.slice(1, 21).reduce((s: number, r: any) => s + r.volume, 0) / Math.min(spyRows.length - 1, 20);
-        const volRatio = latest.volume / avg20vol;
-        if (volRatio > 1.8) anomalies.push({ type:'spy_volume', label:'SPY 成交量異常', value: latest.volume, threshold: avg20vol, severity: volRatio > 2.5 ? 'critical' : 'warning', date: latest.date });
-        // SPY single-day drop
-        if (spyRows.length >= 2) {
-          const prev = spyRows[1];
-          const dropPct = ((latest.close - prev.close) / prev.close) * 100;
-          if (dropPct < -2.5) anomalies.push({ type:'spy_drop', label:'SPY 單日大跌', value: dropPct, threshold: -2.5, severity: dropPct < -4 ? 'critical' : 'warning', date: latest.date });
+      // Four major indices: single-day drop detection (aligned with K-line display)
+      const indexDropConfigs = [
+        { symbol: '^GSPC', market: 'INDEX', label: 'S&P 500 單日大跌', type: 'gspc_drop', threshold: -2.0, critical: -3.5 },
+        { symbol: '^DJI',  market: 'INDEX', label: '道瓊工業單日大跌',    type: 'dji_drop',  threshold: -2.0, critical: -3.5 },
+        { symbol: '^IXIC', market: 'INDEX', label: 'Nasdaq 單日大跌',  type: 'ixic_drop', threshold: -2.5, critical: -4.0 },
+      ];
+      for (const cfg of indexDropConfigs) {
+        const rows = sqlite.prepare(
+          `SELECT date, close, volume FROM historical_prices WHERE symbol=? AND market=? ORDER BY date DESC LIMIT 5`
+        ).all(cfg.symbol, cfg.market) as Array<{date:string;close:number;volume:number}>;
+        if (rows.length >= 2) {
+          const dropPct = ((rows[0].close - rows[1].close) / rows[1].close) * 100;
+          if (dropPct < cfg.threshold) anomalies.push({ type: cfg.type, label: cfg.label, value: dropPct, threshold: cfg.threshold, severity: dropPct < cfg.critical ? 'critical' : 'warning', date: rows[0].date });
         }
       }
 
-      // QQQ single-day drop
-      const qqqAnomalyRows = sqlite.prepare(
-        `SELECT date, close, volume FROM historical_prices WHERE symbol='QQQ' AND market='US' ORDER BY date DESC LIMIT 25`
+      // S&P 500 volume surge (broad market participation signal)
+      const gspcRows = sqlite.prepare(
+        `SELECT date, close, volume FROM historical_prices WHERE symbol='^GSPC' AND market='INDEX' ORDER BY date DESC LIMIT 25`
       ).all() as Array<{date:string;close:number;volume:number}>;
-      if (qqqAnomalyRows.length >= 2) {
-        const latest = qqqAnomalyRows[0];
-        const prev = qqqAnomalyRows[1];
-        const dropPct = ((latest.close - prev.close) / prev.close) * 100;
-        if (dropPct < -2.5) anomalies.push({ type:'qqq_drop', label:'QQQ 單日大跌', value: dropPct, threshold: -2.5, severity: dropPct < -4 ? 'critical' : 'warning', date: latest.date });
+      if (gspcRows.length >= 5) {
+        const latest = gspcRows[0];
+        const avg20vol = gspcRows.slice(1, 21).reduce((s: number, r: any) => s + r.volume, 0) / Math.min(gspcRows.length - 1, 20);
+        const volRatio = latest.volume / (avg20vol || 1);
+        if (volRatio > 1.8) anomalies.push({ type:'gspc_volume', label:'S&P 500 成交量異常', value: latest.volume, threshold: avg20vol, severity: volRatio > 2.5 ? 'critical' : 'warning', date: latest.date });
       }
 
       // SOX (Philadelphia Semiconductor) single-day drop + volume surge

@@ -936,10 +936,18 @@ function formatAnomalyDesc(a: AnomalyItem): string {
   switch (a.type) {
     case "vix_spike":
       return `VIX 急升 ${a.value.toFixed(1)} ↑ (均值 ${a.threshold.toFixed(1)})`;
-    case "spy_volume":
-      return `SPY 成交量 ${(a.value / 1e6).toFixed(0)}M，均量 ${(a.threshold / 1e6).toFixed(0)}M (${(a.value / a.threshold).toFixed(1)}x)`;
-    case "spy_drop":
-      return `SPY 單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "gspc_drop":
+      return `S&P 500 單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "dji_drop":
+      return `道瓊工業單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "ixic_drop":
+      return `Nasdaq 單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "gspc_volume":
+      return `S&P 500 成交量 ${(a.value / 1e6).toFixed(0)}M，均量 ${(a.threshold / 1e6).toFixed(0)}M (${(a.value / a.threshold).toFixed(1)}x)`;
+    case "sox_drop":
+      return `SOX 費半單日下跌 ${Math.abs(a.value).toFixed(2)}%`;
+    case "sox_volume":
+      return `SOX 成交量 ${(a.value / 1e6).toFixed(0)}M，均量 ${(a.threshold / 1e6).toFixed(0)}M (${(a.value / a.threshold).toFixed(1)}x)`;
     case "yield_jump":
       return `10Y 殖利率 ${a.value.toFixed(2)}% 急升 (均值 ${a.threshold.toFixed(2)}%)`;
     default:
