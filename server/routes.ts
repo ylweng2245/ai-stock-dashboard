@@ -3093,22 +3093,50 @@ ${search}${questionPart}
     totalScore += rsiScore;
     factors.push({ name: "RSI 背離", score: rsiScore, maxScore: 15, detail: rsiDetail });
 
-    // 3. Volume divergence (15 pts)
-    const cvol5  = vols.slice(-5).reduce((a,b)=>a+b,0)/5;
-    const cvol20 = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
-    const cvolRatio = cvol5 / (cvol20 || 1);
-    const price5d = (closes[last] - closes[Math.max(0,last-5)]) / closes[Math.max(0,last-5)];
+    // 3. Recent crash magnitude (20 pts) — catches actual drops that pre-warning signals miss
+    // Use 5-day window: worst single-day drop and cumulative 5-day return
+    const worst1d = Math.min(...Array.from({length: Math.min(5, last)}, (_, i) =>
+      (closes[last - i] - closes[last - i - 1]) / closes[last - i - 1] * 100
+    ));
+    const ret5d = (closes[last] - closes[Math.max(0, last - 5)]) / closes[Math.max(0, last - 5)] * 100;
+    let crashMagScore = 0;
+    let crashMagDetail = "";
+    if (worst1d < -8 || ret5d < -12) {
+      crashMagScore = 20; crashMagDetail = `激烈崩跌：5日內最大單日 ${worst1d.toFixed(1)}%，5日累計 ${ret5d.toFixed(1)}%`;
+    } else if (worst1d < -5 || ret5d < -8) {
+      crashMagScore = 14; crashMagDetail = `明顯下跌：5日內最大單日 ${worst1d.toFixed(1)}%，5日累計 ${ret5d.toFixed(1)}%`;
+    } else if (worst1d < -3 || ret5d < -5) {
+      crashMagScore = 8; crashMagDetail = `小幅跌勢：5日內最大單日 ${worst1d.toFixed(1)}%，5日累計 ${ret5d.toFixed(1)}%`;
+    } else {
+      crashMagDetail = `近期跌幅正常：5日內最大單日 ${worst1d.toFixed(1)}%，5日累計 ${ret5d.toFixed(1)}%`;
+    }
+    totalScore += crashMagScore;
+    factors.push({ name: "近期跌幅幅度", score: crashMagScore, maxScore: 20, detail: crashMagDetail });
+
+    // 4. Volume divergence (10 pts) — use SOXX ETF volume (real volume proxy for SOX index)
+    const soxxVolRows = sqlite.prepare(`SELECT volume FROM historical_prices
+      WHERE symbol='SOXX' AND market='US' ORDER BY date DESC LIMIT 25`).all() as any[];
     let volScore = 0;
     let volDetail = "";
-    if (price5d > 0.02 && cvolRatio < 0.75) {
-      volScore = 15; volDetail = `上漲但量縮（量比 ${cvolRatio.toFixed(2)}）— 上漲乏力`;
-    } else if (price5d > 0 && cvolRatio < 0.85) {
-      volScore = 8; volDetail = `上漲但量偏縮（量比 ${cvolRatio.toFixed(2)}）`;
+    if (soxxVolRows.length >= 10) {
+      const cvol5  = soxxVolRows.slice(0, 5).reduce((s: number, r: any) => s + r.volume, 0) / 5;
+      const cvol20 = soxxVolRows.slice(0, 20).reduce((s: number, r: any) => s + r.volume, 0) / Math.min(soxxVolRows.length, 20);
+      const cvolRatio = cvol5 / (cvol20 || 1);
+      const price5d = ret5d;
+      if (price5d > 2 && cvolRatio < 0.75) {
+        volScore = 10; volDetail = `SOXX 上漲但量縮（量比 ${cvolRatio.toFixed(2)}）— 上漲乏力`;
+      } else if (price5d > 0 && cvolRatio < 0.85) {
+        volScore = 5; volDetail = `SOXX 上漲但量偏縮（量比 ${cvolRatio.toFixed(2)}）`;
+      } else if (price5d < -3 && cvolRatio > 1.5) {
+        volScore = 8; volDetail = `SOXX 下跌且量萃（量比 ${cvolRatio.toFixed(2)}）— 抋盤加劇`;
+      } else {
+        volDetail = `SOXX 量比 ${cvolRatio.toFixed(2)}（正常）`;
+      }
     } else {
-      volDetail = `量比 ${cvolRatio.toFixed(2)}（正常）`;
+      volDetail = "成交量資料不足";
     }
     totalScore += volScore;
-    factors.push({ name: "成交量背離", score: volScore, maxScore: 15, detail: volDetail });
+    factors.push({ name: "成交量背離", score: volScore, maxScore: 10, detail: volDetail });
 
     // 4. Credit spread HYG/LQD (15 pts)
     const hygBars = sqlite.prepare(`SELECT date, close FROM historical_prices
