@@ -3279,17 +3279,31 @@ ${search}${questionPart}
       // 4. Market sentiment
       const fg = sqlite.prepare(`SELECT value, meta_json, date FROM market_indicators
         WHERE indicator_key='fear_greed' ORDER BY date DESC LIMIT 1`).get() as any;
-      const vix = sqlite.prepare(`SELECT value, date FROM market_indicators
-        WHERE indicator_key='vix' ORDER BY date DESC LIMIT 30`).all() as any[];
-      const tny = sqlite.prepare(`SELECT value, date FROM market_indicators
-        WHERE indicator_key='10y_yield' ORDER BY date DESC LIMIT 30`).all() as any[];
+      // VIX: use historical_prices (^VIX, market=INDEX) for full history; fallback to market_indicators
+      const vixHist = sqlite.prepare(`SELECT date, close as value FROM historical_prices
+        WHERE symbol='^VIX' AND market='INDEX' ORDER BY date DESC LIMIT 90`).all() as any[];
+      const vixIndicator = sqlite.prepare(`SELECT value, date FROM market_indicators
+        WHERE indicator_key='vix' ORDER BY date DESC LIMIT 1`).get() as any;
+      const vixCurrent = vixHist.length > 0 ? vixHist[0].value : (vixIndicator?.value ?? null);
+      const vixHistory = vixHist.length >= 10 ? vixHist.reverse() :
+        sqlite.prepare(`SELECT value, date FROM market_indicators
+          WHERE indicator_key='vix' ORDER BY date DESC LIMIT 90`).all().reverse() as any[];
+
+      // 10Y yield: use historical_prices (^TNX, market=INDEX) for full history
+      const tnyHist = sqlite.prepare(`SELECT date, close as value FROM historical_prices
+        WHERE symbol='^TNX' AND market='INDEX' ORDER BY date DESC LIMIT 90`).all() as any[];
+      const tnyCurrent = tnyHist.length > 0 ? tnyHist[0].value : null;
+      const tnyHistory = tnyHist.length >= 10 ? tnyHist.reverse() :
+        sqlite.prepare(`SELECT value, date FROM market_indicators
+          WHERE indicator_key='10y_yield' ORDER BY date DESC LIMIT 90`).all().reverse() as any[];
+
       const macro = sqlite.prepare(`SELECT value, date FROM market_indicators
         WHERE indicator_key='macro_sentiment' ORDER BY date DESC LIMIT 1`).get() as any;
 
       result.sentiment = {
         fearGreed: fg ? { value: fg.value, label: (() => { try { return JSON.parse(fg.meta_json || "{}").classification ?? ""; } catch { return fg.meta_json ?? ""; } })(), date: fg.date } : null,
-        vix: vix.length > 0 ? { current: vix[0].value, history: vix.slice(0, 30).reverse() } : null,
-        tenYear: tny.length > 0 ? { current: tny[0].value, history: tny.slice(0, 30).reverse() } : null,
+        vix: vixCurrent != null ? { current: vixCurrent, history: vixHistory } : null,
+        tenYear: tnyCurrent != null ? { current: tnyCurrent, history: tnyHistory } : null,
         macro: macro ? { score: macro.value, date: macro.date } : null,
       };
 
