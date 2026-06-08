@@ -1650,30 +1650,49 @@ ${search}${questionPart}
   interface OverviewCacheEntry { payload: MarketOverviewPayload; fetchedAt: number; }
   let overviewCache: OverviewCacheEntry | null = null;
   let overviewRefreshing = false;
+  let overviewFullRefreshDone = false; // true after first full refresh completes
 
-  async function runOverviewRefresh(): Promise<void> {
+  // Full refresh: external fetch (refreshAllIndicators) + DB assemble — used on server start only
+  async function runOverviewRefreshFull(): Promise<void> {
     try {
       await refreshAllIndicators();
       const payload = await assembleMarketOverview();
       overviewCache = { payload, fetchedAt: Date.now() };
+      overviewFullRefreshDone = true;
     } catch (e: any) {
-      console.error("[market-overview] refresh error:", e.message);
+      console.error("[market-overview] full refresh error:", e.message);
     } finally {
       overviewRefreshing = false;
     }
   }
 
+  // DB-only refresh: re-assemble from DB without any external fetch
+  // Called every 60s from backgroundQuotePoll so VIX/TNX/FG stay real-time
+  async function runOverviewRefreshDB(): Promise<void> {
+    try {
+      const payload = await assembleMarketOverview();
+      overviewCache = { payload, fetchedAt: Date.now() };
+    } catch (e: any) {
+      // silent — DB refresh should never crash the server
+    }
+  }
+
   async function getOverviewPayload() {
     const now = Date.now();
-    const CACHE_TTL = 90 * 1000; // 90s — keep pace with 60s frontend refetch
+    const CACHE_TTL = 55 * 1000; // 55s — shorter than 60s poll so each poll gets fresh DB data
     // Return fresh cache immediately
     if (overviewCache && now - overviewCache.fetchedAt < CACHE_TTL) {
       return overviewCache.payload;
     }
     if (!overviewRefreshing) {
       overviewRefreshing = true;
-      // Run refresh non-blocking so first call still gets stale data quickly
-      void runOverviewRefresh();
+      // First ever call: full refresh (refreshAllIndicators + DB)
+      // Subsequent cache misses: DB-only refresh (backgroundQuotePoll already keeps DB fresh)
+      if (!overviewFullRefreshDone) {
+        void runOverviewRefreshFull();
+      } else {
+        void runOverviewRefreshDB().then(() => { overviewRefreshing = false; });
+      }
     }
     // If we have any cache (even stale), return it immediately
     if (overviewCache) return overviewCache.payload;
@@ -1781,6 +1800,10 @@ ${search}${questionPart}
         updatedAt: Date.now(),
       }]).catch(() => {});
     }).catch(() => {});
+
+    // After all DB writes complete (~1s), refresh the overview cache from DB
+    // This ensures VIX/TNX/FG on the overview page reflect today's intraday values
+    setTimeout(() => { runOverviewRefreshDB().catch(() => {}); }, 2000);
   }
   // Start polling after a short delay so server is fully ready
   setTimeout(() => {
