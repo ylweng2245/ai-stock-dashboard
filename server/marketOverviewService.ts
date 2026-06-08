@@ -417,19 +417,34 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   const nasdaqCard = makeIndexCard("nasdaq", "Nasdaq",    nasdaqRows);
   const soxCard   = makeIndexCard("sox",    "費城半導體", soxRows);
 
-  // VIX
+  // VIX: prefer historical_prices (^VIX, market=INDEX) for complete history
+  // market_indicators.vix only has rows for days the server was running
   const { last: vixLast, prev: vixPrev } = lastTwo(vixRows);
   const vixSig = vixLast ? vixSignal(vixLast.value) : null;
+  const cutoff3Mo = dateNMonthsAgo(3);
+  const vixHistPrices = await storage.getHistoricalPricesByRange("^VIX", "INDEX", cutoff3Mo, new Date().toISOString().slice(0, 10));
+  const vixHistFinal: Array<{ date: string; value: number }> =
+    vixHistPrices.length >= 10
+      ? vixHistPrices.map(r => ({ date: r.date, value: r.close }))
+      : dailyLast3Mo(vixRows).map(r => ({ date: r.date, value: r.value }));
+  const vixLatestClose = vixHistPrices.length > 0 ? vixHistPrices[vixHistPrices.length - 1].close : null;
+  const vixPrevClose   = vixHistPrices.length > 1 ? vixHistPrices[vixHistPrices.length - 2].close : null;
+  const vixCurrentVal  = vixLatestClose ?? vixLast?.value ?? null;
+  const vixChangeVal   = (vixLatestClose != null && vixPrevClose != null)
+    ? vixLatestClose - vixPrevClose
+    : (vixLast && vixPrev ? vixLast.value - vixPrev.value : null);
+  const vixDateFinal   = vixHistPrices.length > 0 ? vixHistPrices[vixHistPrices.length - 1].date : (vixLast?.date ?? null);
+
   const vixCard: IndicatorCard = {
     key: "vix", label: "VIX 恐慌指數",
-    value: vixLast?.value ?? null,
-    change: vixLast && vixPrev ? vixLast.value - vixPrev.value : null,
-    date: vixLast?.date ?? null,
+    value: vixCurrentVal,
+    change: vixChangeVal,
+    date: vixDateFinal,
     signal: vixSig,
     signalText: vixSig ? signalText(vixSig) : null,
     sparkline: sparkline(vixRows),
-    history: dailyLast3Mo(vixRows).map(r => ({ date: r.date, value: r.value })),
-    stale: isStale(vixLast?.date ?? null),
+    history: vixHistFinal,
+    stale: isStale(vixDateFinal),
   };
 
   // Fear & Greed (CNN)  — history sliced to last 60 days for RegimeChart
