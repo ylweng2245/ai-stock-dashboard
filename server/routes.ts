@@ -1794,7 +1794,7 @@ ${search}${questionPart}
         date: today,
         value: +r.value.toFixed(2),
         value2: null,
-        metaJson: JSON.stringify({ classification: r.label }),
+        metaJson: r.label ?? null,  // plain string: "fear" / "greed" / etc.
         source: "CNN Fear&Greed",
         createdAt: Date.now(),
         updatedAt: Date.now(),

@@ -450,10 +450,19 @@ export async function assembleMarketOverview(): Promise<MarketOverviewPayload> {
   // Fear & Greed (CNN)  — history sliced to last 60 days for RegimeChart
   const { last: fgLast } = lastTwo(fgRows);
   const fgSig = fgLast ? fearGreedSignal(fgLast.value) : null;
+  // Parse metaJson: may be plain string ("fear") or JSON object ({"classification":"fear"})
+  const fgMetaRaw = fgLast?.metaJson ?? null;
+  let fgMeta: string | null = fgMetaRaw;
+  if (fgMetaRaw) {
+    try {
+      const parsed = JSON.parse(fgMetaRaw);
+      if (parsed?.classification) fgMeta = parsed.classification;
+    } catch { /* already a plain string */ }
+  }
   const fgCard: IndicatorCard = {
     key: "fear_greed", label: "CNN 恐懼貪婪指數",
     value: fgLast?.value ?? null,
-    meta: fgLast?.metaJson ?? null,
+    meta: fgMeta,
     date: fgLast?.date ?? null,
     signal: fgSig,
     signalText: fgSig ? signalText(fgSig) : null,
