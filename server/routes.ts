@@ -6,7 +6,7 @@ import { storage, sqlite } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction, type InsertAnalystTarget } from "@shared/schema";
 // Anthropic SDK removed — AI Insights now uses prompt builder (zero API cost)
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
-import { fetchIntradayYahoo, type IntradayResult } from "./marketIndicatorSources";
+import { fetchIntradayYahoo, fetchVIX, fetchUS10Y, fetchFearGreed, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, saveMacroSentiment, type DigestSyncItem } from "./newsDigestService";
 import { runPrediction } from "./mlPredictionService";
 import { ensurePrediction, getSchedulerStatus, triggerSweepNow, triggerForceAll } from "./predictionScheduler";
@@ -1710,6 +1710,31 @@ ${search}${questionPart}
   // This keeps technical bar DB and quoteCache warm so page switches show
   // data instantly instead of waiting for on-demand fetch.
   const BACKGROUND_POLL_INTERVAL = 60_000; // 60 seconds
+  // Helper: upsert a single today-bar into historical_prices for INDEX symbols (^VIX, ^TNX, etc.)
+  async function syncIndexTodayBar(symbol: string, close: number): Promise<void> {
+    try {
+      const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
+      const existing = sqlite.prepare(
+        `SELECT open, high, low, volume FROM historical_prices WHERE symbol=? AND market='INDEX' AND date=?`
+      ).get(symbol, today) as { open: number; high: number; low: number; volume: number } | undefined;
+      const open   = existing?.open  ?? close;
+      const high   = Math.max(existing?.high  ?? close, close);
+      const low    = Math.min(existing?.low   ?? close, close);
+      const volume = existing?.volume ?? 0;
+      await storage.upsertHistoricalPrices([{
+        symbol, market: "INDEX", date: today,
+        open: +open.toFixed(4),
+        high: +high.toFixed(4),
+        low:  +low.toFixed(4),
+        close: +close.toFixed(4),
+        volume,
+        updatedAt: Date.now(),
+      }]);
+    } catch (e: any) {
+      // silent
+    }
+  }
+
   async function backgroundQuotePoll() {
     try {
       const dbWatchlist = await storage.getWatchlist();
@@ -1725,6 +1750,37 @@ ${search}${questionPart}
     } catch (e: any) {
       // Silent fail — background poller should never crash the server
     }
+
+    // ── Intraday real-time update for VIX, ^TNX, and Fear & Greed ──────────
+    // These run independently so one failure doesn't block others.
+    // ^VIX — upsert today's bar in historical_prices (market=INDEX)
+    fetchVIX().then(r => {
+      if (r.close > 0) syncIndexTodayBar("^VIX", r.close).catch(() => {});
+    }).catch(() => {});
+
+    // ^TNX (US 10Y yield) — upsert today's bar in historical_prices (market=INDEX)
+    fetchUS10Y().then(r => {
+      if (r.yield > 0) syncIndexTodayBar("^TNX", r.yield).catch(() => {});
+    }).catch(() => {});
+
+    // CNN Fear & Greed — upsert today's value in market_indicators
+    fetchFearGreed().then(r => {
+      const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
+      // Only write if CNN returned a value for today (trading day)
+      if (!r.date || !r.value) return;
+      storage.upsertIndicatorHistory([{
+        indicatorKey: "fear_greed",
+        market: "US",
+        frequency: "daily",
+        date: today,
+        value: +r.value.toFixed(2),
+        value2: null,
+        metaJson: JSON.stringify({ classification: r.label }),
+        source: "CNN Fear&Greed",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }]).catch(() => {});
+    }).catch(() => {});
   }
   // Start polling after a short delay so server is fully ready
   setTimeout(() => {
