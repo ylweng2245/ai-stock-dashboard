@@ -6,7 +6,7 @@ import { storage, sqlite } from "./storage";
 import { insertHoldingSchema, insertAlertSchema, insertWatchlistSchema, type InsertTransaction, type InsertAnalystTarget } from "@shared/schema";
 // Anthropic SDK removed — AI Insights now uses prompt builder (zero API cost)
 import { refreshAllIndicators, assembleMarketOverview, type MarketOverviewPayload } from "./marketOverviewService";
-import { fetchIntradayYahoo, fetchVIX, fetchUS10Y, fetchFearGreed, type IntradayResult } from "./marketIndicatorSources";
+import { fetchIntradayYahoo, fetchVIX, fetchUS10Y, fetchFearGreed, fetchYahooLivePrice, type IntradayResult } from "./marketIndicatorSources";
 import { generateAllDigests, saveDigestData, saveMacroSentiment, type DigestSyncItem } from "./newsDigestService";
 import { runPrediction } from "./mlPredictionService";
 import { ensurePrediction, getSchedulerStatus, triggerSweepNow, triggerForceAll } from "./predictionScheduler";
@@ -1771,15 +1771,15 @@ ${search}${questionPart}
     }
 
     // ── Intraday real-time update for VIX, ^TNX, and Fear & Greed ──────────
-    // These run independently so one failure doesn't block others.
+    // Use v8/chart range=1d (stable) instead of spark range=3mo (returns 500 for ^VIX)
     // ^VIX — upsert today's bar in historical_prices (market=INDEX)
-    fetchVIX().then(r => {
-      if (r.close > 0) syncIndexTodayBar("^VIX", r.close).catch(() => {});
+    fetchYahooLivePrice("^VIX").then(price => {
+      if (price) syncIndexTodayBar("^VIX", price).catch(() => {});
     }).catch(() => {});
 
     // ^TNX (US 10Y yield) — upsert today's bar in historical_prices (market=INDEX)
-    fetchUS10Y().then(r => {
-      if (r.yield > 0) syncIndexTodayBar("^TNX", r.yield).catch(() => {});
+    fetchYahooLivePrice("^TNX").then(price => {
+      if (price) syncIndexTodayBar("^TNX", price).catch(() => {});
     }).catch(() => {});
 
     // CNN Fear & Greed — upsert today's value in market_indicators

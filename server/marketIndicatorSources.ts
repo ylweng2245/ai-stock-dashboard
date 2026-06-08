@@ -589,7 +589,7 @@ export async function fetchSP500(): Promise<IndexResult>   { return fetchYahooIn
 export async function fetchNasdaq(): Promise<IndexResult>  { return fetchYahooIndex("^IXIC"); }
 export async function fetchSOX(): Promise<IndexResult>     { return fetchYahooIndex("^SOX"); }
 export async function fetchDJIA(): Promise<IndexResult>    { return fetchYahooIndex("^DJI"); }
-export async function fetchVIX(): Promise<IndexResult>     { return fetchYahooIndex("^VIX", "3mo"); }
+export async function fetchVIX(): Promise<IndexResult>     { return fetchYahooIndex("^VIX", "6mo"); }
 
 // ─── US 10Y Treasury ──────────────────────────────────────────────────────────
 
@@ -803,4 +803,20 @@ export function twseDateToISO(raw: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
   return "";
+}
+
+// ─── Live Price (intraday, chart v8 API) ─────────────────────────────────────
+// Used by backgroundQuotePoll for ^VIX and ^TNX real-time updates.
+// v8/chart with range=1d is more stable than spark range=3mo for these symbols.
+export async function fetchYahooLivePrice(symbol: string): Promise<number | null> {
+  try {
+    const enc = encodeURIComponent(symbol);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${enc}?interval=1d&range=1d`;
+    const data = await fetchWithRetry(url, YF_HEADERS, 2);
+    const meta = data?.chart?.result?.[0]?.meta ?? {};
+    const price: number = meta.regularMarketPrice ?? 0;
+    return price > 0 ? price : null;
+  } catch {
+    return null;
+  }
 }
