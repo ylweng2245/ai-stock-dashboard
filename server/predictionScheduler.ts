@@ -16,6 +16,7 @@
 
 import { storage, sqlite } from "./storage";
 import { runPrediction } from "./mlPredictionService";
+import { getOrSyncHistoricalData } from "./stockService";
 import { execSync } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { tmpdir, platform } from "os";
@@ -178,8 +179,21 @@ async function runOne(item: QueueItem): Promise<void> {
   item.startedAt = Date.now();
 
   try {
-    // Ensure index/ETF historical prices are up to date before predicting
-    await ensureIndexHistory(item.symbol, item.market);
+    // Ensure historical prices are up to date before predicting
+    if (item.market === "INDEX") {
+      // Indices use yfinance-based gap fill
+      await ensureIndexHistory(item.symbol, item.market);
+    } else {
+      // Individual stocks (US/TW): use getOrSyncHistoricalData (smart gap fill)
+      // Pass '2y' range so it checks for gaps and fills only what's missing
+      try {
+        await getOrSyncHistoricalData(item.symbol, item.market as "US" | "TW", "2y");
+        console.log(`[predSched] ✓ ${item.symbol} history synced`);
+      } catch (e: any) {
+        // Non-fatal: prediction can still run with existing data
+        console.warn(`[predSched] history sync failed for ${item.symbol}: ${e.message}`);
+      }
+    }
 
     // Get latest close price
     const recentBars = await storage.getHistoricalPricesByRange(
