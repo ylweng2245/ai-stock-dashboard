@@ -140,7 +140,8 @@ export async function fetchTWseTaiex(): Promise<{
 
 /**
  * 漲跌家數 via MI_INDEX tables — table title contains "漲跌證券數合計"
- * Format: "7,768(336)" = 上漲7768 (漲停336)  "5,633(100)" = 下跌5633 (跌停100)
+ * Format: "761(57)" = 上漲761 (漲停57)  "237(0)" = 下跌237 (跌停0)
+ * Use col[2] 「股票」, NOT col[1] 「整體市場」(which includes ETF/warrants/bonds = 8000+)
  */
 export async function fetchTWseAdvDecline(): Promise<{
   date: string;
@@ -165,7 +166,7 @@ export async function fetchTWseAdvDecline(): Promise<{
 
       for (const row of rows) {
         const label = row[0] ?? "";
-        const raw = row[1] ?? "0"; // 整體市場 column
+        const raw = row[2] ?? row[1] ?? "0"; // col[2]=股票 (上市股票only), col[1]=整體市場(含ETF/權證)
 
         // Parse "7,768(336)" → main=7768, paren=336
         const parseWithParen = (s: string): { main: number; paren: number } => {
