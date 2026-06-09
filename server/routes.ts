@@ -1721,6 +1721,20 @@ ${search}${questionPart}
     }
   });
 
+  // Force full refresh (used by 「即時更新」 button)
+  app.post("/api/market-overview/refresh", async (_req, res) => {
+    try {
+      overviewRefreshing = false; // reset lock so full refresh can run
+      overviewFullRefreshDone = false;
+      await runOverviewRefreshFull();
+      const payload = overviewCache?.payload ?? null;
+      if (!payload) return res.status(503).json({ error: "Refresh failed" });
+      res.json(payload);
+    } catch (e: any) {
+      res.status(500).json({ error: "Refresh failed", detail: e.message });
+    }
+  });
+
   // Warm up cache on server start (non-blocking)
   getOverviewPayload().catch(() => {});
 
@@ -1810,6 +1824,14 @@ ${search}${questionPart}
     backgroundQuotePoll(); // immediate first run
     setInterval(backgroundQuotePoll, BACKGROUND_POLL_INTERVAL);
   }, 5000);
+
+  // ── Full indicator refresh (TW/US external sources) every 5 minutes ──────
+  // Keeps TWSE taiex, foreign net, margin, US10Y, Fear&Greed etc. fresh
+  // independently of the DB-only overview cache refresh in backgroundQuotePoll.
+  const FULL_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  setInterval(() => {
+    refreshAllIndicators().catch(() => {});
+  }, FULL_REFRESH_INTERVAL);
 
   // ─── Intraday Chart Data (短 TTL 2-minute cache) ────────────────────────
   // Symbol map: taiex → ^TWII, djia → ^DJI, sp500 → ^GSPC, nasdaq → ^IXIC, sox → ^SOX

@@ -1935,7 +1935,10 @@ export default function Dashboard() {
           <button
             onClick={() => {
               refetch();
-              queryClient.invalidateQueries({ queryKey: ["/api/market-overview"] });
+              // Full refresh: re-fetches TWSE, foreign net, margin, VIX, FG etc.
+              fetch("/api/market-overview/refresh", { method: "POST" })
+                .then(() => queryClient.invalidateQueries({ queryKey: ["/api/market-overview"] }))
+                .catch(() => queryClient.invalidateQueries({ queryKey: ["/api/market-overview"] }));
             }}
             disabled={isFetching}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded hover:bg-muted/40 transition-colors disabled:opacity-50 text-xs text-muted-foreground border border-border/40"
