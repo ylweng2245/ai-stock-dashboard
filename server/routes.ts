@@ -2102,10 +2102,35 @@ ${search}${questionPart}
     }).catch(() => {});
 
     // 4 major US indices — sync today's bar for MarketTrend K-line chart
-    // Uses quoteCache (already populated by getAllQuotes above) via fetchYahooLivePrice
+    // Also upsert market_indicators so Dashboard overview card shows live price
+    const INDEX_INDICATOR_MAP: Record<string, string> = {
+      "^DJI":  "djia",
+      "^GSPC": "sp500",
+      "^IXIC": "nasdaq",
+      "^SOX":  "sox",
+    };
     for (const yTicker of ["^DJI", "^GSPC", "^IXIC", "^SOX"]) {
-      fetchYahooLivePrice(yTicker).then(price => {
-        if (price) syncIndexTodayBar(yTicker, price).catch(() => {});
+      fetchYahooLivePrice(yTicker).then(async price => {
+        if (!price) return;
+        // 1) Update historical_prices for MarketTrend K-line
+        await syncIndexTodayBar(yTicker, price).catch(() => {});
+        // 2) Upsert market_indicators for Dashboard overview card (same source of truth)
+        const indicatorKey = INDEX_INDICATOR_MAP[yTicker];
+        if (indicatorKey) {
+          const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
+          storage.upsertIndicatorHistory([{
+            indicatorKey,
+            market: "US",
+            frequency: "daily",
+            date: today,
+            value: +price.toFixed(2),
+            value2: null,
+            metaJson: null,
+            source: "Yahoo Finance live",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }]).catch(() => {});
+        }
       }).catch(() => {});
     }
 
