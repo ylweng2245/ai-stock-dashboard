@@ -2763,6 +2763,51 @@ ${search}${questionPart}
     }
   });
 
+  /**
+   * GET /api/internal/cron-status
+   * Returns today's execution status for each of the 4 daily crons.
+   * Used by the watchdog cron to decide which crons need to be re-triggered.
+   * Date is evaluated in Asia/Taipei timezone.
+   */
+  app.get("/api/internal/cron-status", (req, res) => {
+    const secret = process.env.INTERNAL_SYNC_SECRET;
+    if (!secret || req.headers["x-sync-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Today in Taipei time (YYYY-MM-DD)
+    const todayTaipei = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+    const todayMs = new Date(todayTaipei + "T00:00:00+08:00").getTime();
+
+    // news-digest: any daily_news_digest row with digest_date = today
+    const newsRow = sqlite.prepare(
+      `SELECT MAX(generated_at) as last FROM daily_news_digest WHERE digest_date = ?`
+    ).get(todayTaipei) as { last: number | null };
+
+    // fundamentals: any fundamental_data row updated today
+    const fundRow = sqlite.prepare(
+      `SELECT MAX(updated_at) as last FROM fundamental_data WHERE updated_at >= ? AND market='US'`
+    ).get(todayMs) as { last: number | null };
+
+    // analyst: any analyst_targets row updated today
+    const analystRow = sqlite.prepare(
+      `SELECT MAX(updated_at) as last FROM analyst_targets WHERE updated_at >= ?`
+    ).get(todayMs) as { last: number | null };
+
+    // sector ETF: SOXX historical_prices bar for today (or yesterday if weekend)
+    const etfRow = sqlite.prepare(
+      `SELECT MAX(date) as last_date, MAX(updated_at) as last FROM historical_prices WHERE symbol='SOXX' AND updated_at >= ?`
+    ).get(todayMs) as { last_date: string | null; last: number | null };
+
+    res.json({
+      today: todayTaipei,
+      news:        { done: !!newsRow?.last,    lastAt: newsRow?.last    ?? null },
+      fundamentals:{ done: !!fundRow?.last,    lastAt: fundRow?.last    ?? null },
+      analyst:     { done: !!analystRow?.last, lastAt: analystRow?.last ?? null },
+      sectorEtf:   { done: !!etfRow?.last,     lastAt: etfRow?.last     ?? null },
+    });
+  });
+
   // ──────────────────────────────────────────────────────────────────
   // V6.1: POST /api/history/backfill-2y  — backfill all watchlist symbols to 2 years
   // ──────────────────────────────────────────────────────────────────
