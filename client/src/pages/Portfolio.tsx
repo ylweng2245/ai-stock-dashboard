@@ -118,15 +118,16 @@ export default function Portfolio() {
     queryKey: ["/api/portfolio/performance"],
     queryFn: () => apiRequest("GET", "/api/portfolio/performance").then(r => r.json()),
     staleTime: 10 * 60_000,
+    placeholderData: (prev: any) => prev,
   });
 
   // Fetch live prices
   const { data: priceData, isLoading: pricesLoading, isFetching, dataUpdatedAt, isError: pricesError } = useQuery<PortfolioQuotesResponse>({
     queryKey: ["/api/portfolio-quotes"],
     queryFn: () => apiRequest("GET", "/api/portfolio-quotes").then(r => r.json()),
-    refetchInterval: 30_000,          // auto-refresh every 30s — keeps P&L current during market hours
-    staleTime: 5 * 60_000,           // 5 min — prevents blank flash on re-enter; refetchInterval still runs
-    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // show previous data while background update runs
+    refetchInterval: 55_000,          // align with server 60s cache — poll while page is open
+    staleTime: 50_000,               // 50s — shorter than server cache so re-entry always hits warm cache
+    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // always show previous data instantly
   });
 
   // isPending = true only when there is truly no cached data yet (first load ever)

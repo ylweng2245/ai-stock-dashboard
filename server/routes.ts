@@ -2063,8 +2063,18 @@ ${search}${questionPart}
   async function backgroundQuotePoll() {
     try {
       const dbWatchlist = await storage.getWatchlist();
-      if (dbWatchlist.length === 0) return;
-      const symbols = dbWatchlist.map((item) => ({ symbol: item.symbol, name: item.name, market: item.market as "TW" | "US" }));
+      // Also warm up PORTFOLIO_EXTRA + active holdings so /api/portfolio-quotes is always a cache hit
+      const portfolioSymbols = await storage.getPortfolioSymbols();
+      const seen = new Set<string>();
+      const symbols: Array<{ symbol: string; name: string; market: "TW" | "US" }> = [];
+      for (const item of [...PORTFOLIO_EXTRA, ...dbWatchlist, ...portfolioSymbols]) {
+        const key = `${item.symbol}_${item.market}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          symbols.push({ symbol: item.symbol, name: (item as any).name ?? item.symbol, market: item.market as "TW" | "US" });
+        }
+      }
+      if (symbols.length === 0) return;
       const result = await getAllQuotes(symbols);
       const allQuotes = [...(result.tw ?? []), ...(result.us ?? [])];
       for (const q of allQuotes) {
