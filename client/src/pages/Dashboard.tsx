@@ -1437,7 +1437,7 @@ function MarketOverviewSection() {
 
       {/* US Section — Row 1: DJIA/SP500/Nasdaq/SOX (intraday), Row 2: VIX/FG/10Y/CPI */}
       <div>
-        <div className="flex items-center gap-3 mb-2"><span className="text-base font-semibold text-foreground">美國市場</span><UsSentimentBadge /></div>
+        <div className="flex items-center gap-3 mb-2"><span className="text-base font-semibold text-foreground">美國市場</span><UsSentimentBadge usCards={us} /></div>
         <div className="space-y-2">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {isLoading
@@ -1826,34 +1826,87 @@ function WatchlistEditor({ market }: { market: "TW" | "US" }) {
 // ---------------------------------------------------------------------------
 
 // ─── US Market Sentiment Badge ────────────────────────────────────────────────
+// 合成分數設計（0-100，50=中性）：
+//   指數動能 50%：DJIA+SP500+NASDAQ+SOX 今日 changePct，±3% → 0-100 線性正規化
+//   VIX 水位  30%：VIX 10→bullish(85) / 20→neutral(50) / 35→bearish(15)
+//   F&G 基準  20%：CNN Fear & Greed（昨日收盤後更新，作為情緒背景）
+// 顏色慣例：多頭（>50）= 紅色 text-gain，空頭（<50）= 綠色 text-loss
 
-function UsSentimentBadge() {
-  const { data } = useQuery<any>({
-    queryKey: ["/api/market-trend"],
-    queryFn: () => fetch("/api/market-trend").then(r => r.json()),
-    staleTime: 5 * 60_000,
-  });
+function UsSentimentBadge({ usCards }: { usCards: IndicatorCard[] }) {
+  // ── 即時資料來自 market-overview（每 60s 更新），與指數卡片同源 ──
+  const djia   = usCards.find(c => c.key === "djia");
+  const sp500  = usCards.find(c => c.key === "sp500");
+  const nasdaq = usCards.find(c => c.key === "nasdaq");
+  const sox    = usCards.find(c => c.key === "sox");
+  const vixCard = usCards.find(c => c.key === "vix");
+  const fgCard  = usCards.find(c => c.key === "fear_greed");
 
-  const sentiment = data?.sentiment;
-  if (!sentiment) return null;
+  // 1) 指數動能分 (50% 權重)
+  //    每根指數 changePct: +3%→100, 0%→50, -3%→0，超出邊界 clamp
+  const normPct = (pct: number | null | undefined) =>
+    pct == null ? null : Math.max(0, Math.min(100, 50 + (pct / 3) * 50));
+  const idxScores = [djia, sp500, nasdaq, sox]
+    .map(c => normPct(c?.changePct))
+    .filter((v): v is number => v != null);
+  const idxScore = idxScores.length > 0
+    ? idxScores.reduce((a, b) => a + b, 0) / idxScores.length
+    : null;
 
-  const fgValue = sentiment.fearGreed?.value ?? null;
-  const macroScore = sentiment.macro?.score != null ? Math.round(sentiment.macro.score * 100) : null;
-  const vixCurrent = sentiment.vix?.current ?? null;
-  const tenYCurrent = sentiment.tenYear?.current ?? null;
+  // 2) VIX 水位分 (30% 權重)
+  //    VIX 10→85（低恐慌=偏多）, VIX 20→50（中性）, VIX 35→15（高恐慌=偏空）
+  //    斜率: 每 1 VIX 點 ≈ 2.33 分
+  const vixVal = vixCard?.value ?? null;
+  const vixScore = vixVal != null
+    ? Math.max(0, Math.min(100, 50 + (20 - vixVal) * 2.33))
+    : null;
 
-  const normalizedFG = fgValue != null ? fgValue : 50;
-  const normalizedVix = vixCurrent != null ? Math.max(0, 100 - vixCurrent * 2) : 50;
-  const normalizedMacro = macroScore != null ? macroScore : 50;
-  const normalizedTenY = tenYCurrent != null ? Math.max(0, Math.min(100, 50 + (4.5 - tenYCurrent) * 15)) : null;
-  const inputs = [normalizedFG, normalizedVix, normalizedMacro, ...(normalizedTenY != null ? [normalizedTenY] : [])];
-  const composite = Math.round(inputs.reduce((a, b) => a + b, 0) / inputs.length);
-  const label = composite >= 70 ? "偏樂觀" : composite >= 55 ? "中性偏多" : composite >= 45 ? "中性" : composite >= 30 ? "中性偏空" : "偏悲觀";
-  const colorCls = composite >= 70 ? "text-[#10b981]" : composite >= 55 ? "text-[#10b981] opacity-80" : composite >= 45 ? "text-muted-foreground" : composite >= 30 ? "text-[#ef4444] opacity-80" : "text-[#ef4444]";
-  const borderCls = composite >= 70 ? "border-[#10b981]/40" : composite >= 55 ? "border-[#10b981]/20" : composite >= 45 ? "border-border" : composite >= 30 ? "border-[#ef4444]/20" : "border-[#ef4444]/40";
+  // 3) CNN Fear & Greed 基準 (20% 權重，直接 0-100)
+  const fgScore = fgCard?.value ?? null;
+
+  // 加權合成
+  type Slot = { score: number; weight: number };
+  const slots: Slot[] = [
+    ...(idxScore != null ? [{ score: idxScore, weight: 0.5 }] : []),
+    ...(vixScore != null ? [{ score: vixScore, weight: 0.3 }] : []),
+    ...(fgScore  != null ? [{ score: fgScore,  weight: 0.2 }] : []),
+  ];
+  if (slots.length === 0) return null;
+  const totalW = slots.reduce((s, sl) => s + sl.weight, 0);
+  const composite = Math.round(
+    slots.reduce((s, sl) => s + sl.score * (sl.weight / totalW), 0)
+  );
+
+  // 標籤
+  const label =
+    composite >= 72 ? "強多" :
+    composite >= 58 ? "偏多" :
+    composite >= 44 ? "中性" :
+    composite >= 30 ? "偏空" : "強空";
+
+  // 台灣色慣例：多頭=紅(text-gain)，空頭=綠(text-loss)
+  const colorCls =
+    composite >= 72 ? "text-gain" :
+    composite >= 58 ? "text-gain opacity-80" :
+    composite >= 44 ? "text-muted-foreground" :
+    composite >= 30 ? "text-loss opacity-80" : "text-loss";
+  const borderCls =
+    composite >= 72 ? "border-[#ef4444]/40" :
+    composite >= 58 ? "border-[#ef4444]/20" :
+    composite >= 44 ? "border-border" :
+    composite >= 30 ? "border-[#10b981]/20" : "border-[#10b981]/40";
+
+  // Tooltip：顯示各分項貢獻
+  const tipParts: string[] = [];
+  if (idxScore != null) tipParts.push(`指數動能 ${idxScore.toFixed(0)}`);
+  if (vixScore != null) tipParts.push(`VIX ${vixVal?.toFixed(1)} → ${vixScore.toFixed(0)}`);
+  if (fgScore  != null) tipParts.push(`F&G ${fgScore.toFixed(0)}`);
+  const tip = tipParts.join("　");
 
   return (
-    <div className={cn("flex items-center gap-2 px-2.5 py-1 rounded border text-xs", borderCls)}>
+    <div
+      className={cn("flex items-center gap-2 px-2.5 py-1 rounded border text-xs cursor-default", borderCls)}
+      title={tip}
+    >
       <span className="text-muted-foreground">市場情緒</span>
       <span className={cn("font-bold tabular-nums text-sm", colorCls)}>{composite}</span>
       <span className={cn("text-[11px]", colorCls)}>{label}</span>
