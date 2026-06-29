@@ -125,9 +125,9 @@ export default function Portfolio() {
   const { data: priceData, isLoading: pricesLoading, isFetching, dataUpdatedAt, isError: pricesError } = useQuery<PortfolioQuotesResponse>({
     queryKey: ["/api/portfolio-quotes"],
     queryFn: () => apiRequest("GET", "/api/portfolio-quotes").then(r => r.json()),
-    refetchInterval: 55_000,          // align with server 60s cache — poll while page is open
-    staleTime: 50_000,               // 50s — shorter than server cache so re-entry always hits warm cache
-    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // always show previous data instantly
+    refetchInterval: 60_000,          // re-read cache every 60s (backgroundQuotePoll updates it)
+    staleTime: 0,                    // always re-read on page enter — cache read is near-instant now
+    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // show prev data instantly while fetching
   });
 
   // isPending = true only when there is truly no cached data yet (first load ever)

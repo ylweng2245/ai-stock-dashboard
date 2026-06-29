@@ -1680,6 +1680,30 @@ export async function getPortfolioQuotes(
   return results;
 }
 
+/**
+ * Pure cache read — returns whatever is in quoteCache for the given symbols.
+ * Never triggers an external API call. Missing symbols get isStale=true.
+ * This is the ONLY function /api/portfolio-quotes should use.
+ */
+export function getQuotesFromCache(
+  symbols: Array<{ symbol: string; name: string; market: "TW" | "US" }>
+): StockQuote[] {
+  const results: StockQuote[] = [];
+  for (const s of symbols) {
+    const key = `${s.symbol}_${s.market}`;
+    const cached = quoteCache.get(key);
+    if (cached) {
+      results.push({
+        ...cached.data,
+        isStale: Date.now() - cached.fetchedAt > QUOTE_TTL_MS * 3, // only mark stale if very old (>3min)
+        isFallbackCache: Date.now() - cached.fetchedAt > QUOTE_TTL_MS,
+      });
+    }
+    // If not in cache at all: omit — backgroundQuotePoll will fill it within 60s
+  }
+  return results;
+}
+
 export function getCacheStats() {
   return {
     quoteCacheSize: quoteCache.size,

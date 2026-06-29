@@ -123,8 +123,8 @@ export default function Portfolio2() {
   const { data: priceData, isLoading: pricesLoading, isFetching, dataUpdatedAt, isError: pricesError } = useQuery<PortfolioQuotesResponse>({
     queryKey: ["/api/portfolio2-quotes"],
     queryFn: () => fetch("/api/portfolio2-quotes").then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime: 0,  // always refetch on mount
+    refetchInterval: 60_000,  // align with backgroundQuotePoll cycle
+    staleTime: 0,             // cache read is near-instant, always get latest
     placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,
   });
 

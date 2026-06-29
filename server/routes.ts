@@ -58,6 +58,7 @@ function parseNum(val: any): number {
 }
 import {
   getAllQuotes,
+  getQuotesFromCache,
   getHistory,
   getPortfolioQuotes,
   getCacheStats,
@@ -593,12 +594,12 @@ export async function registerRoutes(
 
   /**
    * GET /api/portfolio-quotes
-   * Returns live quotes for all portfolio + extra symbols.
+   * Pure cache read — returns quotes from the shared quoteCache (warmed by backgroundQuotePoll every 60s).
+   * Never calls external APIs — single source of truth is backgroundQuotePoll.
    */
   app.get("/api/portfolio-quotes", async (_req, res) => {
     try {
       const dbWatchlist = await storage.getWatchlist();
-      // Also include all active portfolio holdings (computed from transactions)
       const txSymbols = await storage.getPortfolioSymbols();
       const seen = new Set<string>();
       const allSymbols: Array<{ symbol: string; name: string; market: "TW" | "US" }> = [];
@@ -607,18 +608,19 @@ export async function registerRoutes(
         const key = `${item.symbol}_${item.market}`;
         if (!seen.has(key)) {
           seen.add(key);
-          allSymbols.push({ symbol: item.symbol, name: item.name, market: item.market as "TW" | "US" });
+          allSymbols.push({ symbol: item.symbol, name: (item as any).name ?? item.symbol, market: item.market as "TW" | "US" });
         }
       }
 
-      const quotes = await getPortfolioQuotes(allSymbols);
+      // Pure cache read — no external API call
+      const quotes = getQuotesFromCache(allSymbols);
       res.json({
         quotes,
         fetchedAt: Date.now(),
-        dataSource: "TWSE + Perplexity Finance",
+        dataSource: "cache",
       });
     } catch (e: any) {
-      res.status(500).json({ error: "Failed to fetch portfolio quotes", detail: e.message });
+      res.status(500).json({ error: "Failed to read portfolio quotes from cache", detail: e.message });
     }
   });
 
@@ -1929,8 +1931,9 @@ ${search}${questionPart}
       }
       // Always include USDTWD for FX
       if (!seen.has("USDTWD_TW")) allSymbols.push({ symbol: "USDTWD", name: "USD/TWD", market: "TW" });
-      const quotes = await getPortfolioQuotes(allSymbols);
-      res.json({ quotes, fetchedAt: Date.now(), dataSource: "TWSE + Perplexity Finance" });
+      // Pure cache read — same single source of truth as portfolio-quotes
+      const quotes = getQuotesFromCache(allSymbols);
+      res.json({ quotes, fetchedAt: Date.now(), dataSource: "cache" });
     } catch (e: any) {
       res.status(500).json({ error: "Failed to fetch portfolio2 quotes", detail: e.message });
     }
