@@ -1058,7 +1058,9 @@ export default function TechnicalAnalysis() {
     staleTime: 55_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
-    placeholderData: (prev: HistoryResponse | undefined) => prev,
+    // Do NOT use placeholderData from a different symbol — cross-symbol scale is wrong
+    // (e.g. switching AMD→INTC would use AMD price range causing K-line to appear squashed).
+    // React Query already caches per queryKey, so same symbol revisits are instant.
   });
 
   // Transactions for buy/sell dots

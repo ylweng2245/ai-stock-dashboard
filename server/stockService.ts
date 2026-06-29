@@ -1324,45 +1324,42 @@ export async function getOrSyncHistoricalData(
       };
     }
   } else {
-    // We have DB data. Gap-fill starts from lastStoredDate itself (not +1) so any
-    // intraday snapshot written before shutdown gets overwritten by Yahoo official close.
+    // We have DB data.
     const tradingDaysGap = countTradingDaysSince(lastStoredDate, market);
     if (tradingDaysGap >= 1) {
       refreshAttempted = true;
-      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${lastStoredDate}, ${tradingDaysGap} trading days ago), correcting from ${lastStoredDate}...`);
-      try {
-        // Start from lastStoredDate itself to overwrite possible intraday snapshots
-        const gapFromStr = lastStoredDate;
-        // Gap end: yesterday in market timezone (today handled by injectTodayBar)
-        // Use todayForMarket with date arithmetic to get yesterday correctly
-        const marketTodayStr = todayForMarket(market);
-        const marketTodayMs = new Date(marketTodayStr + "T12:00:00Z").getTime();
-        const yesterdayStr = new Date(marketTodayMs - 86400_000).toISOString().slice(0, 10);
-
-        if (gapFromStr <= yesterdayStr) {
-          const fetched = await fetchYahooHistoryByDateRange(symbol, gapFromStr, yesterdayStr, suffix);
-          // >= lastStoredDate: overwrite possibly-intraday last bar with official close
-          // <  todayStr: never write today (handled by injectTodayBar with live quote)
-          const barsForDB = fetched.bars.filter(
-            (b) => b.time >= lastStoredDate && b.time < todayStr
-          );
-          if (barsForDB.length > 0) {
-            const rows: InsertHistoricalPrice[] = barsForDB.map((b) => ({
-              symbol, market,
-              date: b.time,
-              open: b.open, high: b.high, low: b.low, close: b.close,
-              volume: b.volume,
-              updatedAt: now,
-            }));
-            await storage.upsertHistoricalPrices(rows);
+      console.log(`[getOrSyncHistoricalData] ${symbol}: gap detected (${tradingDaysGap}d), scheduling background gap-fill...`);
+      // ── BACKGROUND gap-fill: do NOT await — return DB data immediately so K-line
+      // renders with correct scale at once. Gap bars will be written to DB and the
+      // next /api/history request (60s refetch) will serve the updated data.
+      const gapFromStr = lastStoredDate;
+      const marketTodayStr = todayForMarket(market);
+      const marketTodayMs  = new Date(marketTodayStr + "T12:00:00Z").getTime();
+      const yesterdayStr   = new Date(marketTodayMs - 86400_000).toISOString().slice(0, 10);
+      if (gapFromStr <= yesterdayStr) {
+        (async () => {
+          try {
+            const fetched = await fetchYahooHistoryByDateRange(symbol, gapFromStr, yesterdayStr, suffix);
+            const barsForDB = fetched.bars.filter(
+              (b) => b.time >= lastStoredDate && b.time < marketTodayStr
+            );
+            if (barsForDB.length > 0) {
+              await storage.upsertHistoricalPrices(barsForDB.map((b) => ({
+                symbol, market,
+                date: b.time, open: b.open, high: b.high, low: b.low,
+                close: b.close, volume: b.volume, updatedAt: Date.now(),
+              })));
+              // Invalidate historyCache so next request picks up new bars
+              ["1mo","3mo","6mo","1y","2y"].forEach(r =>
+                historyCache.delete(`hist_${symbol}_${market}_${r}`));
+              console.log(`[bg-gap-fill] ${symbol}: wrote ${barsForDB.length} bars (${gapFromStr}→${yesterdayStr})`);
+            }
+          } catch (e: any) {
+            console.warn(`[bg-gap-fill] ${symbol}: failed: ${e.message}`);
           }
-          console.log(`[getOrSyncHistoricalData] ${symbol}: corrected/gap-filled ${barsForDB.length} bars (${gapFromStr}→${yesterdayStr})`);
-        }
-        refreshSucceeded = true;
-      } catch (e: any) {
-        console.warn(`[getOrSyncHistoricalData] ${symbol}: gap fill failed: ${e.message}, serving DB data`);
-        refreshSucceeded = false;
+        })();
       }
+      refreshSucceeded = false; // will be true after background fill completes
     }
     // else: DB is up to date, read directly
   }
@@ -1588,16 +1585,33 @@ export async function getHistory(
   const effectiveTtl = cached?.data?.source?.includes("盤中") ? QUOTE_TTL_MS : HISTORY_TTL_MS;
 
   if (isCacheValid(cached, effectiveTtl)) {
-    // Even if cache is fresh, bypass it if the latest bar in the cached result
-    // is behind by >= 1 trading day (handles TW stocks checked after midnight
-    // where 30-min cache would otherwise serve stale data all night).
-    const cachedLastBar = cached!.data.bars[cached!.data.bars.length - 1]?.time;
+    const cachedLastBar = cached!.data.bars[cached!.data.bars.length - 1];
     if (cachedLastBar) {
-      const gap = countTradingDaysSince(cachedLastBar, market);
+      const gap = countTradingDaysSince(cachedLastBar.time, market);
       if (gap >= 1) {
         // Cache is stale data-wise — force DB-first refresh
         historyCache.delete(cacheKey);
       } else {
+        // Cache hit: still patch today's bar with latest quoteCache price
+        // so the K-line close always reflects the most recent live price
+        // without waiting for the 60s historyCache TTL to expire.
+        const liveEntry = quoteCache.get(`${symbol}_${market}`);
+        if (liveEntry && liveEntry.data?.price) {
+          const lp = liveEntry.data.price;
+          const bars = [...cached!.data.bars];
+          const today = todayForMarket(market);
+          const lastIdx = bars.length - 1;
+          if (bars[lastIdx]?.time === today) {
+            bars[lastIdx] = {
+              ...bars[lastIdx],
+              close: lp,
+              high:  Math.max(bars[lastIdx].high ?? lp, lp),
+              low:   Math.min(bars[lastIdx].low  ?? lp, lp),
+              volume: liveEntry.data.volume ?? bars[lastIdx].volume,
+            };
+            return { ...cached!.data, bars, fromCache: true };
+          }
+        }
         return { ...cached!.data, fromCache: true };
       }
     } else {
