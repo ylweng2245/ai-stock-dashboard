@@ -420,7 +420,7 @@ export default function Portfolio2() {
           {/* Performance Curve */}
           {(() => {
             const curve = perfData?.curve ?? [];
-            const hasCurve = curve.length >= 5;
+            const hasCurve = curve.length >= 2;
             const last = curve[curve.length - 1];
             const latestNav = last?.nav ?? 0;
             const latestHoldingCost = last?.holdingCost ?? 0;
