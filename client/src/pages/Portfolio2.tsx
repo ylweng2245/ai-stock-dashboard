@@ -108,24 +108,24 @@ export default function Portfolio2() {
   // Fetch computed portfolio from DB transactions
   const { data: computedHoldingsRaw, isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<ComputedHolding[]>({
     queryKey: ["/api/portfolio2/computed"],
-    queryFn: () => apiRequest("GET", "/api/portfolio2/computed").then(r => r.json()),
-    staleTime: 5 * 60_000,          // 5 min — pure DB calc, changes only on import
+    queryFn: () => fetch("/api/portfolio2/computed").then(r => r.json()),
+    staleTime: 0,
     placeholderData: (prev: ComputedHolding[] | undefined) => prev,  // show stale data while refreshing
   });
 
   // Fetch performance curve
   const { data: perfData } = useQuery<{ curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number;realizedCostBasis:number}> }>({    queryKey: ["/api/portfolio2/performance"],
-    queryFn: () => Promise.resolve({ curve: [] }), // account2 暫不支援 NAV 曲線
-    staleTime: 10 * 60_000,
+    queryFn: () => fetch("/api/portfolio2/performance").then(r => r.json()),
+    staleTime: 0,
   });
 
   // Fetch live prices
   const { data: priceData, isLoading: pricesLoading, isFetching, dataUpdatedAt, isError: pricesError } = useQuery<PortfolioQuotesResponse>({
     queryKey: ["/api/portfolio2-quotes"],
-    queryFn: () => apiRequest("GET", "/api/portfolio2-quotes").then(r => r.json()),
-    refetchInterval: 30_000,          // auto-refresh every 30s — keeps P&L current during market hours
-    staleTime: 5 * 60_000,           // 5 min — prevents blank flash on re-enter; refetchInterval still runs
-    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,  // show previous data while background update runs
+    queryFn: () => fetch("/api/portfolio2-quotes").then(r => r.json()),
+    refetchInterval: 30_000,
+    staleTime: 0,  // always refetch on mount
+    placeholderData: (prev: PortfolioQuotesResponse | undefined) => prev,
   });
 
   // isPending = true only when there is truly no cached data yet (first load ever)

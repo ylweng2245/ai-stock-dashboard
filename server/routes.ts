@@ -1749,6 +1749,171 @@ ${search}${questionPart}
     }
   });
 
+  // GET /api/portfolio2/performance — NAV curve for account2 (TW only, FIFO)
+  app.get("/api/portfolio2/performance", async (_req, res) => {
+    try {
+      const EXCLUDE_SYMBOLS = new Set(['00719B']);
+
+      const txns = (sqlite.prepare(
+        `SELECT trade_date, symbol, market, side, shares, price, total_cost, currency FROM transactions WHERE account_id=2 ORDER BY trade_date ASC`
+      ).all() as Array<{trade_date:string;symbol:string;market:string;side:string;shares:number;price:number;total_cost:number;currency:string}>)
+        .filter((t: any) => !EXCLUDE_SYMBOLS.has(t.symbol));
+
+      if (!txns.length) return res.json({ curve: [] });
+
+      const firstDate = txns[0].trade_date;
+      const today = new Date().toISOString().slice(0, 10);
+
+      // USD/TWD FX (not needed for TW-only, but keep for future US stocks)
+      const fxRows = sqlite.prepare(
+        `SELECT date, value FROM market_indicators WHERE indicator_key='USDTWD' AND date >= ? ORDER BY date ASC`
+      ).all(firstDate) as Array<{date:string;value:number}>;
+      const fxMap = new Map<string, number>(fxRows.map((r: any) => [r.date, r.value]));
+      let lastFx = 31.0;
+
+      // Collect unique symbols
+      const symMarketMap = new Map<string, string>();
+      for (const t of txns) symMarketMap.set(t.symbol, t.market);
+      const symbols = [...symMarketMap.keys()];
+
+      // Auto-fetch price history if insufficient
+      const fetchPromises: Promise<void>[] = [];
+      for (const sym of symbols) {
+        const market = symMarketMap.get(sym) as "TW" | "US";
+        const count = (sqlite.prepare(
+          `SELECT COUNT(*) as c FROM historical_prices WHERE symbol=? AND market=?`
+        ).get(sym, market) as any)?.c ?? 0;
+        if (count < 50) {
+          console.log(`[portfolio2/performance] ${sym} has only ${count} bars — fetching history`);
+          fetchPromises.push(
+            initializeOneYearHistoryPool(sym, market).catch((e: any) =>
+              console.warn(`[portfolio2/performance] yfinance fetch failed for ${sym}: ${e.message}`)
+            )
+          );
+        }
+      }
+      if (fetchPromises.length > 0) await Promise.all(fetchPromises);
+
+      // Load price history
+      const priceHistory = new Map<string, Map<string, number>>();
+      for (const sym of symbols) {
+        const rows = sqlite.prepare(
+          `SELECT date, close FROM historical_prices WHERE symbol=? AND date >= ? ORDER BY date ASC`
+        ).all(sym, firstDate) as Array<{date:string;close:number}>;
+        priceHistory.set(sym, new Map(rows.map((r: any) => [r.date, r.close])));
+      }
+
+      // Build all calendar dates from firstDate to today
+      const allDates: string[] = [];
+      const d = new Date(firstDate);
+      const end = new Date(today);
+      while (d <= end) {
+        allDates.push(d.toISOString().slice(0, 10));
+        d.setDate(d.getDate() + 1);
+      }
+
+      const lastKnownPrice = new Map<string, number>();
+
+      type PosState = {
+        shares: number;
+        holdingCost: number;
+        currency: string;
+        market: string;
+        lots: Array<{ shares: number; unitCost: number }>;
+      };
+      const holdings = new Map<string, PosState>();
+      let realizedPnlTwd = 0;
+      let realizedCostBasisTwd = 0;
+      let txIdx = 0;
+      const curve: Array<{date:string;nav:number;holdingCost:number;realizedPnl:number;realizedCostBasis:number}> = [];
+
+      for (const date of allDates) {
+        const fx = fxMap.get(date) ?? lastFx;
+
+        // Apply transactions on this date
+        while (txIdx < txns.length && txns[txIdx].trade_date === date) {
+          const t = txns[txIdx];
+          const key = t.symbol;
+          if (!holdings.has(key)) {
+            holdings.set(key, { shares: 0, holdingCost: 0, currency: t.currency, market: t.market, lots: [] });
+          }
+          const pos = holdings.get(key)!;
+          const isTW = t.market === 'TW';
+          const absCost = Math.abs(t.total_cost);
+
+          if (t.side === 'buy') {
+            if (isTW) {
+              pos.lots.push({ shares: t.shares, unitCost: absCost / t.shares });
+              pos.holdingCost += absCost;
+            } else {
+              pos.holdingCost += absCost;
+            }
+            pos.shares += t.shares;
+          } else if (t.side === 'dividend') {
+            const divTwd = t.currency === 'USD' ? t.total_cost * fx : t.total_cost;
+            realizedPnlTwd += divTwd;
+          } else {
+            // Sell — FIFO for TW, weighted avg for US
+            const proceeds = absCost;
+            if (isTW) {
+              let rem = t.shares; let cb = 0;
+              while (rem > 0.0001 && pos.lots.length > 0) {
+                const lot = pos.lots[0];
+                if (lot.shares <= rem + 0.0001) {
+                  cb += lot.unitCost * lot.shares; rem -= lot.shares;
+                  pos.shares -= lot.shares; pos.holdingCost -= lot.unitCost * lot.shares;
+                  pos.lots.shift();
+                } else {
+                  cb += lot.unitCost * rem;
+                  pos.shares -= rem; pos.holdingCost -= lot.unitCost * rem;
+                  lot.shares -= rem; rem = 0;
+                }
+              }
+              realizedPnlTwd += proceeds - cb;
+              realizedCostBasisTwd += cb;
+            } else {
+              const avgNow = pos.shares > 0 ? pos.holdingCost / pos.shares : 0;
+              const cb = avgNow * t.shares;
+              realizedPnlTwd += (proceeds - cb) * fx;
+              realizedCostBasisTwd += cb * fx;
+              pos.holdingCost -= cb;
+              pos.shares -= t.shares;
+            }
+            if (pos.shares < 0.0001) { pos.shares = 0; pos.holdingCost = 0; pos.lots = []; }
+          }
+          txIdx++;
+        }
+        if (fxMap.has(date)) lastFx = fxMap.get(date)!;
+
+        // Forward-fill prices
+        for (const [sym, symPrices] of priceHistory) {
+          const p = symPrices.get(date);
+          if (p != null) lastKnownPrice.set(sym, p);
+        }
+
+        // Compute NAV in TWD
+        let nav = 0;
+        let holdingCostTwd = 0;
+        let hasAnyHolding = false;
+        for (const [sym, pos] of holdings) {
+          if (pos.shares <= 0.0001) continue;
+          const price = lastKnownPrice.get(sym) ?? null;
+          if (price === null) continue;
+          hasAnyHolding = true;
+          const fxRate = pos.currency === 'USD' ? (fxMap.get(date) ?? lastFx) : 1;
+          nav += price * pos.shares * fxRate;
+          holdingCostTwd += pos.holdingCost * fxRate;
+        }
+        if (!hasAnyHolding && realizedCostBasisTwd === 0) continue;
+        curve.push({ date, nav, holdingCost: holdingCostTwd, realizedPnl: realizedPnlTwd, realizedCostBasis: realizedCostBasisTwd });
+      }
+
+      res.json({ curve });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Quotes for account 2 holdings
   app.get("/api/portfolio2-quotes", async (_req, res) => {
     try {
