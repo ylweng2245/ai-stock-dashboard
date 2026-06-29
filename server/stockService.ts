@@ -284,9 +284,12 @@ export const PORTFOLIO_EXTRA: Array<{ symbol: string; name: string; market: "TW"
 ];
 
 export const INDEX_SYMBOLS: Record<string, { finance: string; name: string; market: "TW" | "US" }> = {
-  TWII:   { finance: "^TWII",  name: "加權指數",  market: "TW" },
-  USDTWD: { finance: "USDTWD", name: "美元/台幣", market: "US" },
-  GSPC:   { finance: "^GSPC",  name: "S&P 500",  market: "US" },
+  TWII:   { finance: "^TWII",  name: "加權指數",      market: "TW" },
+  USDTWD: { finance: "USDTWD", name: "美元/台幣",     market: "US" },
+  GSPC:   { finance: "^GSPC",  name: "S&P 500",      market: "US" },
+  DJI:    { finance: "^DJI",   name: "道瓊工業指數",  market: "US" },
+  IXIC:   { finance: "^IXIC",  name: "Nasdaq 綜合",  market: "US" },
+  SOX:    { finance: "^SOX",   name: "費城半導體",    market: "US" },
 };
 
 // ---------------------------------------------------------------------------
@@ -1549,7 +1552,8 @@ export async function getAllQuotes(
       const q = fetchedMap.get(yahooSymbol);
       if (q) {
         // Remap symbol back to our key (e.g. "^TWII" -> "TWII")
-        const mapped: StockQuote = { ...q, symbol: _key, name, market: INDEX_SYMBOLS[_key].market };
+        // Keep yahooSymbol (e.g. "^DJI") so frontend can match by either key or Yahoo ticker
+        const mapped: StockQuote = { ...q, symbol: _key, yahooSymbol: symbol, name, market: INDEX_SYMBOLS[_key].market };
         indexQuotes.push(mapped);
         quoteCache.set(`idx_${_key}`, { data: mapped, fetchedAt: Date.now() });
       } else {

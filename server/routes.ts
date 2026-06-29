@@ -2101,6 +2101,14 @@ ${search}${questionPart}
       if (price) syncIndexTodayBar("^TNX", price).catch(() => {});
     }).catch(() => {});
 
+    // 4 major US indices — sync today's bar for MarketTrend K-line chart
+    // Uses quoteCache (already populated by getAllQuotes above) via fetchYahooLivePrice
+    for (const yTicker of ["^DJI", "^GSPC", "^IXIC", "^SOX"]) {
+      fetchYahooLivePrice(yTicker).then(price => {
+        if (price) syncIndexTodayBar(yTicker, price).catch(() => {});
+      }).catch(() => {});
+    }
+
     // CNN Fear & Greed — upsert today's value in market_indicators
     fetchFearGreed().then(r => {
       const today = new Date().toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
@@ -3855,22 +3863,30 @@ ${search}${questionPart}
             cur.setUTCDate(cur.getUTCDate() + 1);
           }
           if (tradingGap >= 1) {
-            // end is exclusive in yfinance, so use tomorrow (usToday+1) to include today's bar
+            // ── BACKGROUND gap-fill: do NOT await — return DB data immediately.
+            // quoteCache patch (below) will cover today's live price instantly.
             const usTodayDate = new Date(new Date(usToday + "T00:00:00Z").getTime() + 86400_000)
               .toISOString().slice(0, 10);
-            const rows = await runYfinance([
-              "import yfinance as yf, json",
-              `t = yf.Ticker('${yfSym}')`,
-              `hist = t.history(start='${maxDate}', end='${usTodayDate}', auto_adjust=True)`,
-              "rows = []",
-              "for dt, row in hist.iterrows():",
-              "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
-              "print(json.dumps(rows))",
-            ].join("\n"));
-            // Only upsert from maxDate onwards (don't overwrite older bars)
-            const filtered = rows.filter((r: any) => r.date >= maxDate);
-            upsertBars(filtered);
-            console.log(`[index-history] gap-fill ${sym}: ${filtered.length} bars (gap=${tradingGap} days, from ${maxDate})`);
+            const capturedMaxDate = maxDate;
+            const capturedSym = sym;
+            ;(async () => {
+              try {
+                const rows = await runYfinance([
+                  "import yfinance as yf, json",
+                  `t = yf.Ticker('${yfSym}')`,
+                  `hist = t.history(start='${capturedMaxDate}', end='${usTodayDate}', auto_adjust=True)`,
+                  "rows = []",
+                  "for dt, row in hist.iterrows():",
+                  "    rows.append({'date': str(dt)[:10], 'open': round(float(row['Open']),4), 'high': round(float(row['High']),4), 'low': round(float(row['Low']),4), 'close': round(float(row['Close']),4), 'volume': int(row['Volume'])})",
+                  "print(json.dumps(rows))",
+                ].join("\n"));
+                const filtered = rows.filter((r: any) => r.date >= capturedMaxDate);
+                upsertBars(filtered);
+                console.log(`[index-history] bg gap-fill ${capturedSym}: ${filtered.length} bars (gap=${tradingGap}d, from ${capturedMaxDate})`);
+              } catch (e: any) {
+                console.warn(`[index-history] bg gap-fill ${capturedSym} failed: ${e.message}`);
+              }
+            })();
           }
         }
       } catch (fetchErr: any) {
@@ -3889,6 +3905,37 @@ ${search}${questionPart}
         `).all(sym) as any[];
         return res.json({ symbol: sym, bars: usBars });
       }
+
+      // ── Patch today's bar with the latest close from historical_prices (written by syncIndexTodayBar)
+      // syncIndexTodayBar runs every 60s via backgroundQuotePoll for ^VIX/^TNX;
+      // for ^DJI/^GSPC/^IXIC/^SOX we extend that same mechanism (see below).
+      const usToday2 = new Date(Date.now() - 4 * 3600_000).toISOString().slice(0, 10);
+      const lastBar = bars[bars.length - 1];
+      // Only patch if last bar is today (i.e., market is open or just closed)
+      if (lastBar && lastBar.date === usToday2) {
+        // Check historical_prices for the latest close written by syncIndexTodayBar
+        const todayRow = sqlite.prepare(
+          `SELECT close, high, low, volume FROM historical_prices WHERE symbol=? AND market='INDEX' AND date=?`
+        ).get(sym, usToday2) as any;
+        if (todayRow) {
+          bars[bars.length - 1] = {
+            ...lastBar,
+            close:  todayRow.close,
+            high:   todayRow.high,
+            low:    todayRow.low,
+            volume: todayRow.volume,
+          };
+        }
+      } else if (lastBar && lastBar.date < usToday2) {
+        // Today's bar not yet in DB — append from historical_prices if syncIndexTodayBar wrote it
+        const todayRow = sqlite.prepare(
+          `SELECT open, high, low, close, volume FROM historical_prices WHERE symbol=? AND market='INDEX' AND date=?`
+        ).get(sym, usToday2) as any;
+        if (todayRow) {
+          bars.push({ date: usToday2, open: todayRow.open, high: todayRow.high, low: todayRow.low, close: todayRow.close, volume: todayRow.volume });
+        }
+      }
+
       res.json({ symbol: sym, bars });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
