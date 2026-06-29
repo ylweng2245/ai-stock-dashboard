@@ -14,7 +14,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, asc, and, gte, lte, max, desc } from "drizzle-orm";
+import { eq, asc, and, gte, lte, max, desc, sql } from "drizzle-orm";
 
 export const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -205,7 +205,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTransactions(): Promise<Transaction[]> {
-    return db.select().from(transactions).orderBy(asc(transactions.tradeDate)).all();
+    // Only return account 1 transactions (account_id=1 or legacy rows with NULL)
+    return db.select().from(transactions)
+      .where(sql`(account_id = 1 OR account_id IS NULL)`)
+      .orderBy(asc(transactions.tradeDate)).all();
   }
 
   async getTransactionsBySymbol(symbol: string, market: string): Promise<Transaction[]> {

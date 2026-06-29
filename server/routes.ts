@@ -173,7 +173,7 @@ export async function registerRoutes(
       const EXCLUDE_SYMBOLS = new Set(['00719B']);
 
       const txns = (sqlite.prepare(
-        `SELECT trade_date, symbol, market, side, shares, price, total_cost, currency FROM transactions ORDER BY trade_date ASC`
+        `SELECT trade_date, symbol, market, side, shares, price, total_cost, currency FROM transactions WHERE account_id=1 OR account_id IS NULL ORDER BY trade_date ASC`
       ).all() as Array<{trade_date:string;symbol:string;market:string;side:string;shares:number;price:number;total_cost:number;currency:string}>)
         .filter((t: any) => !EXCLUDE_SYMBOLS.has(t.symbol));
       // Note: SQLite returns snake_case columns; total_cost is negative for buys
@@ -647,7 +647,7 @@ export async function registerRoutes(
     // ── 持倉資訊（從 transactions 計算，與 portfolio/computed 相同邏輯）──
     try {
       const txns = sqlite.prepare(
-        `SELECT side, shares, total_cost FROM transactions WHERE symbol=? AND market=? ORDER BY trade_date ASC`
+        `SELECT side, shares, total_cost FROM transactions WHERE symbol=? AND market=? AND (account_id=1 OR account_id IS NULL) ORDER BY trade_date ASC`
       ).all(symbol, market) as { side: string; shares: number; total_cost: number }[];
 
       const isTW = market === "TW";
@@ -893,7 +893,7 @@ export async function registerRoutes(
     try {
       const txns = sqlite.prepare(
         `SELECT symbol, market, name, side, shares, total_cost, currency
-         FROM transactions ORDER BY trade_date ASC`
+         FROM transactions WHERE account_id=1 OR account_id IS NULL ORDER BY trade_date ASC`
       ).all() as { symbol: string; market: string; name: string; side: string; shares: number; total_cost: number; currency: string }[];
 
       type Pos = {
