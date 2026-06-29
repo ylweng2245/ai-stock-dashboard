@@ -71,6 +71,13 @@ try {
   // Already exists — ignore
 }
 
+// Migration: add account_id column to transactions (1=main, 2=second account)
+try {
+  sqlite.exec(`ALTER TABLE transactions ADD COLUMN account_id INTEGER NOT NULL DEFAULT 1`);
+} catch {
+  // Column already exists — ignore
+}
+
 // Ensure historical_prices table exists (migration for existing DBs)
 try {
   sqlite.exec(`CREATE TABLE IF NOT EXISTS historical_prices (
@@ -218,6 +225,28 @@ export class DatabaseStorage implements IStorage {
 
   async clearAllTransactions(): Promise<void> {
     db.delete(transactions).run();
+  }
+
+  // ── Account 2 transaction methods ────────────────────────────────
+  async getTransactions2(): Promise<any[]> {
+    return sqlite.prepare(
+      `SELECT * FROM transactions WHERE account_id=2 ORDER BY trade_date ASC`
+    ).all() as any[];
+  }
+
+  async importTransactions2(rows: InsertTransaction[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    for (const row of rows) {
+      sqlite.prepare(
+        `INSERT INTO transactions (trade_date, symbol, name, market, side, shares, price, total_cost, currency, account_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2)`
+      ).run(row.tradeDate, row.symbol, row.name, row.market, row.side, row.shares, row.price, row.totalCost, row.currency);
+    }
+    return rows.length;
+  }
+
+  async clearAllTransactions2(): Promise<void> {
+    sqlite.prepare(`DELETE FROM transactions WHERE account_id=2`).run();
   }
 
   async getPortfolioSymbols(): Promise<{ symbol: string; name: string; market: string }[]> {

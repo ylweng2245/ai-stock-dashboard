@@ -1644,6 +1644,133 @@ ${search}${questionPart}
     }
   });
 
+  // ───────────────────────────────────────────────
+  // 投資組合(2) — Account 2 (TW-only, sheet "台股交易明細 (2)")
+  // ───────────────────────────────────────────────
+
+  // Import: reads sheet "台股交易明細 (2)" from the same Excel format
+  app.post("/api/transactions2/import", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+
+      // Find the sheet named "台股交易明細 (2)" (exact or fallback to last TW-like sheet)
+      const targetSheetName = wb.SheetNames.find(n => n.includes("(2)") && n.includes("台股")) ??
+                              wb.SheetNames.find(n => n.includes("(2)")) ??
+                              null;
+
+      if (!targetSheetName) {
+        return res.status(400).json({ error: "找不到「台股交易明細 (2)」工作表", detail: `現有工作表: ${wb.SheetNames.join(", ")}` });
+      }
+
+      const sheet = wb.Sheets[targetSheetName];
+      const imported = parseUnifiedTransactionSheet(sheet, "TW");
+
+      if (imported.length === 0) {
+        return res.status(400).json({ error: "沒有有效交易資料", detail: "請檢查欄位順序: A=日期 B=代號 C=名稱 D=交易類別 E=價格 F=股數 G=總成本" });
+      }
+
+      await storage.clearAllTransactions2();
+      const count = await storage.importTransactions2(imported);
+
+      res.json({ ok: true, imported: count, tw: count, us: 0 });
+    } catch (e: any) {
+      console.error("[import2] error:", e.message);
+      res.status(500).json({ error: "Failed to import Excel", detail: e.message });
+    }
+  });
+
+  // Computed holdings for account 2 (TW FIFO only)
+  app.get("/api/portfolio2/computed", async (_req, res) => {
+    try {
+      const txns = await storage.getTransactions2();
+      type PositionMap = Record<string, {
+        symbol: string; name: string; market: string; currency: string;
+        holdingShares: number; holdingCost: number; realizedGain: number;
+        totalBuyCost: number; totalBuyShares: number;
+        lots: Array<{ shares: number; unitCost: number }>;
+      }>;
+      const positions: PositionMap = {};
+      for (const tx of txns) {
+        const key = `${tx.symbol}_${tx.market}`;
+        if (!positions[key]) {
+          positions[key] = {
+            symbol: tx.symbol, name: tx.name, market: tx.market,
+            currency: tx.market === "US" ? "USD" : "TWD",
+            holdingShares: 0, holdingCost: 0, realizedGain: 0,
+            totalBuyCost: 0, totalBuyShares: 0, lots: [],
+          };
+        }
+        const pos = positions[key];
+        if (tx.side === "buy") {
+          pos.totalBuyCost += Math.abs(tx.total_cost);
+          pos.totalBuyShares += tx.shares;
+          pos.lots.push({ shares: tx.shares, unitCost: Math.abs(tx.total_cost) / tx.shares });
+          pos.holdingShares += tx.shares;
+          pos.holdingCost += Math.abs(tx.total_cost);
+        } else if (tx.side === "dividend") {
+          pos.realizedGain += tx.total_cost;
+        } else {
+          const proceeds = Math.abs(tx.total_cost);
+          let remainingToSell = tx.shares;
+          let costBasis = 0;
+          while (remainingToSell > 0.0001 && pos.lots.length > 0) {
+            const lot = pos.lots[0];
+            if (lot.shares <= remainingToSell + 0.0001) {
+              costBasis += lot.unitCost * lot.shares;
+              remainingToSell -= lot.shares;
+              pos.holdingShares -= lot.shares;
+              pos.holdingCost -= lot.unitCost * lot.shares;
+              pos.lots.shift();
+            } else {
+              costBasis += lot.unitCost * remainingToSell;
+              pos.holdingShares -= remainingToSell;
+              pos.holdingCost -= lot.unitCost * remainingToSell;
+              lot.shares -= remainingToSell;
+              remainingToSell = 0;
+            }
+          }
+          pos.realizedGain += proceeds - costBasis;
+          if (pos.holdingShares < 0.0001) { pos.holdingShares = 0; pos.holdingCost = 0; pos.lots = []; }
+        }
+      }
+      const holdings = Object.values(positions).map(pos => ({
+        symbol: pos.symbol, name: pos.name, market: pos.market, currency: pos.currency,
+        shares: Math.round(pos.holdingShares * 10000) / 10000,
+        avgCost: pos.holdingShares > 0 ? Math.round((pos.holdingCost / pos.holdingShares) * 100) / 100 : 0,
+        totalCost: Math.round(pos.holdingCost * 100) / 100,
+        realizedGain: Math.round(pos.realizedGain * 100) / 100,
+        totalBuyCost: Math.round(pos.totalBuyCost * 100) / 100,
+        totalBuyShares: pos.totalBuyShares,
+      })).filter(h => h.shares > 0.0001 || h.realizedGain !== 0);
+      res.json(holdings);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to compute portfolio2", detail: e.message });
+    }
+  });
+
+  // Quotes for account 2 holdings
+  app.get("/api/portfolio2-quotes", async (_req, res) => {
+    try {
+      const txns = await storage.getTransactions2();
+      const seen = new Set<string>();
+      const allSymbols: Array<{ symbol: string; name: string; market: "TW" | "US" }> = [];
+      for (const tx of txns) {
+        const key = `${tx.symbol}_${tx.market}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          allSymbols.push({ symbol: tx.symbol, name: tx.name, market: tx.market as "TW" | "US" });
+        }
+      }
+      // Always include USDTWD for FX
+      if (!seen.has("USDTWD_TW")) allSymbols.push({ symbol: "USDTWD", name: "USD/TWD", market: "TW" });
+      const quotes = await getPortfolioQuotes(allSymbols);
+      res.json({ quotes, fetchedAt: Date.now(), dataSource: "TWSE + Perplexity Finance" });
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch portfolio2 quotes", detail: e.message });
+    }
+  });
+
   // ─── Market Overview ────────────────────────────────────────────────────
   // Cache the last assembled payload to avoid re-fetching on every request.
   // Background refresh runs on first request and then every 5 minutes.

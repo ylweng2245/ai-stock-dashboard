@@ -13,6 +13,7 @@ import FundamentalAnalysis, { EXCLUDED_FUNDAMENTAL_SYMBOLS } from "@/pages/Funda
 import TechnicalAnalysis from "@/pages/TechnicalAnalysis";
 import AIInsights from "@/pages/AIInsights";
 import Portfolio from "@/pages/Portfolio";
+import Portfolio2 from "@/pages/Portfolio2";
 import Alerts from "@/pages/Alerts";
 import StockNewsDigest from "@/pages/StockNewsDigest";
 import MarketTrend from "@/pages/MarketTrend";
@@ -46,6 +47,7 @@ function AppRouter() {
         </Route>
         <Route path="/market" component={MarketTrend} />
         <Route path="/portfolio" component={Portfolio} />
+        <Route path="/portfolio2" component={Portfolio2} />
         <Route path="/alerts" component={Alerts} />
         <Route path="/news-digest" component={StockNewsDigest} />
         <Route path="/earnings" component={EarningsCalendar} />

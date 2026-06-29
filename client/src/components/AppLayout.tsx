@@ -25,6 +25,7 @@ const navItems = [
   { path: "/analysis", label: "技術分析", icon: TrendingUp },
   { path: "/insights", label: "AI 洞察", icon: Sparkles },
   { path: "/portfolio", label: "投資組合", icon: Briefcase },
+  { path: "/portfolio2", label: "投資組合 (2)", icon: Briefcase },
   { path: "/earnings", label: "財報日曆", icon: CalendarDays },
   { path: "/alerts", label: "價格警報", icon: Bell },
 ];
